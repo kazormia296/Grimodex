@@ -2108,7 +2108,8 @@
         "codex.entry",
         "codex.relation",
         "codex.phase",
-        "codex.detail"
+        "codex.detail",
+        "narrative.authority"
       ],
       "scope": "project",
       "requiredIdentities": [
@@ -3349,7 +3350,7 @@
       "reason":"Human/import/history/restore Chronicle event deletion uses an explicit renderer command and the shared cascade writer.",
       "implementation":{"module":"src-tauri/crates/grimodex-db/src/agent_writes.rs","symbol":"agent_event_delete_impl"},
       "routes":[{"surface":"electron-ipc","name":"event_delete","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"event_delete","module":"electron/native/grimodex-node/src/lib.rs"}],
-      "writerIds":["chronicle.event"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"event.delete"}
+      "writerIds":["chronicle.event","narrative.authority"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"event.delete"}
     },
     {
       "id": "chronicle.bulk.renderer",
@@ -3365,7 +3366,7 @@
       "reason":"Human/import/history/restore Chronicle bulk mutations use an explicit renderer command and one shared transaction writer.",
       "implementation":{"module":"src-tauri/crates/grimodex-db/src/chronicle_bulk.rs","symbol":"agent_chronicle_bulk_mutate_impl"},
       "routes":[{"surface":"electron-ipc","name":"chronicle_bulk_mutate","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"chronicle_bulk_mutate","module":"electron/native/grimodex-node/src/lib.rs"}],
-      "writerIds":["chronicle.event","tree.node"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"chronicle.bulk"}
+      "writerIds":["chronicle.event","tree.node","narrative.authority"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"chronicle.bulk"}
     },
     {
       "id": "chronicle.event.participants.renderer",
@@ -3730,7 +3731,8 @@
         "codex.entry",
         "codex.relation",
         "codex.phase",
-        "codex.detail"
+        "codex.detail",
+        "narrative.authority"
       ],
       "scope": "project",
       "requiredIdentities": [
@@ -3917,7 +3919,7 @@
           "module": "electron/native/grimodex-node/src/lib.rs"
         }
       ],
-      "writerIds": ["chronicle.event"],
+      "writerIds": ["chronicle.event", "narrative.authority"],
       "scope": "project",
       "requiredIdentities": [
         "projectId",
@@ -3957,7 +3959,7 @@
           "module": "electron/native/grimodex-node/src/lib.rs"
         }
       ],
-      "writerIds": ["chronicle.event", "tree.node"],
+      "writerIds": ["chronicle.event", "tree.node", "narrative.authority"],
       "scope": "project",
       "requiredIdentities": [
         "projectId",
@@ -4527,7 +4529,7 @@
           "module": "src-tauri/crates/grimodex-mcp/src/server.rs"
         }
       ],
-      "writerIds": ["chronicle.event"],
+      "writerIds": ["chronicle.event", "narrative.authority"],
       "scope": "project",
       "requiredIdentities": [
         "projectId",

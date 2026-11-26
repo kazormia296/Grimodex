@@ -77,6 +77,8 @@ export type IpcInvokeErrorCode =
   | "IPC_DERIVED_CANCELLED"
   | "IPC_MUTATION_CANCELLED"
   | "IPC_TIMEOUT"
+  /** A history replay was rolled back because approvals could not be revoked. */
+  | "NEX_EXISTENCE_SYNC_FAILED"
   | "UNKNOWN";
 
 export type IpcInvokeOutcome = "failed" | "unknown";
@@ -161,6 +163,9 @@ function classifyLegacyIpcError(message: string): IpcInvokeFailureInfo {
   }
   if (message.includes("WORKSPACE_QUARANTINED")) {
     return { ...base, code: "WORKSPACE_QUARANTINED", retryable: false };
+  }
+  if (message.includes("NEX_EXISTENCE_SYNC_FAILED:")) {
+    return { ...base, code: "NEX_EXISTENCE_SYNC_FAILED", retryable: true };
   }
   if (/No workspace is open/i.test(message)) {
     return { ...base, code: "NO_WORKSPACE_OPEN", retryable: true };

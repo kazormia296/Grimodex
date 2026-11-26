@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use super::{super::retrieval_admission::ChronicleRetrievalDocument, *};
 use crate::{ai_audit::AppendAiAuditEvent, Database};
 
-pub(super) struct Fixture {
+pub(crate) struct Fixture {
     pub db: Database,
     pub runtime: NirChronicleIndexRuntime,
     pub manifest: Value,

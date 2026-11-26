@@ -6,6 +6,8 @@
  * ③ read-only allowlist だけに caller timeout が適用されること
  * ④ listen / emit のブリッジ写像
  */
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 type AnyWindow = Record<string, unknown>;
@@ -158,6 +160,34 @@ describe("envelope 解封 = typed error + legacy wire compatibility", () => {
       outcome: "failed",
     });
     expect(String(caught)).not.toContain("WORKSPACE_SWITCHING");
+  });
+
+  it("NEX_EXISTENCE_SYNC_FAILED は Native が付ける符号と同じ文字列（SRD/1 HK2）", () => {
+    const native = readFileSync(
+      path.resolve(
+        process.cwd(),
+        "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+      ),
+      "utf8",
+    );
+    expect(native).toContain('"NEX_EXISTENCE_SYNC_FAILED: ');
+  });
+
+  it("NEX_EXISTENCE_SYNC_FAILED は、履歴が保てるように専用の code にする", async () => {
+    installBridge({
+      invoke: vi.fn().mockResolvedValue({
+        ok: false,
+        error: "NEX_EXISTENCE_SYNC_FAILED: approval revocation was refused",
+      }),
+    });
+    const { invoke } = await import("./tauri");
+    await expect(
+      invoke("db_execute", { sql: "SELECT 1", params: [], method: "all" }),
+    ).rejects.toMatchObject({
+      code: "NEX_EXISTENCE_SYNC_FAILED",
+      retryable: true,
+      outcome: "failed",
+    });
   });
 
   it("RERANKER_BUSYをretryableなtyped errorへ正規化する", async () => {

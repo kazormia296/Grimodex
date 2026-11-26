@@ -92,4 +92,4 @@ mod outcome_audit;
 #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
 pub use outcome_audit::synthetic_embedded_outcomes_for_test;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
