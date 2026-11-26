@@ -8,6 +8,8 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const progressDeliveries = vi.hoisted(() => [] as unknown[][]);
+const questionDeliveries = vi.hoisted(() => [] as unknown[][]);
+const knownSenderIds = vi.hoisted(() => new Set<number>());
 vi.mock("../../src/features/chat/contextBuilder", () => ({
   ensureTokenizer: async () => undefined,
   countTokens: (text: string) => text.length,
@@ -22,7 +24,12 @@ vi.mock("./events.js", async (importOriginal) => {
     sendMainEventToWindow: (
       ...args: Parameters<typeof actual.sendMainEventToWindow>
     ) => {
-      progressDeliveries.push(args);
+      if (args[1] === "mastra:agent-turn-question") {
+        questionDeliveries.push(args);
+      } else {
+        progressDeliveries.push(args);
+      }
+      return knownSenderIds.has(args[0] as number);
     },
   };
 });
@@ -38,8 +45,16 @@ import type { NapiBackendLike } from "../shared/ipcContract.js";
 import type { CoreReadContext } from "../shared/mastraRead/ports.js";
 import { createReadExecutors } from "../shared/readDomain/core/readExecutors.js";
 import type {
+  MastraAgentTurnAnswerRequest,
   MastraAgentTurnStartRequest,
   MastraAgentTurnStartResult,
+  MastraAgentTurnQuestionPayload,
+  MastraAgentTurnQuestionToolName,
+  MastraAgentTurnUiToolResult,
+} from "../shared/mastraAgentTurnWire.js";
+import {
+  MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS,
+  MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT_MS,
 } from "../shared/mastraAgentTurnWire.js";
 import {
   ALREADY_INJECTED_CODEX_ENTRY_SUMMARY,
@@ -427,6 +442,7 @@ function harness(
     appendBehavior,
     hooks,
     newContext(senderId = senderSeq++) {
+      knownSenderIds.add(senderId);
       const sender = new FakeSender(senderId);
       const win = new FakeWindow(senderId + 1000);
       const identity = { senderId, workspaceId: WORKSPACE };
@@ -472,6 +488,85 @@ const refusalReason = (value: unknown): string => {
   expect(result.status).toBe("refused");
   return result.reason ?? "";
 };
+
+const UI_TOOL_CALL_ID = "ui-tool-call-1";
+const ASK_USER_ARGS = {
+  questions: [{ question: "Which way?", kind: "single", options: ["A", "B"] }],
+};
+
+function answerForQuestion(
+  question: MastraAgentTurnQuestionPayload,
+): Extract<
+  MastraAgentTurnAnswerRequest,
+  { readonly result: MastraAgentTurnUiToolResult }
+> {
+  return {
+    requestId: question.requestId,
+    result: {
+      toolCallId: question.toolCallId,
+      name: question.toolName,
+      content: { answer: "A" },
+      summary: "answered",
+      tokensUsed: 1,
+    },
+  };
+}
+
+async function startPendingUiQuestion(
+  toolName: MastraAgentTurnQuestionToolName = "get_ui_state",
+  args: Readonly<Record<string, unknown>> = {},
+  ownerOverrides: Partial<Omit<MastraTurnOwnerOptions, "loadReadBindings">> & {
+    policyDbExecute?: NapiBackendLike["dbExecute"];
+  } = {},
+): Promise<{
+  readonly h: Harness;
+  readonly context: MastraTurnInvokeContext;
+  readonly sender: FakeSender;
+  readonly win: FakeWindow;
+  readonly pending: Promise<MastraAgentTurnUiToolResult>;
+  readonly start: Promise<MastraAgentTurnStartResult>;
+  readonly question: MastraAgentTurnQuestionPayload;
+}> {
+  const ownerRef: { owner?: MastraTurnOwner } = {};
+  const pendingReady = deferred<{
+    readonly pending: Promise<MastraAgentTurnUiToolResult>;
+  }>();
+  const h = harness({
+    ...ownerOverrides,
+    runTurn: async (input) => {
+      await sendPreparedRequest(input, auditRequestFor(input), 0);
+      const pending = ownerRef.owner!.requestUiTool(
+        TURN_A,
+        UI_TOOL_CALL_ID,
+        toolName,
+        args,
+      );
+      pendingReady.resolve({ pending });
+      try {
+        await pending;
+      } catch {
+        await sendPreparedRequest(input, auditRequestFor(input), 1);
+      }
+    },
+  });
+  ownerRef.owner = h.owner;
+  const { context, sender, win } = h.newContext();
+  const start = h.owner.start(context, startRequest(TURN_A));
+  void start.catch(() => undefined);
+  const { pending } = await pendingReady.promise;
+  await flush();
+  const delivery = questionDeliveries[questionDeliveries.length - 1];
+  if (!delivery) throw new Error("MP5_QUESTION_NOT_SENT");
+  return {
+    h,
+    context,
+    sender,
+    win,
+    pending,
+    start,
+    question: delivery[2] as MastraAgentTurnQuestionPayload,
+  };
+}
 
 function auditRequestFor(
   input: MastraAgentTurnInput,
@@ -791,6 +886,8 @@ beforeEach(() => {
   nextTurn = 0;
   nextToolUseId = 0;
   progressDeliveries.length = 0;
+  questionDeliveries.length = 0;
+  knownSenderIds.clear();
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -4506,5 +4603,409 @@ describe("the per-send chat policy check (DR-MP4-26)", () => {
     expect(h.sends).toEqual([]);
     expect(h.owner.readsInFlight()).toBe(0);
     expect(h.owner.slotsInUse()).toBe(0);
+  });
+});
+
+describe("MP-5 main-owned question holds", () => {
+  it("binds the question to its turn, tool call and window, then completes the start once", async () => {
+    const { h, context, pending, start, question } =
+      await startPendingUiQuestion();
+    const [windowId, channel, payload] =
+      questionDeliveries[questionDeliveries.length - 1]!;
+    expect(windowId).toBe(context.sender.id);
+    expect(channel).toBe("mastra:agent-turn-question");
+    expect(payload).toEqual(question);
+    expect(question).toMatchObject({
+      turnId: TURN_A,
+      toolCallId: UI_TOOL_CALL_ID,
+      toolName: "get_ui_state",
+    });
+    expect(question.deadlineAt - Date.now()).toBeLessThanOrEqual(
+      MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT_MS,
+    );
+
+    const answer = answerForQuestion(question);
+    await expect(h.owner.answer(context, answer)).resolves.toEqual({
+      status: "accepted",
+      requestId: question.requestId,
+    });
+    await expect(pending).resolves.toEqual(answer.result);
+    expect(questionDeliveries).toHaveLength(1);
+    expect(questionDeliveries[0]?.[0]).toBe(context.sender.id);
+    expect(await start).toMatchObject({ status: "completed", turnId: TURN_A });
+    expect(h.owner.activeTurnCount()).toBe(0);
+    expect(h.types()).toContain("execution.succeeded");
+  });
+
+  it("rejects answers from another sender or window, unknown IDs, mismatched IDs and late duplicates", async () => {
+    const { h, context, pending, start, question } =
+      await startPendingUiQuestion();
+    await expect(
+      h.owner.requestUiTool(TURN_A, "second-tool-call", "get_ui_state", {}),
+    ).rejects.toThrow("MASTRA_AGENT_TURN_QUESTION_ALREADY_PENDING");
+
+    const strangerSender = h.newContext();
+    await expect(
+      h.owner.answer(
+        { ...context, sender: strangerSender.sender },
+        answerForQuestion(question),
+      ),
+    ).resolves.toEqual({ status: "refused", reason: "no-pending" });
+    const strangerWindow = h.newContext();
+    await expect(
+      h.owner.answer(
+        { ...context, win: strangerWindow.win },
+        answerForQuestion(question),
+      ),
+    ).resolves.toEqual({ status: "refused", reason: "no-pending" });
+    await expect(
+      h.owner.answer(context, {
+        requestId: "00000000-0000-4000-8000-000000000099",
+        refusal: "authority-revoked",
+      }),
+    ).resolves.toEqual({ status: "refused", reason: "no-pending" });
+
+    const answer = answerForQuestion(question);
+    if (!("result" in answer)) throw new Error("test answer missing result");
+    await expect(
+      h.owner.answer(context, {
+        ...answer,
+        result: { ...answer.result, toolCallId: "different-tool-call" },
+      }),
+    ).resolves.toEqual({ status: "refused", reason: "invalid" });
+    await expect(
+      h.owner.answer(context, {
+        ...answer,
+        result: { ...answer.result, name: "ask_user" },
+      }),
+    ).resolves.toEqual({ status: "refused", reason: "invalid" });
+
+    const raced = await Promise.all([
+      h.owner.answer(context, answer),
+      h.owner.answer(context, answer),
+    ]);
+    expect(raced.filter((result) => result.status === "accepted")).toHaveLength(
+      1,
+    );
+    expect(raced.filter((result) => result.status === "refused")).toHaveLength(
+      1,
+    );
+    await expect(pending).resolves.toEqual(answer.result);
+    await expect(h.owner.answer(context, answer)).resolves.toMatchObject({
+      status: "refused",
+      reason: "no-pending",
+    });
+    expect(await start).toMatchObject({ status: "completed", turnId: TURN_A });
+  });
+
+  it("closes immediately when Main cannot send the question event", async () => {
+    const h = harness({
+      sendQuestion: () => false,
+      runTurn: async (input) => {
+        await sendPreparedRequest(input, auditRequestFor(input), 0);
+        await h.owner.requestUiTool(
+          TURN_A,
+          UI_TOOL_CALL_ID,
+          "get_ui_state",
+          {},
+        );
+      },
+    });
+    const { context } = h.newContext();
+    await expect(h.owner.start(context, startRequest(TURN_A))).rejects.toThrow(
+      "MASTRA_AGENT_TURN_QUESTION_DELIVERY_FAILED",
+    );
+    expect(questionDeliveries).toHaveLength(0);
+    expect(h.owner.activeTurnCount()).toBe(0);
+    await expect(
+      h.owner.answer(context, {
+        requestId: "00000000-0000-4000-8000-000000000099",
+        refusal: "authority-revoked",
+      }),
+    ).resolves.toEqual({ status: "refused", reason: "no-pending" });
+  });
+
+  it("allows only one same-window question when concurrent requests resume after authority checks", async () => {
+    const authorityGate = deferred<void>();
+    const requests: Promise<MastraAgentTurnUiToolResult>[] = [];
+    const questionsReady = deferred<void>();
+    const ownerRef: { owner?: MastraTurnOwner } = {};
+    let policyChecks = 0;
+    const h = harness({
+      policyDbExecute: async () => {
+        policyChecks += 1;
+        if (policyChecks > 1) await authorityGate.promise;
+        return readAnswer([{ ai_policy: null }]);
+      },
+      runTurn: async (input) => {
+        await sendPreparedRequest(input, auditRequestFor(input), 0);
+        requests.push(
+          ownerRef.owner!.requestUiTool(
+            TURN_A,
+            "first-tool-call",
+            "get_ui_state",
+            {},
+          ),
+          ownerRef.owner!.requestUiTool(
+            TURN_A,
+            "second-tool-call",
+            "get_ui_state",
+            {},
+          ),
+        );
+        void requests[1]!.catch(() => undefined);
+        questionsReady.resolve();
+        await requests[0];
+      },
+    });
+    ownerRef.owner = h.owner;
+    const { context } = h.newContext();
+    const start = h.owner.start(context, startRequest(TURN_A));
+    void start.catch(() => undefined);
+    await questionsReady.promise;
+    await flush();
+    expect(policyChecks).toBe(3);
+
+    authorityGate.resolve();
+    await flush();
+    expect(questionDeliveries).toHaveLength(1);
+    await expect(requests[1]).rejects.toThrow(
+      "MASTRA_AGENT_TURN_QUESTION_ALREADY_PENDING",
+    );
+    const question =
+      questionDeliveries[0]?.[2] as MastraAgentTurnQuestionPayload;
+    await expect(
+      h.owner.answer(context, answerForQuestion(question)),
+    ).resolves.toEqual({ status: "accepted", requestId: question.requestId });
+    await expect(requests[0]).resolves.toMatchObject({ name: "get_ui_state" });
+    await expect(start).resolves.toMatchObject({
+      status: "completed",
+      turnId: TURN_A,
+    });
+  });
+
+  it.each([
+    ["run_app_command", { command: "openSettings" }],
+    ["apply_layout_preset", { preset: "compact" }],
+    ["propose_setting_change", { key: "editor.fontSize", value: "16" }],
+    ["get_ui_state", {}],
+    ["get_app_help_index", {}],
+    ["get_app_help", { id: "topic:layout.presets" }],
+  ] as const)(
+    "DR-MP5-5: %s timeout is a tool failure and the turn continues",
+    async (toolName, args) => {
+      vi.useFakeTimers();
+      const { h, context, pending, start, question } =
+        await startPendingUiQuestion(toolName, args);
+      await vi.advanceTimersByTimeAsync(MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT_MS);
+      await expect(pending).rejects.toThrow(
+        /outcome is uncertain; do not repeat/,
+      );
+      await expect(start).resolves.toMatchObject({
+        status: "completed",
+        turnId: TURN_A,
+      });
+      await expect(
+        h.owner.answer(context, answerForQuestion(question)),
+      ).resolves.toEqual({
+        status: "refused",
+        reason: "no-pending",
+      });
+      expect(h.sends).toHaveLength(2);
+      expect(h.owner.activeTurnCount()).toBe(0);
+    },
+  );
+
+  it("rejects an answer at its absolute deadline even before the timer callback runs", async () => {
+    vi.useFakeTimers();
+    const { h, context, pending, start, question } =
+      await startPendingUiQuestion();
+    vi.setSystemTime(question.deadlineAt);
+    await expect(
+      h.owner.answer(context, answerForQuestion(question)),
+    ).resolves.toEqual({ status: "refused", reason: "no-pending" });
+    await expect(pending).rejects.toThrow(/outcome is uncertain/);
+    await expect(start).resolves.toMatchObject({
+      status: "completed",
+      turnId: TURN_A,
+    });
+    expect(h.owner.activeTurnCount()).toBe(0);
+  });
+
+  it("ends the start at the ask_user deadline with no follow-up send", async () => {
+    vi.useFakeTimers();
+    const { h, context, pending, start, question } =
+      await startPendingUiQuestion("ask_user", ASK_USER_ARGS);
+    expect(question.deadlineAt - Date.now()).toBe(
+      MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS,
+    );
+    await vi.advanceTimersByTimeAsync(MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS);
+    await expect(pending).rejects.toThrow("MASTRA_AGENT_LOOP_STOPPED");
+    expect(await start).toMatchObject({
+      status: "completed",
+      turnId: TURN_A,
+      loopResult: { stoppedReason: "aborted" },
+    });
+    await expect(
+      h.owner.answer(context, answerForQuestion(question)),
+    ).resolves.toEqual({
+      status: "refused",
+      reason: "no-pending",
+    });
+    expect(h.sends).toHaveLength(1);
+    expect(h.owner.activeTurnCount()).toBe(0);
+  });
+
+  it("Stop consumes the hold before a late answer", async () => {
+    const { h, context, pending, start, question } =
+      await startPendingUiQuestion();
+    expect(h.owner.cancel(context, { turnId: TURN_A })).toMatchObject({
+      status: "ok",
+      found: true,
+    });
+    await expect(pending).rejects.toThrow("MASTRA_AGENT_LOOP_STOPPED");
+    expect(await start).toMatchObject({ status: "completed", turnId: TURN_A });
+    await expect(
+      h.owner.answer(context, answerForQuestion(question)),
+    ).resolves.toEqual({
+      status: "refused",
+      reason: "no-pending",
+    });
+  });
+
+  it("a renderer authority refusal consumes the hold and ends the start", async () => {
+    const { h, context, pending, start, question } =
+      await startPendingUiQuestion();
+    await expect(
+      h.owner.answer(context, {
+        requestId: question.requestId,
+        refusal: "authority-revoked",
+      }),
+    ).resolves.toEqual({ status: "accepted", requestId: question.requestId });
+    await expect(pending).rejects.toThrow("MASTRA_AGENT_LOOP_STOPPED");
+    expect(await start).toMatchObject({
+      status: "completed",
+      turnId: TURN_A,
+      loopResult: { stoppedReason: "aborted" },
+    });
+    expect(h.sends).toHaveLength(1);
+    expect(h.owner.activeTurnCount()).toBe(0);
+  });
+
+  it("authority loss while accepting an answer stops before another send", async () => {
+    let policyChecks = 0;
+    const { h, context, pending, start, question } =
+      await startPendingUiQuestion(
+        "get_ui_state",
+        {},
+        {
+          policyDbExecute: async () => {
+            policyChecks += 1;
+            if (policyChecks === 3) throw new Error("authority revoked");
+            return readAnswer([{ ai_policy: null }]);
+          },
+        },
+      );
+    await expect(
+      h.owner.answer(context, answerForQuestion(question)),
+    ).resolves.toEqual({ status: "accepted", requestId: question.requestId });
+    await expect(pending).rejects.toThrow("MASTRA_AGENT_LOOP_STOPPED");
+    expect(await start).toMatchObject({
+      status: "completed",
+      loopResult: { stoppedReason: "aborted" },
+    });
+    expect(policyChecks).toBe(3);
+    expect(h.sends).toHaveLength(1);
+  });
+
+  it("rechecks chat policy after the answer and does not pass a revoked result to the tool", async () => {
+    let policyChecks = 0;
+    const { h, context, pending, start, question } =
+      await startPendingUiQuestion(
+        "get_ui_state",
+        {},
+        {
+          policyDbExecute: async () => {
+            policyChecks += 1;
+            return readAnswer([
+              { ai_policy: policyChecks === 3 ? "off" : null },
+            ]);
+          },
+        },
+      );
+    expect(questionDeliveries).toHaveLength(1);
+    await expect(
+      h.owner.answer(context, answerForQuestion(question)),
+    ).resolves.toEqual({ status: "accepted", requestId: question.requestId });
+    await expect(pending).rejects.toThrow("MASTRA_AGENT_LOOP_STOPPED");
+    expect(await start).toMatchObject({
+      status: "completed",
+      loopResult: { stoppedReason: "aborted" },
+    });
+    expect(policyChecks).toBe(3);
+    expect(h.sends).toHaveLength(1);
+  });
+
+  it.each(["profile", "workspace", "quit"] as const)(
+    "forced %s interruption consumes the hold and ends start",
+    async (cause) => {
+      const { h, context, pending, start, question } =
+        await startPendingUiQuestion();
+      if (cause === "profile") await h.owner.quiesceForProfileEgress();
+      if (cause === "workspace") {
+        const lease = await h.owner.quiesceForWorkspaceSwitch();
+        await lease.resume(false);
+      }
+      if (cause === "quit") await h.owner.shutdown();
+      await expect(pending).rejects.toThrow("MASTRA_AGENT_TURN_ABORTED");
+      await expect(start).rejects.toThrow("MASTRA_AGENT_TURN_ABORTED");
+      await expect(
+        h.owner.answer(context, answerForQuestion(question)),
+      ).resolves.toEqual({
+        status: "refused",
+        reason: "no-pending",
+      });
+      expect(h.owner.activeTurnCount()).toBe(0);
+      expect(h.terminalsOf()).toHaveLength(1);
+    },
+  );
+
+  it.each([
+    "destroyed",
+    "render-process-gone",
+    "navigation",
+    "closed",
+  ] as const)(
+    "screen loss (%s) consumes the hold and ends start",
+    async (event) => {
+      const { h, context, sender, win, pending, start, question } =
+        await startPendingUiQuestion();
+      if (event === "destroyed") sender.emit("destroyed");
+      if (event === "render-process-gone") sender.emit("render-process-gone");
+      if (event === "navigation") {
+        sender.emit("did-start-navigation", {
+          isMainFrame: true,
+          isSameDocument: false,
+        });
+      }
+      if (event === "closed") win.emit("closed");
+      await expect(pending).rejects.toThrow("MASTRA_AGENT_TURN_ABORTED");
+      await expect(start).rejects.toThrow("MASTRA_AGENT_TURN_ABORTED");
+      await expect(
+        h.owner.answer(context, answerForQuestion(question)),
+      ).resolves.toEqual({
+        status: "refused",
+        reason: "no-pending",
+      });
+      expect(h.owner.activeTurnCount()).toBe(0);
+    },
+  );
+
+  it("does not read resumeData or approved from tool context or answers", () => {
+    const source = readFileSync(
+      new URL("./mastraTurnOwner.ts", import.meta.url),
+      "utf8",
+    );
+    expect(source).not.toMatch(/\b(?:resumeData|approved)\b/u);
   });
 });

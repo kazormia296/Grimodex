@@ -5,8 +5,9 @@
  * - Main's gate: `mastra_agent_turn_start` and `mastra_agent_turn_cancel` are
  *   answered with a typed `gate-closed` refusal before the caller identity, the
  *   profile gate, the key store or any handler is reached, unless the journey
- *   seam opened the gate at startup. A launch of the product never does; there
- *   is no other opener. The gate is Main's only: there is no Native entry and
+ *   seam opened the gate at startup. The answer command is a separate return
+ *   path and has no pending work when this gate is closed. The gate is Main's
+ *   only: there is no Native entry and
  *   no Native method behind it (DR-MP3-2), so this file never opens one.
  * - The journey seam: a launch that is not packaged (the environment is then
  *   not read at all), runs with `CI=true`, carries this route's own owner token
@@ -21,7 +22,8 @@
  *   checked, the request is re-checked with the wire's parser, and an admitted
  *   command goes to the turn owner (`mastraTurnOwner.ts`, 3c). Without an owner
  *   (3b's shape, and the tests of the route alone) an admitted `start` is
- *   refused as `unsupported` and `cancel` answers `found: false`.
+ *   refused as `unsupported`, `cancel` answers `found: false`, and `answer`
+ *   returns `no-pending`.
  *
  * This file imports no `@mastra/*` (a static test holds it); the owner loads the
  * runtime, and only while this gate is open.
@@ -47,6 +49,7 @@ import type {
   ShellCommandHandlers,
 } from "../shared/ipcContract.js";
 import type {
+  MastraAgentTurnAnswerRequest,
   MastraAgentTurnCancelRequest,
   MastraAgentTurnStartRequest,
 } from "../shared/mastraAgentTurnWire.js";
@@ -199,8 +202,8 @@ export interface MastraAgentTurnInvokeContext {
 }
 
 /**
- * What the route needs of the turn owner (`mastraTurnOwner.ts`): the two
- * commands, for a request the route has already admitted and parsed.
+ * What the route needs of the turn owner (`mastraTurnOwner.ts`): start/cancel
+ * for admitted requests and the parsed answer path.
  */
 export interface MastraAgentTurnOwnerPort {
   /** A start's answer value (a refusal or the completed turn), or a rejection. */
@@ -212,6 +215,10 @@ export interface MastraAgentTurnOwnerPort {
     context: MastraAgentTurnInvokeContext,
     request: MastraAgentTurnCancelRequest,
   ): unknown;
+  answer(
+    context: MastraAgentTurnInvokeContext,
+    request: MastraAgentTurnAnswerRequest,
+  ): Promise<unknown>;
 }
 
 export interface MastraAgentTurnRoute {
@@ -233,8 +240,8 @@ export interface MastraAgentTurnRoute {
     context: MastraAgentTurnInvokeContext,
   ): Envelope | null;
   /**
-   * The shell handlers of the two commands (they re-check the request). These
-   * carry no sender, so they never reach the owner: a start is `unsupported`.
+   * Context-less shell handlers: start is `unsupported`, cancel is a no-op,
+   * and answer finds no pending question.
    */
   readonly handlers: ShellCommandHandlers;
   /**
@@ -314,9 +321,11 @@ export function createMastraAgentTurnRoute(
       }),
     [MASTRA_AGENT_TURN_ANSWER_COMMAND]: async (args) => {
       const parsed = parseMastraAgentTurnAnswerRequest(args);
-      return parsed.ok
-        ? { status: "refused", reason: "no-pending" }
-        : { status: "refused", reason: "invalid" };
+      if (!parsed.ok) return { status: "refused", reason: "invalid" };
+      if (!open || !owner || !context) {
+        return { status: "refused", reason: "no-pending" };
+      }
+      return owner.answer(context, parsed.value);
     },
   });
 

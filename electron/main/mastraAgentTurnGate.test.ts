@@ -516,6 +516,35 @@ describe("Main's gate", () => {
     ).resolves.toEqual({ status: "refused", reason: "invalid" });
   });
 
+  it("routes a parsed answer to the owner with the sending window and issued identity", async () => {
+    const answer = vi.fn(async (_context, request) => ({
+      status: "accepted",
+      requestId: request.requestId,
+    }));
+    const owner: MastraAgentTurnOwnerPort = {
+      start: async () => ({}),
+      cancel: () => ({}),
+      answer,
+    };
+    const r = await rig({ launch: activeLaunch(), owner });
+    const request = {
+      requestId: "0f14e45f-ceea-467e-a5d4-1b9c6d0e2f3a",
+      refusal: "authority-revoked",
+    };
+    expect(
+      valueOf(await r.invoke(MASTRA_AGENT_TURN_ANSWER_COMMAND, request)),
+    ).toEqual({ status: "accepted", requestId: request.requestId });
+    expect(answer).toHaveBeenCalledOnce();
+    expect(answer.mock.calls[0]![0]).toMatchObject({
+      sender: r.sender,
+      win: r.win,
+    });
+    expect(
+      r.gate.isIssuedCallerIdentity?.(answer.mock.calls[0]![0].callerIdentity),
+    ).toBe(true);
+    expect(answer.mock.calls[0]![1]).toEqual(request);
+  });
+
   it("refuses both commands with a typed gate-closed value before identity, the profile gate and any backend call", async () => {
     mocks.app.isPackaged = true;
     const r = await rig();
@@ -812,6 +841,10 @@ describe("with the gate open (3b: the checks run, a start is not run)", () => {
         seen.push({ command: "cancel", context, request });
         return { status: "ok", turnId: request.turnId, found: true };
       },
+      answer: async (_context, request) => ({
+        status: "accepted",
+        requestId: request.requestId,
+      }),
     };
     const r = await rig({ launch: activeLaunch(), owner });
     expect(
@@ -837,6 +870,7 @@ describe("with the gate open (3b: the checks run, a start is not run)", () => {
     const owner: MastraAgentTurnOwnerPort = {
       start: () => Promise.reject(new Error("MASTRA_AGENT_TURN_ABORTED: quit")),
       cancel: () => ({ status: "ok", turnId: TURN_ID, found: false }),
+      answer: async () => ({ status: "refused", reason: "no-pending" }),
     };
     const r = await rig({ launch: activeLaunch(), owner });
     const start = await r.invoke(MASTRA_AGENT_TURN_START_COMMAND, START);
@@ -847,7 +881,11 @@ describe("with the gate open (3b: the checks run, a start is not run)", () => {
   it("an invalid request never reaches the owner, and a closed gate never reaches it either", async () => {
     const start = vi.fn(async () => ({}));
     const cancel = vi.fn(() => ({}));
-    const owner: MastraAgentTurnOwnerPort = { start, cancel };
+    const owner: MastraAgentTurnOwnerPort = {
+      start,
+      cancel,
+      answer: vi.fn(async () => ({ status: "refused", reason: "no-pending" })),
+    };
     const open = await rig({ launch: activeLaunch(), owner });
     expect(
       valueOf(
@@ -872,7 +910,11 @@ describe("with the gate open (3b: the checks run, a start is not run)", () => {
     const start = vi.fn(async () => ({}));
     const route = createMastraAgentTurnRoute({
       open: true,
-      owner: { start, cancel: vi.fn(() => ({})) },
+      owner: {
+        start,
+        cancel: vi.fn(() => ({})),
+        answer: async () => ({ status: "refused", reason: "no-pending" }),
+      },
     });
     expect(
       await route.handlers[MASTRA_AGENT_TURN_START_COMMAND]!(START),
