@@ -22,6 +22,9 @@ use crate::narrative_extraction::change_feed::{
     AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeEventInput,
     NarrativeChangeOrigin,
 };
+use crate::narrative_extraction::{
+    append_event_existence_decisions_in_tx, EventExistenceChange, RemovedVia,
+};
 use crate::narrative_extraction::rotate_epoch_for_restore_in_tx;
 
 mod restore_links;
@@ -2978,6 +2981,7 @@ pub fn apply_project_snapshot_restore(
         // as the foreign key would, once the snapshot's rows are in.
         let parked_links = restore_links::park(&transaction, &link_shape, &canonical_inserts)?;
 
+        let mut event_ids_before = None;
         if scopes.contains(&RestoreScope::Body) {
             delete_for_project(
                 &transaction,
@@ -2992,6 +2996,11 @@ pub fn apply_project_snapshot_restore(
                 &payload.project_id,
             )?;
             if snapshot_has_aux(&transaction, &payload.snapshot_id, "events")? {
+                event_ids_before = Some(live_id_set(
+                    &transaction,
+                    "SELECT id FROM events WHERE project_id = ?1",
+                    &payload.project_id,
+                )?);
                 delete_for_project(
                     &transaction,
                     "events",
@@ -3188,6 +3197,22 @@ pub fn apply_project_snapshot_restore(
             chunk_start = chunk_end;
         }
 
+        if let Some(before) = event_ids_before {
+            let after = live_id_set(
+                &transaction,
+                "SELECT id FROM events WHERE project_id = ?1",
+                &payload.project_id,
+            )?;
+            let removed = before.difference(&after).cloned().collect::<Vec<_>>();
+            append_event_existence_decisions_in_tx(
+                &transaction,
+                &payload.project_id,
+                EventExistenceChange::Removed {
+                    event_ids: &removed,
+                    via: RemovedVia::SnapshotRestore,
+                },
+            )?;
+        }
         let link_dropped = restore_links::restore(&transaction, &link_shape, &parked_links)?;
         restore_links::ensure_nothing_left_parked(&transaction, &link_shape, &parked_links)?;
         let dropped = restore_links::merge_dropped(link_dropped.clone(), &plan_dropped);

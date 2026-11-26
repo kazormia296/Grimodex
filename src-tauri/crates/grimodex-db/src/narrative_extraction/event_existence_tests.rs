@@ -344,3 +344,313 @@ fn only_the_native_existence_writer_can_append_after_apply() {
         assert!(!writer.contains(check));
     }
 }
+
+fn execute(db: &Database, sql: &str) -> anyhow::Result<()> {
+    db.with_conn(|conn| Ok(conn.execute_batch(sql)?))
+}
+
+fn fail_sync(db: &Database) -> anyhow::Result<()> {
+    execute(
+        db,
+        "CREATE TEMP TRIGGER fail_sync BEFORE INSERT ON narrative_proposal_decisions
+                 WHEN NEW.actor_id='native:event-existence-sync'
+                 BEGIN SELECT RAISE(ABORT,'injected version conflict'); END",
+    )
+}
+
+fn check_failure(error: anyhow::Error, replay: bool) {
+    let message = error.to_string();
+    if replay {
+        assert!(
+            message.starts_with("NEX_EXISTENCE_SYNC_FAILED:"),
+            "{error:#}"
+        );
+        assert!(!message.contains("version conflict"), "{error:#}");
+    } else {
+        assert!(
+            !message.starts_with("NEX_EXISTENCE_SYNC_FAILED:"),
+            "{error:#}"
+        );
+        assert!(
+            format!("{error:#}").contains("injected version conflict"),
+            "{error:#}"
+        );
+    }
+}
+
+fn check_event(db: &Database, event: &str, present: bool) -> anyhow::Result<()> {
+    db.with_conn(|conn| {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE project_id=?1 AND id=?2)",
+            params![PROJECT, event],
+            |r| r.get(0),
+        )?;
+        assert_eq!(exists, present, "{event}");
+        Ok(())
+    })
+}
+
+fn check_decisions(db: &Database, proposal: &str, via: Option<&str>) -> anyhow::Result<()> {
+    db.with_conn(|conn| {
+        let routes = conn
+            .prepare(
+                "SELECT json_extract(decision_json, '$.removedVia')
+            FROM narrative_proposal_decisions WHERE proposal_id=?1 AND decision='rejected'",
+            )?
+            .query_map([proposal], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        assert_eq!(routes, via.into_iter().collect::<Vec<_>>(), "{proposal}");
+        assert_eq!(
+            state(conn, proposal)?,
+            if via.is_some() {
+                ("rejected".into(), 2)
+            } else {
+                ("approved".into(), 1)
+            }
+        );
+        Ok(())
+    })
+}
+
+fn handwritten(db: &Database) -> anyhow::Result<Value> {
+    crate::agent_writes::agent_event_create_impl(
+        db,
+        serde_json::from_value(json!({
+            "requestId":"create-hand", "eventId":"hand", "projectId":PROJECT,
+            "sessionId":"session", "surface":"manual", "title":"hand", "ordinal":"z1",
+            "startTime":1, "startGranularity":"day"
+        }))?,
+    )
+}
+
+fn screen_delete(db: &Database, ids: &[&str], bulk: bool) -> anyhow::Result<Value> {
+    let context = serde_json::from_value(json!({
+        "requestId":"screen", "eventUid":"screen-event", "origin":"human",
+        "authorityRoute":"human-direct", "caller":"human-ui",
+        "controls":["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"]
+    }))?;
+    if bulk {
+        let operations: Vec<_> = ids
+            .iter()
+            .map(|id| json!({"kind":"eventDelete","eventId":id,"baseVersion":1}))
+            .collect();
+        crate::chronicle_bulk::agent_chronicle_bulk_mutate_with_authority_impl(
+            db,
+            serde_json::from_value(json!({"projectId":PROJECT,"sessionId":"session",
+                "surface":"manual","requestId":"screen","operations":operations}))?,
+            Some(context),
+        )
+    } else {
+        assert_eq!(ids.len(), 1);
+        agent_event_delete_with_authority_impl(
+            db,
+            AgentEventIdPayload {
+                project_id: PROJECT.into(),
+                session_id: "session".into(),
+                surface: Some("manual".into()),
+                event_id: ids[0].into(),
+                base_version: 1,
+            },
+            context,
+        )
+    }
+}
+
+fn replay(db: &Database, journal: &Value, direction: &str, request: &str) -> anyhow::Result<Value> {
+    crate::agent_writes::agent_undo_journal_impl(
+        db,
+        serde_json::from_value(json!({
+            "projectId":PROJECT,"sessionId":"session","journalId":journal["undoJournalId"],
+            "requestId":request,"direction":direction,"origin":direction,
+            "authorityRoute":"history-replay","caller":"undo-redo-command",
+            "controls":["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"]
+        }))?,
+    )
+}
+
+#[test]
+fn screen_deletes_roll_back_and_retries_return_the_same_receipt() -> anyhow::Result<()> {
+    for bulk in [false, true] {
+        for imported in [false, true] {
+            let db = human_import()?;
+            handwritten(&db)?;
+            let ids: &[&str] = match (imported, bulk) {
+                (false, _) => &["hand"],
+                (true, false) => &["event-one"],
+                (true, true) => &["hand", "event-one", "event-two"],
+            };
+            fail_sync(&db)?;
+            if imported {
+                check_failure(screen_delete(&db, ids, bulk).unwrap_err(), false);
+                for id in ids {
+                    check_event(&db, id, true)?;
+                }
+                check_decisions(&db, "one", None)?;
+                execute(&db, "DROP TRIGGER fail_sync")?;
+            }
+            let result = screen_delete(&db, ids, bulk)?;
+            assert_eq!(screen_delete(&db, ids, bulk)?, result);
+            for id in ids {
+                check_event(&db, id, false)?;
+            }
+            check_decisions(&db, "one", imported.then_some("screen-delete"))?;
+            check_decisions(&db, "two", (imported && bulk).then_some("screen-delete"))?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn replaying_single_and_bulk_deletes_syncs_once_and_only_marks_sync_errors() -> anyhow::Result<()> {
+    for bulk in [false, true] {
+        let db = human_import()?;
+        // Model a pre-X deletion journal: forward deletion left the approval in place.
+        execute(
+            &db,
+            "UPDATE narrative_proposals SET status='held' WHERE id='one'",
+        )?;
+        let journal = screen_delete(&db, &["event-one"], bulk)?;
+        execute(
+            &db,
+            "UPDATE narrative_proposals SET status='approved' WHERE id='one'",
+        )?;
+        replay(&db, &journal, "undo", "undo")?;
+        fail_sync(&db)?;
+        check_failure(replay(&db, &journal, "redo", "redo").unwrap_err(), true);
+        check_event(&db, "event-one", true)?;
+        check_decisions(&db, "one", None)?;
+        execute(&db, "DROP TRIGGER fail_sync")?;
+        let receipt = replay(&db, &journal, "redo", "redo")?;
+        assert_eq!(receipt, replay(&db, &journal, "redo", "redo")?);
+        replay(&db, &journal, "undo", "again-undo")?;
+        replay(&db, &journal, "redo", "again-redo")?;
+        check_event(&db, "event-one", false)?;
+        check_decisions(&db, "one", Some("undo-redo"))?;
+        check_decisions(&db, "two", None)?;
+        let err = replay(&db, &journal, "redo", "stale-redo").unwrap_err();
+        assert!(
+            !err.to_string().contains("NEX_EXISTENCE_SYNC_FAILED:"),
+            "{err:#}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn undo_of_an_event_create_uses_only_its_journal_event_id() -> anyhow::Result<()> {
+    for has_application in [false, true] {
+        let db = human_import()?;
+        let journal = handwritten(&db)?;
+        if has_application {
+            // Import normally has a commit journal. Model an event create journal
+            // targeting the same identity as an existing Application.
+            execute(&db, "INSERT INTO narrative_proposal_applications
+                (id,commit_id,proposal_id,revision_id,applied_entity_kind,applied_entity_id,created_at)
+                SELECT 'hand-application',commit_id,proposal_id,revision_id,'event','hand',created_at
+                  FROM narrative_proposal_applications WHERE proposal_id='one'")?;
+        }
+        fail_sync(&db)?;
+        if has_application {
+            check_failure(replay(&db, &journal, "undo", "undo").unwrap_err(), true);
+            check_event(&db, "hand", true)?;
+            execute(&db, "DROP TRIGGER fail_sync")?;
+        }
+        replay(&db, &journal, "undo", "undo")?;
+        check_event(&db, "hand", false)?;
+        check_decisions(&db, "one", has_application.then_some("undo-redo"))?;
+        check_decisions(&db, "two", None)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn commit_undo_rolls_back_and_revokes_each_removed_import_once() -> anyhow::Result<()> {
+    let db = human_import()?;
+    handwritten(&db)?;
+    let commit: String = db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT id FROM narrative_apply_commits WHERE project_id=?1",
+            [PROJECT],
+            |r| r.get(0),
+        )?)
+    })?;
+    let undo = || {
+        crate::narrative_extraction::narrative_extraction_undo_commit(
+            &db,
+            serde_json::from_value(json!({"projectId":PROJECT, "sessionId":"session",
+                                     "commitId":commit,"requestId":"undo-import"}))?,
+        )
+    };
+    fail_sync(&db)?;
+    check_failure(undo().unwrap_err(), false);
+    for proposal in ["one", "two"] {
+        check_event(&db, &format!("event-{proposal}"), true)?;
+        check_decisions(&db, proposal, None)?;
+    }
+    execute(&db, "DROP TRIGGER fail_sync")?;
+    assert_eq!(undo()?, undo()?);
+    for proposal in ["one", "two"] {
+        check_event(&db, &format!("event-{proposal}"), false)?;
+        check_decisions(&db, proposal, Some("commit-undo"))?;
+    }
+    check_event(&db, "hand", true)?;
+    Ok(())
+}
+
+#[test]
+fn restore_revokes_only_before_minus_after_and_rolls_back_on_failure() -> anyhow::Result<()> {
+    use crate::project_snapshots::{
+        apply_project_snapshot_restore, build_canonical_restore_plan, create_project_snapshot,
+        ApplyProjectSnapshotRestorePayload, RestoreScope,
+    };
+    for keep_two in [false, true] {
+        let db = human_import()?;
+        let one =
+            db.with_conn(|conn| crate::agent_writes::collect_event_snapshot(conn, "event-one"))?;
+        // Capture the actual desired snapshot. An already-missing old import
+        // must keep its approval, just like an event retained across restore.
+        execute(&db, "DELETE FROM events WHERE id='event-one'")?;
+        if !keep_two {
+            execute(&db, "DELETE FROM events WHERE id='event-two'")?;
+        }
+        create_project_snapshot(
+            &db,
+            serde_json::from_value(json!({
+                "projectId":PROJECT, "snapshotId":"snapshot","name":"snapshot","createdAt":"2026-11-25",
+                "treeRows":[{"snapshot_id":"snapshot","node_id":"source","node_type":"scene",
+                             "title":"Scene","sort_order":"a"}],
+                "codexRows":[],"snippetRows":[],"versionIds":[]
+            }))?,
+        )?;
+        db.with_conn(|conn| {
+            crate::agent_writes::apply_event_snapshot(conn, PROJECT, &one, Some(1), true)
+        })?;
+        handwritten(&db)?;
+        let scopes = [RestoreScope::Body];
+        let plan = db.with_conn(|conn| {
+            build_canonical_restore_plan(conn, PROJECT, "snapshot", &scopes.into_iter().collect())
+        })?;
+        let payload = ApplyProjectSnapshotRestorePayload {
+            project_id: PROJECT.into(),
+            session_id: "session".into(),
+            request_id: "restore".into(),
+            snapshot_id: "snapshot".into(),
+            scopes: scopes.to_vec(),
+            inserts: plan.inserts,
+        };
+        let restore = || apply_project_snapshot_restore(&db, payload.clone());
+        fail_sync(&db)?;
+        check_failure(restore().unwrap_err(), false);
+        check_event(&db, "event-one", true)?;
+        check_event(&db, "hand", true)?;
+        check_decisions(&db, "one", None)?;
+        execute(&db, "DROP TRIGGER fail_sync")?;
+        assert_eq!(restore()?, restore()?);
+        check_event(&db, "event-one", false)?;
+        check_event(&db, "hand", false)?;
+        check_event(&db, "event-two", keep_two)?;
+        check_decisions(&db, "one", Some("snapshot-restore"))?;
+        check_decisions(&db, "two", None)?;
+    }
+    Ok(())
+}

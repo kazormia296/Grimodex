@@ -31,6 +31,9 @@ use crate::narrative_extraction::change_feed::{
     append_narrative_change_transaction_in_tx, AppendNarrativeChangeTransactionInput,
     NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
 };
+use crate::narrative_extraction::{
+    append_event_existence_decisions_in_tx, EventExistenceChange, RemovedVia,
+};
 use crate::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
 use crate::Database;
 
@@ -1230,6 +1233,7 @@ pub(crate) fn replay_chronicle_bulk_in_tx(
     // Restore/delete event rows first. Associations for restored deletes are
     // deferred until every selected event row exists, so a relation between
     // two events deleted by the same action can be restored safely.
+    let mut removed_event_ids = Vec::new();
     let mut association_restores = Vec::new();
     for (index, (target_state, current_state)) in
         target.events.iter_mut().zip(&current.events).enumerate()
@@ -1265,6 +1269,7 @@ pub(crate) fn replay_chronicle_bulk_in_tx(
             (None, Some(current_snapshot)) => {
                 let expected = event_snapshot_version(current_snapshot)?;
                 delete_event_cascade(conn, project_id, &target_state.event_id, Some(expected))?;
+                removed_event_ids.push(target_state.event_id.clone());
                 target_state.last_version = expected;
             }
             (None, None) => {
@@ -1275,6 +1280,7 @@ pub(crate) fn replay_chronicle_bulk_in_tx(
             }
         }
     }
+    crate::agent_writes::sync_replayed_event_removals(conn, project_id, &removed_event_ids)?;
     for index in association_restores {
         let target_state = &target.events[index];
         let snapshot = target_state
@@ -1695,6 +1701,7 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
             let before_scene_feed =
                 collect_full_scene_feed_states(conn, &payload.project_id, &scene_feed_ids)?;
 
+            let mut removed_event_ids = Vec::new();
             let mut event_results = Vec::new();
             let mut scene_results = Vec::new();
             let mut scene_scope_refresh_events = Vec::new();
@@ -1712,6 +1719,7 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
                             event_id,
                             Some(*base_version),
                         )?;
+                        removed_event_ids.push(event_id.clone());
                         event_results.push(BulkEventResult {
                             kind: "eventDelete".to_string(),
                             event_id: event_id.clone(),
@@ -1774,6 +1782,14 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
                     }
                 }
             }
+            append_event_existence_decisions_in_tx(
+                conn,
+                &payload.project_id,
+                EventExistenceChange::Removed {
+                    event_ids: &removed_event_ids,
+                    via: RemovedVia::ScreenDelete,
+                },
+            )?;
             let after_event_feed =
                 collect_full_event_feed_states(conn, &payload.project_id, &event_feed_ids)?;
             let after_scene_feed =

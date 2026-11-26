@@ -1008,6 +1008,64 @@ fn assert_restore_runs_inside_the_create_transaction(hit: &Hit, sources: &[Sourc
 }
 
 #[test]
+fn event_removal_sql_and_cascade_callers_are_accounted_for() {
+    let sources = load_production_sources(&repo_root());
+    let mut actual = scan_table_hits(&sources, &["events"])
+        .into_iter()
+        .filter(|hit| hit.verb_table == "DELETE events")
+        .map(|hit| (hit.file, hit.function))
+        .collect::<Vec<_>>();
+    let mut expected = vec![
+        ("grimodex-db/src/agent_writes.rs", "delete_event_cascade"),
+        ("grimodex-db/src/agent_writes.rs", "delete_event_cascade"),
+        (
+            "grimodex-db/src/agent_writes.rs",
+            "agent_event_delete_with_request_and_authority_impl",
+        ),
+        (
+            "grimodex-db/src/project_snapshots.rs",
+            "apply_project_snapshot_restore",
+        ),
+        // Legacy MCP helper. The standalone tool dispatches to the shared single delete.
+        ("grimodex-mcp/src/db.rs", "chronicle_delete_event"),
+    ]
+    .into_iter()
+    .map(|(path, name)| (format!("src-tauri/crates/{path}"), name.to_owned()))
+    .collect::<Vec<_>>();
+    expected.sort();
+    actual.sort();
+    assert_eq!(actual, expected);
+
+    let mut callers = Vec::new();
+    for source in &sources {
+        for (index, line) in source.lines.iter().enumerate() {
+            assert!(
+                !line.contains("chronicle_delete_event(")
+                    || line.contains("fn chronicle_delete_event("),
+                "legacy MCP deletion bypasses existence sync at {}:{}",
+                source.path,
+                index + 1
+            );
+            if line.contains("delete_event_cascade(") && !line.contains("fn delete_event_cascade(")
+            {
+                callers.push(enclosing_function(&source.lines, index).unwrap().1);
+            }
+        }
+    }
+    callers.sort();
+    assert_eq!(
+        callers,
+        [
+            "agent_chronicle_bulk_mutate_with_authority_impl",
+            "apply_event_redo_in_tx",
+            "replay_chronicle_bulk_in_tx",
+            "revert_event_undo_in_tx",
+            "undo_one_entity",
+        ]
+    );
+}
+
+#[test]
 fn scope_writer_coverage_manifest_is_complete() {
     let root = repo_root();
     let sources = load_production_sources(&root);
