@@ -1,0 +1,39 @@
+# 判断の記録：SRD/1 の X（出来事が年表から無くなったら、提案の承認を外す）
+
+設計は `docs/plans/nir1-chronicle-scene-review-apply-delta-proposal-1-draft.md`（行の確認は確認 138）。ここには、実装で決めた技術の判断と、見つけたことを残す。
+
+## DR-SRD-X-1　書き手
+
+- 決定を書くのは、`repository.rs` の新しい関数 `append_event_existence_decisions_in_tx` だけ。transaction の中でないと失敗する。
+- 既にある `append_decision_on_conn`・`append_decision_on_conn_with_reuse` は変えない。本体の SHA-256 を試験で固定する。
+- X2 の対象は、1 回の探索で引く。`narrative_proposal_applications` を結合の外側に置き、出来事の id の集合は `json_each` で渡す。索引は足さない（大きい作品で測ってから決める）。
+- 型付きの Entity／Relation の提案には働かない（X3 (2)）。
+
+## DR-SRD-X-2　入口と `removedVia`
+
+| 入口 | 場所 | `removedVia` |
+| ---- | ---- | ------------ |
+| 単体の削除 | `agent_writes.rs`。DELETE の直後 | 画面は `screen-delete`。main が固定する route `interactive-agent-command` は `agent-delete`。MCP の surface は `mcp-delete` |
+| まとめて削除 | `chronicle_bulk.rs`。処理の後に 1 回 | `screen-delete` |
+| 元に戻す・やり直す | `event` の journal は `row.entity_id`、`chronicle_bulk` の journal は「あり→なし」の枝で id を集める | `undo-redo` |
+| スナップショットの復元 | `project_snapshots.rs`。出来事を入れ替えるときだけ、前にあって後に無い id | `snapshot-restore` |
+| 取り込みの取り消し | `narrative_extraction/undo.rs`。消した出来事の id をまとめて 1 回 | `commit-undo` |
+
+共有の `delete_event_cascade` には置かない（X4）。出来事を消す呼び出し元の集合は、`narrative_scope_storage_authority.rs` の試験で固定する。
+
+## DR-SRD-X-3　失敗の扱い
+
+- 却下の書き込みは、削除と同じ transaction。書けなければ、操作の全部が失敗して戻る（X5）。
+- 元に戻す・やり直すの中の書き込みの失敗だけに、`NEX_EXISTENCE_SYNC_FAILED:` を付ける。元のエラーは Native のログに残す。
+- renderer は、この符号を version の衝突の文言より先に判定し、履歴の 2 つの積みを変えない（HK2・HK3）。
+
+## 見つけたこと（X の前からの挙動。直さない）
+
+- MCP の削除は、成功の後に同じ `request_id` を再送すると、Native の保存済みの応答に届く前の存在の確認で「見つからない」になる。二重の書き込みは無い。取り込んだ出来事は、MCP の経路では欄の所有の検査で消せない（試験で確かめた）ので、X の動きには影響しない。
+
+## PR の前に残ること
+
+- §5 の 0 (c)：評価の workspace で、版が違う・承認でない提案の件数を数える。確認 59 の件数（この規則より前に消された出来事の提案）も合わせる。
+- §5 の 0 (f)：取り込み済みで却下の提案を、ほかの検査（review bundle の読み込み、取り込みの取り消し・やり直し、場面から提案を引く読み取り、IR の再構築）が受け付けることの試験。
+- HK1 の符号が、napi と IPC を通って renderer に届くことの確かめ。
+- ADR 004・005・006 と Gate B2 の追補（§2.6 の表）。
