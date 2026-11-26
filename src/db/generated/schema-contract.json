@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 47,
+  "schemaVersion": 48,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -4290,6 +4290,602 @@
       ],
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE idempotency_requests ( domain TEXT NOT NULL, request_id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, payload_hash TEXT NOT NULL, tombstone_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY (domain, request_id) )"
+    },
+    "identity_correction_applications": {
+      "kind": "table",
+      "columns": {
+        "created_at": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "input_proposal_revision_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "origin_proposal_revision_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "outcome": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "output_proposal_revision_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "reapply_batch_id": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "reason_code": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "route": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "rule_revision_id": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "identity_correction_rule_revisions",
+          "from": "rule_revision_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "narrative_proposal_revisions",
+          "from": "output_proposal_revision_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 2,
+          "sequence": 0,
+          "table": "narrative_proposal_revisions",
+          "from": "input_proposal_revision_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 3,
+          "sequence": 0,
+          "table": "narrative_proposal_revisions",
+          "from": "origin_proposal_revision_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 4,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "reapply_batch_id",
+            "input_proposal_revision_id",
+            "rule_revision_id"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE identity_correction_applications ( id TEXT PRIMARY KEY NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, origin_proposal_revision_id TEXT NOT NULL REFERENCES narrative_proposal_revisions(id) ON DELETE CASCADE, input_proposal_revision_id TEXT NOT NULL REFERENCES narrative_proposal_revisions(id) ON DELETE CASCADE, output_proposal_revision_id TEXT REFERENCES narrative_proposal_revisions(id) ON DELETE CASCADE, rule_revision_id TEXT NOT NULL REFERENCES identity_correction_rule_revisions(id) ON DELETE CASCADE, route TEXT NOT NULL, outcome TEXT NOT NULL, reason_code TEXT NOT NULL, reapply_batch_id TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(reapply_batch_id, input_proposal_revision_id, rule_revision_id), CHECK((outcome = 'applied' AND output_proposal_revision_id IS NOT NULL) OR (outcome <> 'applied' AND output_proposal_revision_id IS NULL)) )"
+    },
+    "identity_correction_rule_revisions": {
+      "kind": "table",
+      "columns": {
+        "actor_id": {
+          "ordinal": 17,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "canonical_name": {
+          "ordinal": 12,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 18,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "entry_id": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "keep_previous_as_alias": {
+          "ordinal": 13,
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "kind": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "other_entry_id": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "provenance_kind": {
+          "ordinal": 15,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "provenance_ref": {
+          "ordinal": 16,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "reason": {
+          "ordinal": 14,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "request_id": {
+          "ordinal": 19,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "revision_no": {
+          "ordinal": 3,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "rule_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "scope_kind": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "scope_scene_id": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "state": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "supersedes_revision_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "surface_text": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "identity_correction_rule_revisions",
+          "from": "project_id",
+          "to": "project_id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 0,
+          "sequence": 1,
+          "table": "identity_correction_rule_revisions",
+          "from": "supersedes_revision_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "project_id",
+            "id"
+          ]
+        },
+        {
+          "columns": [
+            "project_id",
+            "request_id"
+          ]
+        },
+        {
+          "columns": [
+            "rule_id",
+            "revision_no"
+          ]
+        },
+        {
+          "columns": [
+            "supersedes_revision_id"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE identity_correction_rule_revisions ( id TEXT PRIMARY KEY NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, rule_id TEXT NOT NULL, revision_no INTEGER NOT NULL CHECK(revision_no >= 1), supersedes_revision_id TEXT UNIQUE, state TEXT NOT NULL CHECK(state IN ('active', 'retired')), kind TEXT NOT NULL CHECK(kind IN ( 'must-link-surface', 'cannot-link-entries', 'preferred-binding', 'preferred-canonical-name', 'suppressed-merge-candidate' )), scope_kind TEXT NOT NULL CHECK(scope_kind IN ('any', 'exact')), scope_scene_id TEXT, surface_text TEXT, entry_id TEXT, other_entry_id TEXT, canonical_name TEXT, keep_previous_as_alias INTEGER CHECK(keep_previous_as_alias IN (0, 1)), reason TEXT, provenance_kind TEXT NOT NULL, provenance_ref TEXT, actor_id TEXT NOT NULL, created_at TEXT NOT NULL, request_id TEXT NOT NULL, UNIQUE(rule_id, revision_no), UNIQUE(project_id, request_id), UNIQUE(project_id, id), FOREIGN KEY(project_id, supersedes_revision_id) REFERENCES identity_correction_rule_revisions(project_id, id) ON DELETE CASCADE, CHECK((revision_no = 1 AND supersedes_revision_id IS NULL) OR (revision_no > 1 AND supersedes_revision_id IS NOT NULL)), CHECK((scope_kind = 'any' AND scope_scene_id IS NULL) OR (scope_kind = 'exact' AND scope_scene_id IS NOT NULL)), CHECK( (kind IN ('must-link-surface', 'preferred-binding') AND surface_text IS NOT NULL AND entry_id IS NOT NULL AND other_entry_id IS NULL AND canonical_name IS NULL AND keep_previous_as_alias IS NULL) OR (kind IN ('cannot-link-entries', 'suppressed-merge-candidate') AND entry_id IS NOT NULL AND other_entry_id IS NOT NULL AND entry_id < other_entry_id AND surface_text IS NULL AND canonical_name IS NULL AND keep_previous_as_alias IS NULL) OR (kind = 'preferred-canonical-name' AND entry_id IS NOT NULL AND canonical_name IS NOT NULL AND keep_previous_as_alias IS NOT NULL AND keep_previous_as_alias IN (0, 1) AND surface_text IS NULL AND other_entry_id IS NULL) ) )"
+    },
+    "identity_lineage_mappings": {
+      "kind": "table",
+      "columns": {
+        "operation_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "ordinal": {
+          "ordinal": 1,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "source_disposition": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_entry_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_entry_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "identity_lineage_operations",
+          "from": "operation_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE identity_lineage_mappings ( operation_id TEXT NOT NULL REFERENCES identity_lineage_operations(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL, source_entry_id TEXT NOT NULL, target_entry_id TEXT NOT NULL, source_disposition TEXT NOT NULL CHECK(source_disposition IN ('retired', 'retained')), PRIMARY KEY(operation_id, ordinal) )"
+    },
+    "identity_lineage_operations": {
+      "kind": "table",
+      "columns": {
+        "actor_id": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "ai_disclosure_choice": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "applied_change_sequence": {
+          "ordinal": 9,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "narrative_commit_id": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "op_kind": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "reason": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "request_id": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "undoes_operation_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "identity_lineage_operations",
+          "from": "project_id",
+          "to": "project_id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 0,
+          "sequence": 1,
+          "table": "identity_lineage_operations",
+          "from": "undoes_operation_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "project_id",
+            "request_id"
+          ]
+        },
+        {
+          "columns": [
+            "project_id",
+            "id"
+          ]
+        },
+        {
+          "columns": [
+            "undoes_operation_id"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE identity_lineage_operations ( id TEXT PRIMARY KEY NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, op_kind TEXT NOT NULL CHECK(op_kind IN ('merge', 'split', 'undo')), undoes_operation_id TEXT UNIQUE, reason TEXT, actor_id TEXT NOT NULL, created_at TEXT NOT NULL, request_id TEXT NOT NULL, narrative_commit_id TEXT, applied_change_sequence INTEGER NOT NULL, ai_disclosure_choice TEXT, UNIQUE(project_id, id), UNIQUE(project_id, request_id), CHECK((op_kind = 'undo' AND undoes_operation_id IS NOT NULL) OR (op_kind IN ('merge', 'split') AND undoes_operation_id IS NULL)), FOREIGN KEY(project_id, undoes_operation_id) REFERENCES identity_lineage_operations(project_id, id) ON DELETE CASCADE )"
+    },
+    "identity_lineage_reference_assignments": {
+      "kind": "table",
+      "columns": {
+        "from_entry_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "operation_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "ordinal": {
+          "ordinal": 1,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "reference_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "reference_kind": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "to_entry_id": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "identity_lineage_operations",
+          "from": "operation_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE identity_lineage_reference_assignments ( operation_id TEXT NOT NULL REFERENCES identity_lineage_operations(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL, reference_kind TEXT NOT NULL, reference_id TEXT NOT NULL, from_entry_id TEXT NOT NULL, to_entry_id TEXT NOT NULL, PRIMARY KEY(operation_id, ordinal) )"
     },
     "impact_review_baselines": {
       "kind": "table",
@@ -15758,6 +16354,150 @@
       ],
       "createSql": "CREATE INDEX idx_idempotency_requests_project_created ON idempotency_requests(project_id, created_at)"
     },
+    "idx_identity_correction_applications_input_revision": {
+      "table": "identity_correction_applications",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "input_proposal_revision_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_identity_correction_applications_input_revision ON identity_correction_applications(input_proposal_revision_id)"
+    },
+    "idx_identity_correction_applications_origin_revision": {
+      "table": "identity_correction_applications",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "origin_proposal_revision_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_identity_correction_applications_origin_revision ON identity_correction_applications(origin_proposal_revision_id)"
+    },
+    "idx_identity_correction_applications_output_revision": {
+      "table": "identity_correction_applications",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "output_proposal_revision_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_identity_correction_applications_output_revision ON identity_correction_applications(output_proposal_revision_id)"
+    },
+    "idx_identity_correction_applications_project_batch": {
+      "table": "identity_correction_applications",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "reapply_batch_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_identity_correction_applications_project_batch ON identity_correction_applications(project_id, reapply_batch_id)"
+    },
+    "idx_identity_correction_applications_rule_revision": {
+      "table": "identity_correction_applications",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "rule_revision_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_identity_correction_applications_rule_revision ON identity_correction_applications(rule_revision_id)"
+    },
+    "idx_identity_correction_rules_project_entry": {
+      "table": "identity_correction_rule_revisions",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "entry_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_identity_correction_rules_project_entry ON identity_correction_rule_revisions(project_id, entry_id)"
+    },
+    "idx_identity_correction_rules_project_kind": {
+      "table": "identity_correction_rule_revisions",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "kind"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_identity_correction_rules_project_kind ON identity_correction_rule_revisions(project_id, kind)"
+    },
+    "idx_identity_correction_rules_project_other_entry": {
+      "table": "identity_correction_rule_revisions",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "other_entry_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_identity_correction_rules_project_other_entry ON identity_correction_rule_revisions(project_id, other_entry_id)"
+    },
+    "idx_identity_correction_rules_project_scope_scene": {
+      "table": "identity_correction_rule_revisions",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "scope_scene_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_identity_correction_rules_project_scope_scene ON identity_correction_rule_revisions(project_id, scope_scene_id)"
+    },
+    "idx_identity_lineage_reference_assignments_reference": {
+      "table": "identity_lineage_reference_assignments",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "reference_kind"
+        },
+        {
+          "ordinal": 1,
+          "column": "reference_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_identity_lineage_reference_assignments_reference ON identity_lineage_reference_assignments(reference_kind, reference_id)"
+    },
     "idx_impact_baselines_project": {
       "table": "impact_review_baselines",
       "unique": false,
@@ -18290,6 +19030,21 @@
     "grimodex_clock_idempotency_requests_ad": "CREATE TRIGGER \"grimodex_clock_idempotency_requests_ad\" AFTER DELETE ON \"idempotency_requests\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_idempotency_requests_ai": "CREATE TRIGGER \"grimodex_clock_idempotency_requests_ai\" AFTER INSERT ON \"idempotency_requests\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_idempotency_requests_au": "CREATE TRIGGER \"grimodex_clock_idempotency_requests_au\" AFTER UPDATE ON \"idempotency_requests\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_identity_correction_applications_ad": "CREATE TRIGGER \"grimodex_clock_identity_correction_applications_ad\" AFTER DELETE ON \"identity_correction_applications\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_identity_correction_applications_ai": "CREATE TRIGGER \"grimodex_clock_identity_correction_applications_ai\" AFTER INSERT ON \"identity_correction_applications\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_identity_correction_applications_au": "CREATE TRIGGER \"grimodex_clock_identity_correction_applications_au\" AFTER UPDATE ON \"identity_correction_applications\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_identity_correction_rule_revisions_ad": "CREATE TRIGGER \"grimodex_clock_identity_correction_rule_revisions_ad\" AFTER DELETE ON \"identity_correction_rule_revisions\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_identity_correction_rule_revisions_ai": "CREATE TRIGGER \"grimodex_clock_identity_correction_rule_revisions_ai\" AFTER INSERT ON \"identity_correction_rule_revisions\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_identity_correction_rule_revisions_au": "CREATE TRIGGER \"grimodex_clock_identity_correction_rule_revisions_au\" AFTER UPDATE ON \"identity_correction_rule_revisions\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_identity_lineage_mappings_ad": "CREATE TRIGGER \"grimodex_clock_identity_lineage_mappings_ad\" AFTER DELETE ON \"identity_lineage_mappings\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_identity_lineage_mappings_ai": "CREATE TRIGGER \"grimodex_clock_identity_lineage_mappings_ai\" AFTER INSERT ON \"identity_lineage_mappings\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_identity_lineage_mappings_au": "CREATE TRIGGER \"grimodex_clock_identity_lineage_mappings_au\" AFTER UPDATE ON \"identity_lineage_mappings\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_identity_lineage_operations_ad": "CREATE TRIGGER \"grimodex_clock_identity_lineage_operations_ad\" AFTER DELETE ON \"identity_lineage_operations\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_identity_lineage_operations_ai": "CREATE TRIGGER \"grimodex_clock_identity_lineage_operations_ai\" AFTER INSERT ON \"identity_lineage_operations\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_identity_lineage_operations_au": "CREATE TRIGGER \"grimodex_clock_identity_lineage_operations_au\" AFTER UPDATE ON \"identity_lineage_operations\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_identity_lineage_reference_assignments_ad": "CREATE TRIGGER \"grimodex_clock_identity_lineage_reference_assignments_ad\" AFTER DELETE ON \"identity_lineage_reference_assignments\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_identity_lineage_reference_assignments_ai": "CREATE TRIGGER \"grimodex_clock_identity_lineage_reference_assignments_ai\" AFTER INSERT ON \"identity_lineage_reference_assignments\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_identity_lineage_reference_assignments_au": "CREATE TRIGGER \"grimodex_clock_identity_lineage_reference_assignments_au\" AFTER UPDATE ON \"identity_lineage_reference_assignments\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_impact_review_baselines_ad": "CREATE TRIGGER \"grimodex_clock_impact_review_baselines_ad\" AFTER DELETE ON \"impact_review_baselines\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_impact_review_baselines_ai": "CREATE TRIGGER \"grimodex_clock_impact_review_baselines_ai\" AFTER INSERT ON \"impact_review_baselines\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_impact_review_baselines_au": "CREATE TRIGGER \"grimodex_clock_impact_review_baselines_au\" AFTER UPDATE ON \"impact_review_baselines\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
@@ -18620,6 +19375,11 @@
     "grimodex_clock_undo_journal_ad": "CREATE TRIGGER \"grimodex_clock_undo_journal_ad\" AFTER DELETE ON \"undo_journal\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_undo_journal_ai": "CREATE TRIGGER \"grimodex_clock_undo_journal_ai\" AFTER INSERT ON \"undo_journal\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_undo_journal_au": "CREATE TRIGGER \"grimodex_clock_undo_journal_au\" AFTER UPDATE ON \"undo_journal\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "identity_correction_applications_immutable_update": "CREATE TRIGGER identity_correction_applications_immutable_update BEFORE UPDATE ON identity_correction_applications BEGIN SELECT RAISE(ABORT, 'ERM_IDENTITY_CORRECTION_APPLICATION_IMMUTABLE'); END",
+    "identity_correction_rule_revisions_immutable_update": "CREATE TRIGGER identity_correction_rule_revisions_immutable_update BEFORE UPDATE ON identity_correction_rule_revisions BEGIN SELECT RAISE(ABORT, 'ERM_IDENTITY_RULE_REVISION_IMMUTABLE'); END",
+    "identity_lineage_mappings_immutable_update": "CREATE TRIGGER identity_lineage_mappings_immutable_update BEFORE UPDATE ON identity_lineage_mappings BEGIN SELECT RAISE(ABORT, 'ERM_IDENTITY_LINEAGE_MAPPING_IMMUTABLE'); END",
+    "identity_lineage_operations_immutable_update": "CREATE TRIGGER identity_lineage_operations_immutable_update BEFORE UPDATE ON identity_lineage_operations BEGIN SELECT RAISE(ABORT, 'ERM_IDENTITY_LINEAGE_OPERATION_IMMUTABLE'); END",
+    "identity_lineage_reference_assignments_immutable_update": "CREATE TRIGGER identity_lineage_reference_assignments_immutable_update BEFORE UPDATE ON identity_lineage_reference_assignments BEGIN SELECT RAISE(ABORT, 'ERM_IDENTITY_LINEAGE_REFERENCE_ASSIGNMENT_IMMUTABLE'); END",
     "narrative_application_compensation_guard": "CREATE TRIGGER narrative_application_compensation_guard BEFORE INSERT ON narrative_proposal_applications WHEN (NEW.application_kind = 'normal' AND NEW.compensates_application_id IS NOT NULL) OR (NEW.application_kind = 'compensation' AND NEW.compensates_application_id IS NULL) BEGIN SELECT RAISE(ABORT, 'NEX_APPLICATION_COMPENSATION_SHAPE_INVALID'); END",
     "narrative_application_immutable_delete": "CREATE TRIGGER narrative_application_immutable_delete BEFORE DELETE ON narrative_proposal_applications BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLICATION'); END",
     "narrative_application_immutable_update": "CREATE TRIGGER narrative_application_immutable_update BEFORE UPDATE ON narrative_proposal_applications BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLICATION'); END",

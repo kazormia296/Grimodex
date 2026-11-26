@@ -64,7 +64,16 @@ const REPO_ROOT = path.resolve(
 // SCHEMA_VERSION 46 adds the Native-owned commit sequence and lineage tables
 // (DR-DBC-3). SCHEMA_VERSION 47 adds closed Mastra memory storage only; neither
 // adds a narrative semantic interpreter, so the concern matrix is unchanged.
-export const EXPECTED_SCHEMA_VERSION = 47;
+// SCHEMA_VERSION 48 adds the five ERM tables (identity_correction_rule_revisions,
+// identity_lineage_operations, identity_lineage_mappings,
+// identity_lineage_reference_assignments, identity_correction_applications;
+// DR-M3-39). They hold author-declared identity rules and their history, not
+// AI interpretation; only the registered human-direct native writer
+// (identity-correction.rule-revision) writes them, the renderer authorizer
+// rejects generic reads and writes (closed), and nothing applies the rules
+// yet, so the concern matrix is unchanged. Applying them (ERM PR 3-5)
+// revisits this.
+export const EXPECTED_SCHEMA_VERSION = 48;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,

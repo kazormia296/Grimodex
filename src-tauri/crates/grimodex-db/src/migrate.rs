@@ -4700,7 +4700,7 @@ impl Database {
             if current < 45 {
                 Self::release_contended_freshness_exhaustions_v45(&conn)?;
             }
-            // SCHEMA 47 / DR-M3-39: immutable identity correction rules,
+            // SCHEMA 48 / DR-M3-39: immutable identity correction rules,
             // lineage records, and rule application history. Codex and scene
             // IDs intentionally remain unlinked so scoped snapshot restores
             // cannot erase these records or be blocked by them.

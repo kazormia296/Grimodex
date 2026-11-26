@@ -795,8 +795,9 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// triggers ([`EN_FTS_DELETE_TRIGGERS`]): the language guard they once had is
 /// gone, and the repair sweeps the orphaned `_en` rows the guard left behind.
 /// Version 47 adds six closed Mastra memory tables and their cascade edges.
+/// Version 48 adds the five immutable ERM tables (DR-M3-39).
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 47
+    Ok(SCHEMA_VERSION == 48
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?

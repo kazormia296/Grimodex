@@ -219,7 +219,7 @@ fn erm_fresh_install_creates_all_objects() {
     db.migrate().expect("install current schema");
     db.with_conn(|conn| {
         let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        assert_eq!(version, 47);
+        assert_eq!(version, 48);
         assert!(grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?);
         Ok(())
     })
@@ -227,7 +227,7 @@ fn erm_fresh_install_creates_all_objects() {
 }
 
 #[test]
-fn erm_schema_47_migrates_version_46_and_installs_all_objects() {
+fn erm_schema_48_migrates_version_47_and_installs_all_objects() {
     let db = current_schema_memory().expect("v47 current schema fixture");
     db.with_conn(|conn| {
         conn.execute_batch(
@@ -236,16 +236,16 @@ fn erm_schema_47_migrates_version_46_and_installs_all_objects() {
              DROP TABLE identity_lineage_mappings;
              DROP TABLE identity_lineage_operations;
              DROP TABLE identity_correction_rule_revisions;
-             PRAGMA user_version = 46;",
+             PRAGMA user_version = 47;",
         )?;
         Ok(())
     })
-    .expect("prepare a version-46 database");
+    .expect("prepare a version-47 database");
 
-    db.migrate().expect("migrate version 46 to 47");
+    db.migrate().expect("migrate version 47 to 48");
     db.with_conn(|conn| {
         let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        assert_eq!(version, 47);
+        assert_eq!(version, 48);
         assert!(grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?);
         for table in [
             "identity_correction_rule_revisions",
@@ -267,7 +267,7 @@ fn erm_schema_47_migrates_version_46_and_installs_all_objects() {
 }
 
 #[test]
-fn erm_schema_47_marker_only_upgrade_from_46_requires_checkpoint() {
+fn erm_schema_48_marker_only_upgrade_from_47_requires_checkpoint() {
     let db = current_schema_memory().expect("v47 current schema fixture");
     let schema_version_before = db
         .with_conn(|conn| {
@@ -275,18 +275,18 @@ fn erm_schema_47_marker_only_upgrade_from_46_requires_checkpoint() {
         })
         .expect("read SQLite schema version");
     db.with_conn(|conn| {
-        conn.pragma_update(None, "user_version", 46)?;
+        conn.pragma_update(None, "user_version", 47)?;
         Ok(())
     })
     .expect("set previous schema marker");
 
     db.migrate()
-        .expect("finalize converged 46 marker without waiting");
+        .expect("finalize converged 47 marker without waiting");
     db.with_conn(|conn| {
         let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         let schema_version_after: i64 =
             conn.pragma_query_value(None, "schema_version", |row| row.get(0))?;
-        assert_eq!(version, 47);
+        assert_eq!(version, 48);
         assert_eq!(schema_version_after, schema_version_before);
         assert!(grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?);
         Ok(())
