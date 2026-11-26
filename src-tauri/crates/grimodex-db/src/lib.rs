@@ -930,6 +930,7 @@ pub mod domain_writes;
 pub mod editor_stickies;
 mod execute;
 pub mod foreshadow;
+pub mod identity_correction;
 pub mod fs_replace;
 mod fts;
 mod idempotency;
