@@ -15488,7 +15488,10 @@ export async function createBrowserMock(
                   : null,
               source_chat_message_id: row.source_chat_message_id ?? null,
               content: bodyContent(row),
-              source_marker: null,
+              tags_cache: null,
+              content_source: null,
+              usage_count: 0,
+              version: 0,
               created_at: row.created_at,
               updated_at: row.updated_at,
             };
