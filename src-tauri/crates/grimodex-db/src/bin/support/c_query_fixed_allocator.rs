@@ -1,11 +1,15 @@
 //! Product worker only. Disjoint, statically backed Talc 5.1.1 Manual heaps;
 //! Q is the Rust/SQLite default, and S is available only in an explicit scope.
+//! Each heap and its arena is a slot's own all-zero static (`.bss`), apart
+//! from the allocator's non-zero `Once` states, so the executable does not
+//! carry the arenas.
 use super::WORKER_ALLOCATOR;
 use rusqlite::ffi;
 use std::{
     alloc::{GlobalAlloc, Layout},
     cell::{Cell, UnsafeCell},
     ffi::{c_int, c_void},
+    marker::PhantomData,
     mem::size_of,
     ptr,
     sync::{
@@ -84,7 +88,8 @@ impl FirstSqliteAllocationFailure {
 const _: () = assert!(size_of::<FirstSqliteAllocationFailure>() <= 64);
 
 thread_local! {
-    static SCRATCH_SCOPE: Cell<*const WorkerAllocator> = const { Cell::new(ptr::null()) };
+    // The owning allocator's address, as an identity only.
+    static SCRATCH_SCOPE: Cell<*const ()> = const { Cell::new(ptr::null()) };
 }
 
 struct Spin(AtomicBool);
@@ -111,22 +116,28 @@ unsafe impl RawMutex for Spin {
 }
 
 type Heap = TalcLock<Spin, Manual>;
+
+/// A Talc heap and its arena, as one static of its slot. Talc's `Manual`
+/// heap and the spin lock start all zero, so a region alone is placed in
+/// `.bss`. Inside the allocator it shared a static with the `Once` states,
+/// which are not zero, and was emitted to `.data` with its arena.
 #[repr(C, align(16))]
-struct Region<const N: usize> {
+pub struct Region<const N: usize> {
     heap: Heap,
     backing: UnsafeCell<[u8; N]>,
 }
 // Talc mutates the claimed backing only while holding its lock.
 unsafe impl<const N: usize> Sync for Region<N> {}
 impl<const N: usize> Region<N> {
-    const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             heap: Heap::new(Manual),
             backing: UnsafeCell::new([0; N]),
         }
     }
     fn claim(&self) -> bool {
-        // SAFETY: each region is claimed once and remains static until process exit.
+        // SAFETY: each region is one slot's static, claimed once by the one
+        // allocator of that slot, and remains static until process exit.
         unsafe {
             self.heap
                 .lock()
@@ -141,6 +152,51 @@ impl<const N: usize> Region<N> {
     }
 }
 
+/// Names the static that holds one allocator's Q region.
+///
+/// # Safety
+/// `region` returns the same static on every call, and no other slot returns
+/// it.
+pub unsafe trait QuerySlot: 'static {
+    fn region() -> &'static Region<QUERY_DATA>;
+}
+
+/// Names the static that holds one allocator's S region.
+///
+/// # Safety
+/// As for [`QuerySlot`].
+pub unsafe trait ScratchSlot: 'static {
+    fn region() -> &'static Region<SCRATCH_DATA>;
+}
+
+/// Declares a zero-sized slot that owns one region static.
+macro_rules! region_slot {
+    ($(#[$meta:meta])* $vis:vis $name:ident: $slot:ident, $bytes:expr) => {
+        $(#[$meta])*
+        $vis struct $name;
+        // SAFETY: the static is local to this impl, so only this slot returns it.
+        unsafe impl $slot for $name {
+            fn region() -> &'static Region<{ $bytes }> {
+                static REGION: Region<{ $bytes }> = Region::new();
+                &REGION
+            }
+        }
+    };
+}
+
+region_slot!(
+    /// The product worker's Q region.
+    pub ProductQuery: QuerySlot,
+    QUERY_DATA
+);
+region_slot!(
+    /// The product worker's S region.
+    pub ProductScratch: ScratchSlot,
+    SCRATCH_DATA
+);
+/// The process allocator of the product worker.
+pub type ProductAllocator = WorkerAllocator<ProductQuery, ProductScratch>;
+
 // Count Talc controls and allocator state against Q; the fixed 64-byte reserve
 // also covers the opt-in receipt. The TLS owner pointer is included; S stays in S.
 const QUERY_DATA: usize = QUERY_BYTES
@@ -148,26 +204,26 @@ const QUERY_DATA: usize = QUERY_BYTES
     - size_of::<Once>() * 2
     - size_of::<AtomicU8>()
     - size_of::<AtomicUsize>()
-    - size_of::<*const WorkerAllocator>()
+    - size_of::<*const ()>()
     - 64;
 const SCRATCH_DATA: usize = SCRATCH_BYTES - size_of::<Region<0>>() - 64;
 
-pub struct WorkerAllocator {
-    query: Region<QUERY_DATA>,
-    scratch: Region<SCRATCH_DATA>,
+pub struct WorkerAllocator<Q: QuerySlot, S: ScratchSlot> {
     query_once: Once,
     scratch_once: Once,
     scratch_state: AtomicU8,
     scratch_live: AtomicUsize,
     #[cfg(feature = "nir1-c-query-test-seam")]
     sqlite_failure_receipt: FirstSqliteAllocationFailure,
+    slots: PhantomData<fn() -> (Q, S)>,
 }
-const _: () = assert!(
-    size_of::<WorkerAllocator>() - size_of::<Region<SCRATCH_DATA>>()
-        + size_of::<*const WorkerAllocator>()
-        <= QUERY_BYTES
-);
-const _: () = assert!(size_of::<Region<SCRATCH_DATA>>() <= SCRATCH_BYTES);
+/// Q's footprint: the allocator's state, the TLS owner pointer, and Q's region.
+const QUERY_FOOTPRINT: usize =
+    size_of::<ProductAllocator>() + size_of::<*const ()>() + size_of::<Region<QUERY_DATA>>();
+/// S's footprint: its region.
+const SCRATCH_FOOTPRINT: usize = size_of::<Region<SCRATCH_DATA>>();
+const _: () = assert!(QUERY_FOOTPRINT <= QUERY_BYTES);
+const _: () = assert!(SCRATCH_FOOTPRINT <= SCRATCH_BYTES);
 
 #[allow(dead_code)] // Registration callsites opt into this only at proven temporary-owner boundaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,31 +232,45 @@ pub enum ScratchScopeError {
     Sealed,
 }
 
-struct ScratchScopeGuard<'a>(&'a WorkerAllocator);
-impl Drop for ScratchScopeGuard<'_> {
+struct ScratchScopeGuard<'a, Q: QuerySlot, S: ScratchSlot>(&'a WorkerAllocator<Q, S>);
+impl<Q: QuerySlot, S: ScratchSlot> Drop for ScratchScopeGuard<'_, Q, S> {
     fn drop(&mut self) {
         SCRATCH_SCOPE.with(|scope| scope.set(ptr::null()));
         self.0.scratch_state.store(SCRATCH_OPEN, Ordering::Release);
     }
 }
 
-impl WorkerAllocator {
-    pub const fn new() -> Self {
+impl<Q: QuerySlot, S: ScratchSlot> WorkerAllocator<Q, S> {
+    /// # Safety
+    /// At most one allocator may exist for a slot pair: the allocator claims
+    /// the slots' regions, and a second one would claim them again.
+    pub const unsafe fn new() -> Self {
         Self {
-            query: Region::new(),
-            scratch: Region::new(),
             query_once: Once::new(),
             scratch_once: Once::new(),
             scratch_state: AtomicU8::new(SCRATCH_OPEN),
             scratch_live: AtomicUsize::new(0),
             #[cfg(feature = "nir1-c-query-test-seam")]
             sqlite_failure_receipt: FirstSqliteAllocationFailure::new(),
+            slots: PhantomData,
         }
+    }
+
+    fn query(&self) -> &'static Region<QUERY_DATA> {
+        Q::region()
+    }
+
+    fn scratch(&self) -> &'static Region<SCRATCH_DATA> {
+        S::region()
+    }
+
+    fn identity(&self) -> *const () {
+        (self as *const Self).cast()
     }
 
     fn init_query(&self) {
         self.query_once.call_once(|| {
-            if !self.query.claim() {
+            if !self.query().claim() {
                 std::process::abort();
             }
         });
@@ -208,7 +278,7 @@ impl WorkerAllocator {
 
     fn init_scratch(&self) {
         self.scratch_once.call_once(|| {
-            if !self.scratch.claim() {
+            if !self.scratch().claim() {
                 std::process::abort();
             }
         });
@@ -233,7 +303,7 @@ impl WorkerAllocator {
             #[cfg(feature = "nir1-c-query-test-seam")]
             if let Some(failure) = failure {
                 if self.sqlite_failure_receipt_enabled() {
-                    let heap = self.query.heap.lock();
+                    let heap = self.query().heap.lock();
                     let counters = heap.counters();
                     self.record_sqlite_allocation_failure(
                         failure,
@@ -246,12 +316,12 @@ impl WorkerAllocator {
         }
         self.init_query();
         // SAFETY: Talc owns the claimed Q region and serializes heap mutation.
-        let allocation = unsafe { self.query.heap.alloc(layout) };
+        let allocation = unsafe { self.query().heap.alloc(layout) };
         #[cfg(feature = "nir1-c-query-test-seam")]
         if allocation.is_null() && self.sqlite_failure_receipt_enabled() {
             if let Some(failure) = failure {
                 let (claimed, available) = {
-                    let heap = self.query.heap.lock();
+                    let heap = self.query().heap.lock();
                     let counters = heap.counters();
                     (counters.claimed_bytes, counters.available_bytes)
                 };
@@ -336,7 +406,7 @@ impl WorkerAllocator {
         if !self.sqlite_failure_receipt_enabled() {
             return;
         }
-        let heap = self.query.heap.lock();
+        let heap = self.query().heap.lock();
         let counters = heap.counters();
         self.record_sqlite_allocation_failure(
             failure,
@@ -346,7 +416,7 @@ impl WorkerAllocator {
     }
 
     fn scratch_scope_is_current(&self) -> bool {
-        SCRATCH_SCOPE.with(|scope| ptr::eq(scope.get(), self))
+        SCRATCH_SCOPE.with(|scope| ptr::eq(scope.get(), self.identity()))
     }
 
     fn scratch_alloc(&self, layout: Layout) -> *mut u8 {
@@ -358,12 +428,12 @@ impl WorkerAllocator {
         }
         self.init_scratch();
         // SAFETY: this thread owns the explicit S scope; Talc serializes the heap.
-        let allocation = unsafe { self.scratch.heap.alloc(layout) };
+        let allocation = unsafe { self.scratch().heap.alloc(layout) };
         if !allocation.is_null()
             && update_scratch_live(&self.scratch_live, |live| live.checked_add(1)).is_err()
         {
             // The count cannot overflow for a 64 MiB heap; still fail closed.
-            unsafe { self.scratch.heap.dealloc(allocation, layout) };
+            unsafe { self.scratch().heap.dealloc(allocation, layout) };
             return ptr::null_mut();
         }
         allocation
@@ -395,7 +465,7 @@ impl WorkerAllocator {
                 ScratchScopeError::Sealed
             });
         }
-        SCRATCH_SCOPE.with(|scope| scope.set(self as *const Self));
+        SCRATCH_SCOPE.with(|scope| scope.set(self.identity()));
         let guard = ScratchScopeGuard(self);
         let value = operation();
         drop(guard);
@@ -423,10 +493,10 @@ impl WorkerAllocator {
     }
 
     fn origin(&self, ptr: *mut u8) -> Option<(&Heap, bool)> {
-        if self.query.contains(ptr) {
-            Some((&self.query.heap, false))
-        } else if self.scratch.contains(ptr) {
-            Some((&self.scratch.heap, true))
+        if self.query().contains(ptr) {
+            Some((&self.query().heap, false))
+        } else if self.scratch().contains(ptr) {
+            Some((&self.scratch().heap, true))
         } else {
             None
         }
@@ -449,7 +519,7 @@ fn update_scratch_live(
     }
 }
 
-unsafe impl GlobalAlloc for WorkerAllocator {
+unsafe impl<Q: QuerySlot, S: ScratchSlot> GlobalAlloc for WorkerAllocator<Q, S> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if self.scratch_scope_is_current() {
             self.scratch_alloc(layout)
@@ -501,12 +571,15 @@ unsafe extern "C" fn x_malloc(n: c_int) -> *mut c_void {
     sqlite_malloc(&WORKER_ALLOCATOR, n)
 }
 
-unsafe fn sqlite_malloc(allocator: &WorkerAllocator, n: c_int) -> *mut c_void {
+unsafe fn sqlite_malloc<Q: QuerySlot, S: ScratchSlot>(
+    allocator: &WorkerAllocator<Q, S>,
+    n: c_int,
+) -> *mut c_void {
     sqlite_malloc_with_context(allocator, n, SqliteAllocationKind::XMalloc, 0)
 }
 
-unsafe fn sqlite_malloc_with_context(
-    allocator: &WorkerAllocator,
+unsafe fn sqlite_malloc_with_context<Q: QuerySlot, S: ScratchSlot>(
+    allocator: &WorkerAllocator<Q, S>,
     n: c_int,
     kind: SqliteAllocationKind,
     old_capacity: usize,
@@ -537,30 +610,36 @@ unsafe extern "C" fn x_free(ptr: *mut c_void) {
     sqlite_free(&WORKER_ALLOCATOR, ptr);
 }
 
-unsafe fn sqlite_free(allocator: &WorkerAllocator, ptr: *mut c_void) {
+unsafe fn sqlite_free<Q: QuerySlot, S: ScratchSlot>(
+    allocator: &WorkerAllocator<Q, S>,
+    ptr: *mut c_void,
+) {
     if ptr.is_null() {
         return;
     }
     let raw = ptr.cast::<u8>().sub(size_of::<SqliteHeader>());
-    if !allocator.query.contains(raw) {
+    if !allocator.query().contains(raw) {
         std::process::abort();
     }
     let cap = raw.cast::<SqliteHeader>().read().capacity;
     let Some(layout) = sql_layout(cap) else {
         std::process::abort()
     };
-    unsafe { allocator.query.heap.dealloc(raw, layout) };
+    unsafe { allocator.query().heap.dealloc(raw, layout) };
 }
 unsafe extern "C" fn x_size(ptr: *mut c_void) -> c_int {
     sqlite_size(&WORKER_ALLOCATOR, ptr)
 }
 
-unsafe fn sqlite_size(allocator: &WorkerAllocator, ptr: *mut c_void) -> c_int {
+unsafe fn sqlite_size<Q: QuerySlot, S: ScratchSlot>(
+    allocator: &WorkerAllocator<Q, S>,
+    ptr: *mut c_void,
+) -> c_int {
     if ptr.is_null() {
         return 0;
     }
     let raw = ptr.cast::<u8>().sub(size_of::<SqliteHeader>());
-    if !allocator.query.contains(raw) {
+    if !allocator.query().contains(raw) {
         std::process::abort();
     }
     let cap = raw.cast::<SqliteHeader>().read().capacity;
@@ -570,7 +649,11 @@ unsafe extern "C" fn x_realloc(ptr: *mut c_void, n: c_int) -> *mut c_void {
     sqlite_realloc(&WORKER_ALLOCATOR, ptr, n)
 }
 
-unsafe fn sqlite_realloc(allocator: &WorkerAllocator, ptr: *mut c_void, n: c_int) -> *mut c_void {
+unsafe fn sqlite_realloc<Q: QuerySlot, S: ScratchSlot>(
+    allocator: &WorkerAllocator<Q, S>,
+    ptr: *mut c_void,
+    n: c_int,
+) -> *mut c_void {
     if n <= 0 {
         sqlite_free(allocator, ptr);
         return ptr::null_mut();
@@ -579,7 +662,7 @@ unsafe fn sqlite_realloc(allocator: &WorkerAllocator, ptr: *mut c_void, n: c_int
         return sqlite_malloc_with_context(allocator, n, SqliteAllocationKind::XRealloc, 0);
     }
     let raw = ptr.cast::<u8>().sub(size_of::<SqliteHeader>());
-    if !allocator.query.contains(raw) {
+    if !allocator.query().contains(raw) {
         std::process::abort();
     }
     let old = raw.cast::<SqliteHeader>().read().capacity;
@@ -598,7 +681,7 @@ unsafe fn sqlite_realloc(allocator: &WorkerAllocator, ptr: *mut c_void, n: c_int
     // SQLite's pointer is required to originate in Q; S is never a callback heap.
     let new = unsafe {
         allocator
-            .query
+            .query()
             .heap
             .realloc(raw, old_layout, new_layout.size())
     };
@@ -609,7 +692,7 @@ unsafe fn sqlite_realloc(allocator: &WorkerAllocator, ptr: *mut c_void, n: c_int
                 return ptr::null_mut();
             }
             let (claimed, available) = {
-                let heap = allocator.query.heap.lock();
+                let heap = allocator.query().heap.lock();
                 let counters = heap.counters();
                 (counters.claimed_bytes, counters.available_bytes)
             };
@@ -669,7 +752,11 @@ mod tests {
     use super::*;
     use std::alloc::GlobalAlloc;
 
-    static TEST_ALLOCATOR: WorkerAllocator = WorkerAllocator::new();
+    region_slot!(TestQuery: QuerySlot, QUERY_DATA);
+    region_slot!(TestScratch: ScratchSlot, SCRATCH_DATA);
+    // SAFETY: the only allocator of the test slots.
+    static TEST_ALLOCATOR: WorkerAllocator<TestQuery, TestScratch> =
+        unsafe { WorkerAllocator::new() };
 
     #[test]
     fn scratch_live_updates_reject_overflow_and_underflow() {
@@ -701,8 +788,8 @@ mod tests {
         let small = Layout::from_size_align(16, 8).unwrap();
         let q = unsafe { TEST_ALLOCATOR.alloc(small) };
         assert!(!q.is_null());
-        assert!(TEST_ALLOCATOR.query.contains(q));
-        assert!(!TEST_ALLOCATOR.scratch.contains(q));
+        assert!(TEST_ALLOCATOR.query().contains(q));
+        assert!(!TEST_ALLOCATOR.scratch().contains(q));
         unsafe { ptr::write_bytes(q, 0x5a, small.size()) };
 
         let mut expected =
@@ -725,11 +812,21 @@ mod tests {
             "Q realloc must not fall back to S"
         );
         assert!((0..small.size()).all(|i| unsafe { q.add(i).read() == 0x5a }));
-        let query_before = TEST_ALLOCATOR.query.heap.lock().counters().allocated_bytes;
+        let query_before = TEST_ALLOCATOR
+            .query()
+            .heap
+            .lock()
+            .counters()
+            .allocated_bytes;
         let too_large_query = Layout::from_size_align(QUERY_BYTES, 8).unwrap();
         assert!(unsafe { TEST_ALLOCATOR.alloc(too_large_query) }.is_null());
         assert_eq!(
-            TEST_ALLOCATOR.query.heap.lock().counters().allocated_bytes,
+            TEST_ALLOCATOR
+                .query()
+                .heap
+                .lock()
+                .counters()
+                .allocated_bytes,
             query_before,
             "Q exhaustion must not fall back to S"
         );
@@ -747,33 +844,33 @@ mod tests {
                 let grown_layout = Layout::from_size_align(32, 8).unwrap();
                 let grown = unsafe { TEST_ALLOCATOR.realloc(moving, small, grown_layout.size()) };
                 assert!(!grown.is_null());
-                assert!(TEST_ALLOCATOR.scratch.contains(grown));
+                assert!(TEST_ALLOCATOR.scratch().contains(grown));
                 assert!((0..small.size()).all(|i| unsafe { grown.add(i).read() == 0x42 }));
                 unsafe { TEST_ALLOCATOR.dealloc(grown, grown_layout) };
                 assert_eq!(TEST_ALLOCATOR.scratch_live.load(Ordering::Acquire), 0);
 
                 let s = unsafe { TEST_ALLOCATOR.alloc(small) };
                 assert!(!s.is_null());
-                assert!(TEST_ALLOCATOR.scratch.contains(s));
-                assert!(!TEST_ALLOCATOR.query.contains(s));
+                assert!(TEST_ALLOCATOR.scratch().contains(s));
+                assert!(!TEST_ALLOCATOR.query().contains(s));
                 unsafe { ptr::write_bytes(s, 0x31, small.size()) };
                 assert_eq!(TEST_ALLOCATOR.scratch_live.load(Ordering::Acquire), 1);
 
                 // A Q-origin realloc stays in Q even while this thread selects S.
                 let q_grown = unsafe { TEST_ALLOCATOR.realloc(q, small, 32) };
                 assert!(!q_grown.is_null());
-                assert!(TEST_ALLOCATOR.query.contains(q_grown));
+                assert!(TEST_ALLOCATOR.query().contains(q_grown));
                 assert!((0..small.size()).all(|i| unsafe { q_grown.add(i).read() == 0x5a }));
                 unsafe { TEST_ALLOCATOR.dealloc(q_grown, Layout::from_size_align(32, 8).unwrap()) };
 
                 // SQLite allocation/reallocation bypass the thread-local S selector.
                 let sqlite = unsafe { sqlite_malloc(&TEST_ALLOCATOR, 64) };
                 assert!(!sqlite.is_null());
-                assert!(TEST_ALLOCATOR.query.contains(sqlite.cast()));
-                assert!(!TEST_ALLOCATOR.scratch.contains(sqlite.cast()));
+                assert!(TEST_ALLOCATOR.query().contains(sqlite.cast()));
+                assert!(!TEST_ALLOCATOR.scratch().contains(sqlite.cast()));
                 let sqlite = unsafe { sqlite_realloc(&TEST_ALLOCATOR, sqlite, 128) };
                 assert!(!sqlite.is_null());
-                assert!(TEST_ALLOCATOR.query.contains(sqlite.cast()));
+                assert!(TEST_ALLOCATOR.query().contains(sqlite.cast()));
                 assert_eq!(unsafe { sqlite_size(&TEST_ALLOCATOR, sqlite) }, 128);
                 unsafe { sqlite_free(&TEST_ALLOCATOR, sqlite) };
 
@@ -797,10 +894,20 @@ mod tests {
                 assert!(!max_s.is_null());
                 let fallback_size = QUERY_BYTES / 2;
                 let fallback_layout = Layout::from_size_align(fallback_size, 8).unwrap();
-                let query_before = TEST_ALLOCATOR.query.heap.lock().counters().allocated_bytes;
+                let query_before = TEST_ALLOCATOR
+                    .query()
+                    .heap
+                    .lock()
+                    .counters()
+                    .allocated_bytes;
                 assert!(unsafe { TEST_ALLOCATOR.alloc(fallback_layout) }.is_null());
                 assert_eq!(
-                    TEST_ALLOCATOR.query.heap.lock().counters().allocated_bytes,
+                    TEST_ALLOCATOR
+                        .query()
+                        .heap
+                        .lock()
+                        .counters()
+                        .allocated_bytes,
                     query_before,
                     "S exhaustion must not fall back to Q"
                 );
@@ -835,7 +942,7 @@ mod tests {
             .with_scratch_scope(|| {
                 let s = unsafe { TEST_ALLOCATOR.alloc(small) };
                 assert!(!s.is_null());
-                assert!(TEST_ALLOCATOR.scratch.contains(s));
+                assert!(TEST_ALLOCATOR.scratch().contains(s));
                 unsafe { TEST_ALLOCATOR.dealloc(s, small) };
             })
             .is_ok());
@@ -851,7 +958,7 @@ mod tests {
 
         let after_seal = unsafe { TEST_ALLOCATOR.alloc(small) };
         assert!(!after_seal.is_null());
-        assert!(TEST_ALLOCATOR.query.contains(after_seal));
+        assert!(TEST_ALLOCATOR.query().contains(after_seal));
         unsafe { TEST_ALLOCATOR.dealloc(after_seal, small) };
 
         // Preserve the existing allocator-only SQLite N/N+1 boundary proof.
@@ -871,7 +978,7 @@ mod tests {
         assert!(low > 0);
         let sqlite = unsafe { sqlite_malloc(&TEST_ALLOCATOR, c_int::try_from(low).unwrap()) };
         assert!(!sqlite.is_null(), "N SQLite payload fits with its header");
-        assert!(TEST_ALLOCATOR.query.contains(sqlite.cast()));
+        assert!(TEST_ALLOCATOR.query().contains(sqlite.cast()));
         unsafe {
             sqlite.cast::<u8>().write(0x71);
             sqlite.cast::<u8>().add(low - 1).write(0x7b);
@@ -929,11 +1036,42 @@ mod tests {
         #[cfg(feature = "nir1-c-query-test-seam")]
         assert_eq!(TEST_ALLOCATOR.sqlite_failure_receipt(), Some(first_receipt));
 
-        let q_footprint = size_of::<WorkerAllocator>() - size_of::<Region<SCRATCH_DATA>>()
-            + size_of::<*const WorkerAllocator>();
+        let q_footprint = QUERY_FOOTPRINT;
         assert!(q_footprint <= QUERY_BYTES);
         eprintln!(
             "Q/S Talc boundary: SQLite Q payload N={low}, N+1 rejected; Q static footprint={q_footprint} B; S sealed at zero live allocations"
+        );
+        // Every slot owns a distinct region static: the test allocator never
+        // claims the product worker's regions, and Q and S never overlap.
+        let regions = [
+            (
+                TestQuery::region() as *const _ as usize,
+                size_of::<Region<QUERY_DATA>>(),
+            ),
+            (
+                TestScratch::region() as *const _ as usize,
+                size_of::<Region<SCRATCH_DATA>>(),
+            ),
+            (
+                ProductQuery::region() as *const _ as usize,
+                size_of::<Region<QUERY_DATA>>(),
+            ),
+            (
+                ProductScratch::region() as *const _ as usize,
+                size_of::<Region<SCRATCH_DATA>>(),
+            ),
+        ];
+        for (i, &(a, a_len)) in regions.iter().enumerate() {
+            for &(b, b_len) in &regions[i + 1..] {
+                assert!(a + a_len <= b || b + b_len <= a, "region statics overlap");
+            }
+        }
+        // N depends on the arena's start modulo Talc's 32-byte chunk unit; the
+        // claimed lengths are the capacity.
+        eprintln!(
+            "Q/S claim: QUERY_DATA={QUERY_DATA} B, SCRATCH_DATA={SCRATCH_DATA} B, Q start mod 32={}, S start mod 32={}, S footprint={SCRATCH_FOOTPRINT} B",
+            TestQuery::region().backing.get() as usize % 32,
+            TestScratch::region().backing.get() as usize % 32
         );
     }
 }

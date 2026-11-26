@@ -3,7 +3,7 @@
 mod c_query_fixed_allocator;
 
 use anyhow::{ensure, Result};
-use c_query_fixed_allocator::WorkerAllocator;
+use c_query_fixed_allocator::{ProductAllocator, WorkerAllocator};
 #[cfg(feature = "nir1-c-query-test-seam")]
 use grimodex_db::narrative_extraction::nir1_graph::c_query_worker::FRAME_BYTES;
 use grimodex_db::narrative_extraction::nir1_graph::{
@@ -23,7 +23,8 @@ use std::{
 };
 
 #[global_allocator]
-static WORKER_ALLOCATOR: WorkerAllocator = WorkerAllocator::new();
+// SAFETY: the only allocator of the product slots.
+static WORKER_ALLOCATOR: ProductAllocator = unsafe { WorkerAllocator::new() };
 
 #[derive(Clone, Copy)]
 enum StartupStage {
