@@ -1211,6 +1211,9 @@ export interface NapiBackendLike {
     payload: unknown,
   ): Promise<string>;
   narrativeExtractionListSceneProposals?(payload: unknown): Promise<string>;
+  narrativeExtractionListRedecidableProposals?(
+    payload: unknown,
+  ): Promise<string>;
   narrativeExtractionCancelRun(
     payload: unknown,
     workspaceBinding: unknown,
@@ -1536,10 +1539,16 @@ const SCENE_PROPOSALS_LIMIT_WIRE_MAX = 0xffff_ffff;
  */
 const SCENE_PROPOSALS_ID_MAX_BYTES = 256;
 
-function requireSceneProposalsPayload(args: CommandArgs): CommandArgs {
-  const command = "narrative_extraction_list_scene_proposals";
+function requireProposalPagePayload(
+  args: CommandArgs,
+  command:
+    | "narrative_extraction_list_scene_proposals"
+    | "narrative_extraction_list_redecidable_proposals",
+): CommandArgs {
   const payload = requireRecord(args, "payload", command);
-  const allowedKeys = new Set(["projectId", "sceneId", "cursor", "limit"]);
+  const allowedKeys = new Set(["projectId", "cursor", "limit"]);
+  const sceneScoped = command === "narrative_extraction_list_scene_proposals";
+  if (sceneScoped) allowedKeys.add("sceneId");
   for (const key of Object.keys(payload)) {
     if (!allowedKeys.has(key)) {
       throw new Error(
@@ -1562,8 +1571,8 @@ function requireSceneProposalsPayload(args: CommandArgs): CommandArgs {
   };
   const validated: CommandArgs = {
     projectId: exactString("projectId"),
-    sceneId: exactString("sceneId"),
   };
+  if (sceneScoped) validated.sceneId = exactString("sceneId");
   if (Object.hasOwn(payload, "cursor") && payload.cursor !== undefined) {
     validated.cursor = exactString("cursor");
   }
@@ -11712,7 +11721,27 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b,
           b.narrativeExtractionListSceneProposals,
           "narrativeExtractionListSceneProposals",
-        )(requireSceneProposalsPayload(a)),
+        )(
+          requireProposalPagePayload(
+            a,
+            "narrative_extraction_list_scene_proposals",
+          ),
+        ),
+      ),
+  },
+  narrative_extraction_list_redecidable_proposals: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeExtractionListRedecidableProposals,
+          "narrativeExtractionListRedecidableProposals",
+        )(
+          requireProposalPagePayload(
+            a,
+            "narrative_extraction_list_redecidable_proposals",
+          ),
+        ),
       ),
   },
   narrative_extraction_cancel_run: {

@@ -15647,6 +15647,25 @@ impl Backend {
         .await
     }
 
+    /// Read-only: list applied proposals eligible for reapproval in one project, one page.
+    #[napi]
+    pub async fn narrative_extraction_list_redecidable_proposals(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: narrative_extraction::ListRedecidableProposalsPayload =
+                from_wire("payload", payload).map_err(|error| anyhow::anyhow!("NEX_REDECIDABLE_PROPOSALS_INPUT_INVALID: {error}"))?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(
+                    &narrative_extraction::narrative_extraction_list_redecidable_proposals(db, dto)?,
+                )?)
+            })
+        })
+        .await
+    }
+
     #[napi]
     pub async fn narrative_extraction_is_run_resumable_for_review(
         &self,

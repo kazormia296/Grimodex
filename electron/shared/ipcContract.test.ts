@@ -732,6 +732,10 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "narrativeExtractionListSceneProposals",
       Promise.resolve('{"items":[],"nextCursor":null,"limit":20}'),
     ) as never,
+    narrativeExtractionListRedecidableProposals: record(
+      "narrativeExtractionListRedecidableProposals",
+      Promise.resolve('{"items":[],"total":0,"nextCursor":null,"limit":20}'),
+    ) as never,
     narrativeExtractionCancelRun: record(
       "narrativeExtractionCancelRun",
       Promise.resolve('{"runId":"r1","status":"cancelled"}'),
@@ -1579,6 +1583,80 @@ describe("dispatchInvoke", () => {
     expect(missingMethod).toMatchObject({
       ok: false,
       error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionListSceneProposals`,
+    });
+  });
+
+  it("forwards only the project-wide redecidable page query to Native", async () => {
+    const { backend, calls } = fakeBackend();
+    const command = "narrative_extraction_list_redecidable_proposals";
+    const projectId = "界".repeat(85) + "x"; // Exactly 256 UTF-8 bytes.
+    const first = { projectId };
+    const paged = { projectId, cursor: projectId, limit: 1000 };
+    for (const payload of [first, paged]) {
+      const result = await dispatchInvoke(
+        command,
+        { payload },
+        { backend, shell: noShell },
+      );
+      expect(result).toEqual({
+        ok: true,
+        value: { items: [], total: 0, nextCursor: null, limit: 20 },
+      });
+    }
+    expect(calls).toEqual(
+      [first, paged].map((payload) => ({
+        method: "narrativeExtractionListRedecidableProposals",
+        args: [payload],
+      })),
+    );
+  });
+
+  it("rejects invalid redecidable queries before Native and reports an old binding", async () => {
+    const { backend, calls } = fakeBackend();
+    const command = "narrative_extraction_list_redecidable_proposals";
+    const base = { projectId: "project-1" };
+    for (const payload of [
+      null,
+      [],
+      "payload",
+      {},
+      { projectId: "" },
+      { projectId: " project-1" },
+      { projectId: "場".repeat(86) },
+      { ...base, cursor: null },
+      { ...base, cursor: "" },
+      { ...base, cursor: "p1 " },
+      { ...base, cursor: "場".repeat(86) },
+      { ...base, limit: 0 },
+      { ...base, limit: -1 },
+      { ...base, limit: 1.5 },
+      { ...base, limit: "1" },
+      { ...base, limit: 0x1_0000_0000 },
+      { ...base, sceneId: "scene-1" },
+      { ...base, unknown: true },
+    ]) {
+      const result = await dispatchInvoke(
+        command,
+        { payload },
+        { backend, shell: noShell },
+      );
+      expect(result.ok, JSON.stringify(payload)).toBe(false);
+    }
+    expect(calls).toHaveLength(0);
+    const missing = await dispatchInvoke(
+      command,
+      { payload: base },
+      {
+        backend: {
+          ...backend,
+          narrativeExtractionListRedecidableProposals: undefined,
+        },
+        shell: noShell,
+      },
+    );
+    expect(missing).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionListRedecidableProposals`,
     });
   });
 
@@ -7287,6 +7365,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_extraction_get_run_review_bundle",
       "narrative_extraction_is_run_resumable_for_review",
       "narrative_extraction_list_chronicle_task_resume_candidates",
+      "narrative_extraction_list_redecidable_proposals",
       "narrative_extraction_list_resumable_runs",
       "narrative_extraction_list_scene_proposals",
       "narrative_extraction_prepare_commit",

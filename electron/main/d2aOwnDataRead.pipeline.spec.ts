@@ -532,6 +532,11 @@ function readCalls(ws: Workspace): ReadCall[] {
       args: { payload: { projectId: ws.projectId, sceneId: "no-such-scene" } },
     },
     {
+      name: "extraction redecidable proposals",
+      cmd: "narrative_extraction_list_redecidable_proposals",
+      args: { payload: { projectId: ws.projectId } },
+    },
+    {
       name: "maintenance inbox",
       cmd: "narrative_maintenance_inbox_list",
       args: { payload: { projectId: ws.projectId } },
