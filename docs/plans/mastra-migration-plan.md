@@ -359,7 +359,7 @@
   - manifest の 44 本（master で read 26、write 16、destructive 2）を Mastra の tool に。schema は `toolDefinitions.ts` の元の定義（adapter が `$schema`／`additionalProperties` を戻す。S6）。
     **段階に読み替える（2026-11-21 のユーザー決定 U-7(D)。[MP-4 の判断](mastra-mp4-decisions.md)第 1.2 節）**：
     MP-4 は、データ read のうち main の `dbExecute` と既存の Native の typed 呼出しで動く 20 本（M4。`get_codex_entry` は guard の扱い待ちで外す）を main の tool にする。
-    `get_ui_state`・`ask_user`・UI 系の write 4 本は MP-5（main→renderer の RPC）、残りの write 14 本は MP-6、`run_research` は MP-4 では移さない（DR-MP3-3）。help 2 本は MP-5 に寄せる（**技術判断**。[DR-MP4-11](mastra-mp4-decisions.md)。2026-11-21）。
+    `get_ui_state`・`ask_user`・UI 系の write 3 本は MP-5（main→renderer の RPC）、残りの write 15 本は MP-6（`propose_scene_body` は 2026-11-26 の Q4 で MP-5 から MP-6 へ）、`run_research` は MP-4 では移さない（DR-MP3-3）。help 2 本は MP-5 に寄せる（**技術判断**。[DR-MP4-11](mastra-mp4-decisions.md)。2026-11-21）。
     MP-4 の間は main の tool が 44 本そろわず、製品の agent-mode turn（毎 turn 44 本を宣言する）は Mastra に届かない（読み替えの帰結。**報告のみ**。C-5）。旗 L は閉のまま。
   - **loop 規則を同値に写す**（閾値の黙示変更は委任外）：
     - tool 回数の上限（窓に応じて 25／16／12／10。survey の点検は 25／16 だけ確認）、予算（窓の 30%、下限 2,000）。
