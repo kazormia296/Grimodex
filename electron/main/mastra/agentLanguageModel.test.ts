@@ -1421,6 +1421,42 @@ describe("citations と未宣言の tool", () => {
       /^Error: /,
     );
   });
+
+  it("tool execute が throw した失敗は、実物の Mastra adapter から isError=true で次の send に届く", async () => {
+    const h = harness([toolStep("call_failed"), endStep()]);
+    const agent = new kit.Agent({
+      id: "mp2-failure",
+      name: "mp2-failure",
+      instructions: "SYS",
+      model: h.model,
+      tools: {
+        search_events: kit.createTool({
+          id: "search_events",
+          description: "d",
+          inputSchema: kit.jsonSchema<{ query: string }>({
+            type: "object",
+            properties: { query: { type: "string" } },
+            required: ["query"],
+          }),
+          execute: async () => {
+            throw new Error("UI operation failed");
+          },
+        }),
+      },
+      ...AGENT_NO_RETRY_CONFIG,
+    });
+    await agent.generate(USER, {
+      ...AGENT_CALL_OPTIONS,
+      providerOptions: providerOptions(),
+    });
+    const result = h.sends[1]!.messages.find(
+      (message) => message.role === "tool_result",
+    );
+    expect(result).toMatchObject({ toolUseId: "call_failed", isError: true });
+    expect(result?.role === "tool_result" && result.content).toMatch(
+      /^Error: /,
+    );
+  });
 });
 
 describe("再現性（tool_use の input の key 順）", () => {

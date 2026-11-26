@@ -162,6 +162,9 @@ const RENDERER_CHRONICLE_COMMANDS = new Set([
 ]);
 
 const HUMAN_ONLY_CANONICAL_WRITER_COMMANDS = new Set([
+  // entity_tags_set stays in this set so that an origin without a route is
+  // still blanked (bound) below; authorityRouteForRendererCommand gives it
+  // import-apply as well, before the human-only branch.
   "entity_tags_set",
   "project_create",
   "project_patch",
@@ -1941,6 +1944,16 @@ function authorityRouteForRendererCommand(
 
   if (IMPORT_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd)) {
     return authorityRouteForUnambiguousOrigin(payload.origin, ["import-apply"]);
+  }
+
+  // The Codex import sets an imported entry's tags in the same import session
+  // as the entry itself (importApi.ts), so the tag writer takes import-apply
+  // as well as human-direct, like the other typed writers the import uses.
+  if (cmd === "entity_tags_set") {
+    return authorityRouteForUnambiguousOrigin(payload.origin, [
+      "human-direct",
+      "import-apply",
+    ]);
   }
 
   if (HUMAN_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd)) {

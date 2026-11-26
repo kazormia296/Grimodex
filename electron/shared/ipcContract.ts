@@ -4140,6 +4140,7 @@ function requireEntityTagsSetPayload(args: CommandArgs): CommandArgs {
   const command = "entity_tags_set";
   const payload = requireCanonicalWriterIdentity(args, command, [
     "human-direct",
+    "import-apply",
   ]);
   const kind = requireString(payload, "entityKind", command);
   if (kind !== "codex" && kind !== "snippet") {

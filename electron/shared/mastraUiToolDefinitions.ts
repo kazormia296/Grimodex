@@ -28,6 +28,8 @@ export const UI_OPERATION_TOOL_NAMES = Object.freeze([
   RUN_APP_COMMAND_TOOL,
   APPLY_LAYOUT_PRESET_TOOL,
 ]);
+/** Shared by the legacy renderer and Main's Mastra bindings. */
+export const MAX_UI_OPERATIONS_PER_TURN = 10;
 
 /** Keep the model's run_app_command enum aligned with the existing renderer tool. */
 export const AGENT_RUNNABLE_COMMAND_IDS = Object.freeze([
