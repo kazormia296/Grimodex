@@ -3,7 +3,7 @@
 ## Status
 
 - **Lifecycle:** Active mutable roadmap
-- **Last updated:** 2026-08-18
+- **Last updated:** 2026-11-26（Release B と Decision Gate A を改訂。[SessionTasks の判断記録](session-tasks-decisions-2026-11.md)）
 - **Current focus:** Release A — Background Agent
 - **North star:** **AIとの会話を、途中状態・承認・来歴・検証を保持できる持続的な仕事へ変える**
 
@@ -36,6 +36,7 @@ PR descriptionとChat historyはRoadmap authorityではない。
 
 1. 後段の投機的system contractを固定する前に、確実なユーザー価値を持つ最小Releaseを出す。
 2. Task進捗を表示する前にBackground executionを成立させる。
+   例外（2026-11-26、DR-ST-6）：Release BはRelease AのA3（とR1・F0-lite）だけを前提にし、A4a以降を待たない。
 3. WorkTask、AgentRun、pending interaction、Workspace、AI Audit、Change Feed、
    Semantic Verificationは別recordとして保持する。
 4. Scene／Session navigationはUI projectionをdetachするが、Runをcancelしない。
@@ -73,7 +74,7 @@ PR descriptionとChat historyはRoadmap authorityではない。
 | Turn authority | **Planned** | `src/application/chat/chatTurnStoreActions.ts`はactive Session／scope／anchor driftをabort条件として扱う。 |
 | Durable AgentRun | **Planned** | Background AgentのCanonicalなdurable Run／Interaction authorityは未実装。 |
 | Session status UI | **Planned** | Session cardとscope selectorにはbackground run／question／unread statusがない。 |
-| SessionTasks | **Release A後のDecision Gate** | Background Agent dogfoodingでpersistent plan価値が確認された場合だけ実装する。 |
+| SessionTasks | **Blocked** | 2026-11-26にDecision Gate Aを前提から外した（DR-ST-6）。Write-Safety RoadmapのGate A（A1・A2）、Release AのA3、Mastra移行のMP-6・MP-9の後に着手する。 |
 | Agent Workspace | **Gate BでBlocked** | Background Agent／SessionTasksの利用知見前にcontractを固定しない。 |
 | Deterministic Semantic CI | **Workspace merge receiptとSemantic Core readinessでBlocked** | 既存Narrative Run／Freshness authorityを利用し、複製しない。 |
 | Implicit semantic discovery | **Experimental** | annotated corpusでprecision／recallを測定するまで完了へ影響させない。 |
@@ -92,9 +93,8 @@ Release A: Background Agent
   Minimal Session-local status UI
   Race / recovery hardening
         ↓
-Decision Gate A: persistent planは実際に必要か
-        ↓
-Release B: SessionTasks Minimal
+Decision Gate A: 2026-11-26にRelease Bの前提から外した（DR-ST-6。問いは振り返りの観点として残す）
+Release B: SessionTasks Minimal（前提：Write-Safety Gate A〔A1・A2〕、Release AのA3、Mastra移行のMP-6・MP-9）
         ↓
 Decision Gate B: staged mutationと richer reviewへ投資するか
         ↓
@@ -404,7 +404,8 @@ A3 → A4a → A4b → A6 / AH
 
 ## Decision Gate A — SessionTasksは必要か
 
-**State:** Release A dogfooding後のDecision Gate。
+**State:** 2026-11-26にRelease Bの前提から外した（[DR-ST-6](session-tasks-decisions-2026-11.md#dr-st-6-decision-gate-a)、利用者の決定）。
+以下の問いは、Release Bを作った後の振り返りの観点として残す。
 
 GrimodexはこのGateのために外部telemetryを追加しない。以下を含む、およそ10件の実作業Runを
 定性的に記録する。
@@ -428,32 +429,49 @@ GrimodexはこのGateのために外部telemetryを追加しない。以下を�
 
 ### Gate outcome
 
-persistent plan、progress、acceptance、Evidence問題が繰り返し発生した場合にRelease Bへ進む。
+2026-11-26以前のoutcome：persistent plan、progress、acceptance、Evidence問題が繰り返し発生した場合にRelease Bへ進む。
 Session-local statusだけで十分なら、従来のfull SessionTasks設計を既定実装せず縮小または延期する。
+
+2026-11-26以降（DR-ST-6）：Release Bの着手はこのGateで決めない。上の問いでRelease Bの振り返りを行い、
+不要と分かった部分を縮小する。
 
 ---
 
 # Release B — SessionTasks Minimal
 
-**State:** Decision Gate AでBlocked。
+**State:** Blocked。前提は[Write-Safety Roadmap](agent-auto-write-safety-roadmap.md)のGate A（A1・A2の承認境界）、Release AのA3（durable interaction。その前提のR1・F0-liteを含む）、
+Mastra移行のMP-6（write toolとcapability）・MP-9（履歴の持ち主と保存の移動）。
+Decision Gate Aは待たない（DR-ST-6）。判断の経緯と要件の振り分けは[SessionTasksの判断記録](session-tasks-decisions-2026-11.md)。
 
 ## Product promise
 
-> 長い依頼の目的、現在位置、未完了項目、確認待ちを会話履歴の外に保持する。
+> 長い依頼の現在位置、未完了項目、確認待ちを会話履歴の外に保持する。
+
+2026-11-26に「目的」と、作者が書く目的・条件の欄を外した（DR-ST-9）。
 
 ## Initial domain
 
 - Session WorkPlan。
 - `ready`、`in_progress`、`blocked`、`review`、`done`、`cancelled`を持つWorkTask。
-- Completion policyは`manual`と`agent_proposes`だけ。
-- required criterionはplain text。metric／predicate engineは作らない。
+- Completion policy（DR-ST-3）：本文などの書き換え（ADR 008の`mutate`・`destructive`）を伴わない手順は、
+  読む手順もまとめる手順もAgentが`done`にできる。作者は後から戻せる。
+  `mutate`を伴う手順はADR 008の承認（Task Grantの範囲、または個別の承認）を経て、`destructive`は毎回の個別承認を経て`done`になる。
+  `stage`は提案の作成までで、適用を目的とする手順を`done`にしない。
+- 手順ごとのrequired criterionは任意のplain text。metric／predicate engineは作らない。
+- Task Grant（承認した範囲の定義と保存。Write-Safety RoadmapのGate C）。
 - AI Audit execution、Run、message、将来ArtifactへのEvidence link。
-- 圧縮された会話履歴と独立して注入するTask Contract。
 
 ## Approval rules
 
 Agentは内部SessionTaskを自動作成・更新できる。scope拡張、permission昇格、required criterion緩和、
 Project Task昇格には明示authorityが必要である。
+
+- 承認した範囲での連続実行は、ADR 008の`mutate / task-scope`（承認済みTask Grantの範囲内なら確認なしで実行）を使い、
+  別の承認の仕組みを作らない。MP-6でMastraの承認を「止めて、人が押したら再開する」部品として使う案は候補で、
+  mockで確かめてから採る（DR-ST-4）。
+- 親turnのtool回数の上限（modelの文脈の窓で10〜25回）は撤廃する。tool結果のtoken予算（`limit_tokens`）は残す。
+  条件は、停止が効く経路から外すことと、予算や文脈で止まったときに成果を消さない扱いを決めること。
+  子の予算、画面操作と質問の回数の上限は対象外（DR-ST-5）。
 
 ## UI
 
@@ -464,10 +482,15 @@ Project Task昇格には明示authorityが必要である。
 
 ## Exit criteria
 
-- model switchまたは会話要約後も同じobjective／required criterionを参照する。
-- 主観Taskは`review`へ進めるが、Agentの自己申告だけで`done`にならない。
+- 書き換えを伴う手順は、ADR 008の承認なしに`done`にならない。Agentが`done`にした手順を作者が戻せる。
+- 承認した範囲の外の書き換えは止まり、範囲の中では回数の区切りで止まらない。
 - stale Task updateをOCCで拒否する。
 - Task管理が恒常的なmanual cleanupを要求しない。
+
+## Mastra移行との接続
+
+要件ごとの正本と、Mastra移行計画の段は[DR-ST-7](session-tasks-decisions-2026-11.md#dr-st-7-release-b-の要件と-mastra-移行計画の振り分け)。
+測定（承認した範囲、回数の上限の撤廃の後）はMP-6の後に旗Lの製品の経路で行う（DR-ST-8）。
 
 ## Decision Gate B — staged mutationへ進むか
 
