@@ -942,7 +942,6 @@ export function createMastraTurnOwner(
     if (questionByWindow.has(turn.windowId)) {
       throw new Error("MASTRA_AGENT_TURN_QUESTION_ALREADY_PENDING");
     }
-
     const timeoutMs =
       toolName === "ask_user"
         ? MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS
@@ -986,7 +985,7 @@ export function createMastraTurnOwner(
 
     let sent = false;
     try {
-      sent = sendQuestion(turn.windowId, parsed.value);
+      sent = sendQuestion(turn.senderId, parsed.value);
     } catch {
       // A synchronous transport error closes the registered question below.
     }
