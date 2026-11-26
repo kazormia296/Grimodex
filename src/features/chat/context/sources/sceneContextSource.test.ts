@@ -1,5 +1,15 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
+const { approvedCodexFilterMock } = vi.hoisted(() => ({
+  approvedCodexFilterMock: vi.fn(),
+}));
+vi.mock(
+  "@/features/narrative-semantic-core/nir1EntityRelationRevisionApi",
+  async (importOriginal) => ({
+    ...(await importOriginal()),
+    readApprovedNir1EntityRelationCodexEntryIds: approvedCodexFilterMock,
+  }),
+);
 import type { CodexEntryPhase, CodexPhaseDetailOverride } from "@/db/schema";
 import type { CodexContextEntry } from "@/features/codex/api";
 import { decideCodexAiVisibility } from "@/../electron/shared/readDomain/features/codex/context/codexAiVisibility";
@@ -270,6 +280,59 @@ function phaseDeps(phases: CodexEntryPhase[], options: PhaseDepsOptions = {}) {
 }
 
 describe("collectSceneContext", () => {
+  it("does not call the approved Codex filter while the rank flag is closed", async () => {
+    approvedCodexFilterMock.mockClear();
+    const alice = entry({ id: "alice", name: "Alice" });
+    const result = await collectSceneContext(
+      request({
+        workspaceIdentity: {
+          workspaceKey: "/workspace",
+          workspaceOpenRevision: 1,
+        },
+        mentionedCodexIds: ["alice"],
+        entries: [alice],
+      }),
+      createSceneContextSourceDeps({ listTreeNodes: () => [sceneNode] }),
+    );
+
+    expect(
+      result.promptInput.codexEntries?.some(
+        (candidate) => candidate.id === "alice",
+      ),
+    ).toBe(true);
+    expect(approvedCodexFilterMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the budget-selected L4 set when ranking from the scene source", async () => {
+    const entries = ["first", "middle", "last"].map((id) =>
+      entry({ id, name: id, summary: "設定".repeat(120) }),
+    );
+    const collected = await collectSceneContext(
+      request({ mentionedCodexIds: entries.map(({ id }) => id), entries }),
+      createSceneContextSourceDeps({ listTreeNodes: () => [sceneNode] }),
+    );
+    const input = {
+      ...collected.promptInput,
+      contextWindow: 1_200,
+      outputReservationTokens: 100,
+      conversationTokens: 0,
+    };
+    const baseline = buildSystemPrompt(input);
+    const baselineKeys = baseline.contextPlan!.items.map((item) => item.key);
+    const approvedId = baselineKeys.at(-1)!.slice("codex:".length);
+    const ranked = buildSystemPrompt({
+      ...input,
+      approvedCodexEntryIds: new Set([approvedId]),
+    });
+    const rankedKeys = ranked.contextPlan!.items.map((item) => item.key);
+
+    expect(baselineKeys.length).toBeLessThan(entries.length);
+    expect(baselineKeys.length).toBeGreaterThan(1);
+    expect(new Set(rankedKeys)).toEqual(new Set(baselineKeys));
+    expect(rankedKeys[0]).toBe(`codex:${approvedId}`);
+    expect(rankedKeys).not.toEqual(baselineKeys);
+  });
+
   it("uses the request project id and source snapshot without global project lookup", async () => {
     const listCodexEntries = vi.fn(async () => []);
     const result = await collectSceneContext(

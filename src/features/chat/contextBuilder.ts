@@ -18,6 +18,7 @@ import type { IntraContextRelationEdge } from "@/features/codex/relationExpansio
 import { selectContextItems } from "@/features/ai-context/budgetSelector";
 import { planContextCache } from "@/features/ai-context/cachePlanner";
 import { createContextPlan } from "@/features/ai-context/types";
+import { rankApprovedMentionedCodexItems } from "./context/approvedCodexRank";
 import type {
   ContextDecision,
   PlannedContextUsage,
@@ -148,6 +149,7 @@ export interface TrimResult {
 
 export interface BuildSystemPromptInput {
   scene: SceneContext;
+  approvedCodexEntryIds?: ReadonlySet<string>;
   /**
    * Live ContextBar refreshes are a display cache, never a provider payload.
    * They may use the same conservative estimator as the tokenizer-unavailable
@@ -2136,6 +2138,12 @@ function buildSystemPromptWithActiveTokenMode(
       trimmedLayers = Array.from(new Set([...(trimmedLayers ?? []), "L4"]));
     }
   }
+
+  selectedL4Items = rankApprovedMentionedCodexItems(
+    selectedL4Items,
+    input.approvedCodexEntryIds,
+  );
+  materialized = materializeSelection(selectedL4Items);
 
   // stable / volatile は最終 exact-fit item 集合だけを分類する。stability は
   // cache placement の属性であり、window budget の免除ではない。

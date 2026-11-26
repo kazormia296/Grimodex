@@ -1,4 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
+const { approvedCodexFilterMock } = vi.hoisted(() => ({
+  approvedCodexFilterMock: vi.fn(),
+}));
+vi.mock(
+  "@/features/narrative-semantic-core/nir1EntityRelationRevisionApi",
+  async (importOriginal) => ({
+    ...(await importOriginal()),
+    readApprovedNir1EntityRelationCodexEntryIds: approvedCodexFilterMock,
+  }),
+);
 import type { CodexContextEntry } from "@/features/codex/api";
 import type { CodexMatchTarget } from "@/features/codex/codexMatcher";
 import type { CodexEntryPhase } from "@/features/codex/phaseApi";
@@ -204,7 +214,13 @@ describe("collectNonSceneContext", () => {
     }));
 
     const result = await collectNonSceneContext(
-      request({ scope: { kind: "project" } }),
+      request({
+        scope: { kind: "project" },
+        workspaceIdentity: {
+          workspaceKey: "/workspace",
+          workspaceOpenRevision: 1,
+        },
+      }),
       createNonSceneContextSourceDeps({
         fetchProjectContext: async () => ({ title: "Project", language: "en" }),
         listCodexEntries,
@@ -220,6 +236,46 @@ describe("collectNonSceneContext", () => {
     expect(result.promptInput.codexEntries?.map((entry) => entry.id)).toEqual([
       "alice",
     ]);
+    expect(approvedCodexFilterMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the budget-selected L4 set when ranking from the non-scene source", async () => {
+    const entries = ["first", "middle", "last"].map((id) =>
+      codexEntry(id, { name: id, summary: "設定".repeat(120) }),
+    );
+    const collected = await collectNonSceneContext(
+      request({
+        scope: { kind: "project" },
+        mentionedCodexIds: entries.map(({ id }) => id),
+      }),
+      createNonSceneContextSourceDeps({
+        fetchProjectContext: async () => ({ title: "Project", language: "en" }),
+        listCodexContextMetadata: async () =>
+          entries.map(({ content: _content, ...metadata }) => metadata),
+        listCodexEntriesByIds: async (_projectId, ids) =>
+          ids.flatMap((id) => entries.filter((entry) => entry.id === id)),
+      }),
+    );
+    const input = {
+      ...collected.promptInput,
+      contextWindow: 1_200,
+      outputReservationTokens: 100,
+      conversationTokens: 0,
+    };
+    const baseline = buildSystemPrompt(input);
+    const baselineKeys = baseline.contextPlan!.items.map((item) => item.key);
+    const approvedId = baselineKeys.at(-1)!.slice("codex:".length);
+    const ranked = buildSystemPrompt({
+      ...input,
+      approvedCodexEntryIds: new Set([approvedId]),
+    });
+    const rankedKeys = ranked.contextPlan!.items.map((item) => item.key);
+
+    expect(baselineKeys.length).toBeLessThan(entries.length);
+    expect(baselineKeys.length).toBeGreaterThan(1);
+    expect(new Set(rankedKeys)).toEqual(new Set(baselineKeys));
+    expect(rankedKeys[0]).toBe(`codex:${approvedId}`);
+    expect(rankedKeys).not.toEqual(baselineKeys);
   });
 
   it("materializes a visible non-scene Codex active tab and seeds only its selected body", async () => {

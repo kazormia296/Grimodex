@@ -3284,6 +3284,36 @@ describe("prompt injection hardening", () => {
       );
     });
 
+    it("ranks approved mentions after budget selection without changing its selected set", () => {
+      const input = {
+        scene: { id: "s", title: "Scene", content: "本文" },
+        codexEntries: ["first", "approved", "third"].map((id) => ({
+          id,
+          type: "character",
+          name: id,
+          summary: "設定".repeat(120),
+        })),
+        contextWindow: 1400,
+        outputReservationTokens: 100,
+        conversationTokens: 0,
+      } satisfies Parameters<typeof buildSystemPrompt>[0];
+      const withoutRank = buildSystemPrompt(input);
+      const withRank = buildSystemPrompt({
+        ...input,
+        approvedCodexEntryIds: new Set(["third"]),
+      });
+      const originalKeys = withoutRank.contextPlan!.items.map(
+        (item) => item.key,
+      );
+      const rankedKeys = withRank.contextPlan!.items.map((item) => item.key);
+
+      expect(withoutRank.trimmedLayers).toContain("L4");
+      expect(originalKeys).toHaveLength(2);
+      expect(new Set(rankedKeys)).toEqual(new Set(originalKeys));
+      expect(rankedKeys).toEqual(["codex:third", "codex:approved"]);
+      expect(rankedKeys).not.toEqual(originalKeys);
+    });
+
     it("treats all L4 items as volatile after an initialized empty stable baseline", () => {
       const result = buildSystemPrompt({
         scene: { id: "scene-1", title: "Scene", content: "body" },

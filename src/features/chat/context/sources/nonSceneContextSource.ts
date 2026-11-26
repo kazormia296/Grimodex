@@ -61,6 +61,8 @@ import {
   type ProjectContext,
 } from "../../contextBuilder";
 import type { NonSceneTurnContextRequest } from "../turnContextRequest";
+import { CHAT_APPROVED_CODEX_RANK_ENABLED } from "../approvedCodexRankAvailability";
+import { readApprovedCodexEntryIds } from "../approvedCodexRankReader";
 import type { ContextDiagnostic } from "../contextPlannerDeps";
 import {
   orderEntriesByIds,
@@ -1224,6 +1226,12 @@ export async function collectNonSceneContext(
     resolvedContexts.resolvedById,
     deps,
   );
+  const approvedCodexEntryIds = await readApprovedCodexEntryIds(
+    CHAT_APPROVED_CODEX_RANK_ENABLED,
+    request.workspaceIdentity?.workspaceKey,
+    request.projectId,
+    globalCodexEntries.slice(0, 64).map((entry) => entry.id),
+  );
 
   const mapBoardMarkdown = await deps.loadMapBoardMarkdown(
     request,
@@ -1307,6 +1315,7 @@ export async function collectNonSceneContext(
 
   return {
     promptInput: {
+      approvedCodexEntryIds,
       scene:
         aggregatedScene && request.scope.kind !== "thread"
           ? aggregatedScene
