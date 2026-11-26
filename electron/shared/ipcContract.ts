@@ -1254,6 +1254,7 @@ export interface NapiBackendLike {
   narrativeMaintenanceAttentionSet?(payload: unknown): Promise<string>;
   narrativeMaintenanceAttentionClear?(payload: unknown): Promise<string>;
   narrativeMaintenanceInboxList?(payload: unknown): Promise<string>;
+  narrativeMaintenanceHealthSummary?(payload: unknown): Promise<string>;
   narrativeMaintenanceStaleProposalCount?(payload: unknown): Promise<string>;
   narrativeMaintenanceStaleProposalScenes?(payload: unknown): Promise<string>;
   // Gate C2 Run Kind Policy: the five named operations replacing the old
@@ -1946,6 +1947,23 @@ function requireNarrativeMaintenanceInboxListPayload(
   args: CommandArgs,
 ): CommandArgs {
   const command = "narrative_maintenance_inbox_list";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  requireNonEmptyString(payload, "projectId", command);
+  return payload;
+}
+
+function requireNarrativeMaintenanceHealthSummaryPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "narrative_maintenance_health_summary";
   const payload = requireRecord(args, "payload", command);
   const allowedKeys = new Set(["projectId"]);
   for (const key of Object.keys(payload)) {
@@ -11954,6 +11972,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b.narrativeMaintenanceInboxList,
           "narrativeMaintenanceInboxList",
         )(requireNarrativeMaintenanceInboxListPayload(a)),
+      ),
+  },
+  narrative_maintenance_health_summary: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeMaintenanceHealthSummary,
+          "narrativeMaintenanceHealthSummary",
+        )(requireNarrativeMaintenanceHealthSummaryPayload(a)),
       ),
   },
   narrative_maintenance_stale_proposal_count: {

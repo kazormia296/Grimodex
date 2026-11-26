@@ -699,6 +699,12 @@ pub struct NarrativeMaintenanceInboxListPayload {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NarrativeMaintenanceHealthSummaryPayload {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NarrativeMaintenanceStaleProposalScenesPayload {
     pub project_id: String,
     #[serde(default)]

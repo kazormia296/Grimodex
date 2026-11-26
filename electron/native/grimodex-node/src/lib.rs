@@ -112,7 +112,8 @@ use grimodex_db::narrative_extraction::{
     MaintenanceCycleRequest, MaintenanceCycleStatus, MaintenanceWorkspaceBinding,
     NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
     NarrativeMaintenanceCiConfig, NarrativeMaintenanceCiFault, NarrativeMaintenanceCiTrigger,
-    NarrativeMaintenanceInboxListPayload, NarrativeMaintenanceStaleProposalScenesPayload,
+    NarrativeMaintenanceHealthSummaryPayload, NarrativeMaintenanceInboxListPayload,
+    NarrativeMaintenanceStaleProposalScenesPayload,
     RebuildDerivedStateOutcome, RebuildNarrativeDerivedStatePayload,
     RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
     RunRefPayload, TemporalScenePatchPayload, VerifyNarrativeDependencyGraphPayload, WorkKey,
@@ -16409,6 +16410,26 @@ impl Backend {
                     narrative_extraction::build_maintenance_inbox(conn, &dto.project_id, &now)
                 })?;
                 Ok(serde_json::to_string(&entries)?)
+            })
+        })
+        .await
+    }
+
+    /// Read-only aggregate maintenance health counts for one project as of now.
+    #[napi]
+    pub async fn narrative_maintenance_health_summary(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: NarrativeMaintenanceHealthSummaryPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let now = grimodex_core::now_rfc3339_millis();
+                let summary = db.with_conn(|conn| {
+                    narrative_extraction::maintenance_health_summary(conn, &dto.project_id, &now)
+                })?;
+                Ok(serde_json::to_string(&summary)?)
             })
         })
         .await

@@ -121,6 +121,7 @@ const OWN_DATA_READ_BY_GROUP = {
     "narrative_extraction_get_commit_status",
     "narrative_extraction_list_scene_proposals",
     "narrative_maintenance_inbox_list",
+    "narrative_maintenance_health_summary",
     "narrative_maintenance_stale_proposal_count",
     "narrative_maintenance_stale_proposal_scenes",
   ],
@@ -196,15 +197,15 @@ const DENIED = (route: string) =>
   new RegExp(`^${D2A_EGRESS_DENIED_MARKER} ${route}:`);
 
 describe("own-data-read ledger (K3/2 区分の構成)", () => {
-  it("holds exactly the 42 confirmed commands, each a real NAPI command", () => {
+  it("holds exactly the 43 confirmed commands, each a real NAPI command", () => {
     const ledgers = d2aRouteLedgersForTest();
-    expect(OWN_DATA_READ_COMMANDS).toHaveLength(42);
-    expect(new Set(OWN_DATA_READ_COMMANDS).size).toBe(42);
+    expect(OWN_DATA_READ_COMMANDS).toHaveLength(43);
+    expect(new Set(OWN_DATA_READ_COMMANDS).size).toBe(43);
     expect([...ledgers.ownDataRead].sort()).toEqual(
       [...OWN_DATA_READ_COMMANDS].sort(),
     );
     expect(Object.values(OWN_DATA_READ_BY_GROUP).map((g) => g.length)).toEqual([
-      7, 3, 9, 2, 3, 2, 6, 10,
+      7, 3, 9, 2, 3, 2, 6, 11,
     ]);
     for (const command of OWN_DATA_READ_COMMANDS) {
       expect(Object.hasOwn(NAPI_COMMANDS, command), command).toBe(true);

@@ -10,8 +10,9 @@ mod test_support;
 
 use grimodex_db::narrative_extraction::ensure_test_schema;
 use grimodex_db::narrative_extraction::{
-    build_maintenance_inbox, project_terminal_failure_for_run, resolve_terminal_failure_for_run,
-    set_attention, AttentionDisposition, InboxEntryKind, SetAttentionRequest,
+    build_maintenance_inbox, maintenance_health_summary, project_terminal_failure_for_run,
+    resolve_terminal_failure_for_run, set_attention, AttentionDisposition, InboxEntryKind,
+    SetAttentionRequest,
 };
 use grimodex_db::Database;
 use rusqlite::params;
@@ -217,6 +218,16 @@ fn unclassified_nonretryable_failure_keeps_exact_code_with_explicit_broad_reason
     let entries = db
         .with_conn(|conn| build_maintenance_inbox(conn, PROJECT_ID, "2026-08-22T01:00:00.000Z"))
         .expect("build inbox");
+    let summary = db
+        .with_conn(|conn| maintenance_health_summary(conn, PROJECT_ID, "2026-08-22T01:00:00.000Z"))
+        .expect("health summary");
+    assert_eq!(
+        summary.maintenance_stopped,
+        entries
+            .iter()
+            .filter(|entry| entry.entry_kind == InboxEntryKind::TerminalFailure)
+            .count() as u64
+    );
     let observation = entries[0]
         .latest_observation
         .as_ref()

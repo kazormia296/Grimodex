@@ -537,6 +537,11 @@ function readCalls(ws: Workspace): ReadCall[] {
       args: { payload: { projectId: ws.projectId } },
     },
     {
+      name: "maintenance health summary",
+      cmd: "narrative_maintenance_health_summary",
+      args: { payload: { projectId: ws.projectId } },
+    },
+    {
       name: "stale proposal count",
       cmd: "narrative_maintenance_stale_proposal_count",
       args: { payload: { projectId: ws.projectId } },

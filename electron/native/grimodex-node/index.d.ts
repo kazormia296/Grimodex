@@ -1181,6 +1181,8 @@ export declare class Backend {
   narrativeMaintenanceAttentionClear(payload: any): Promise<string>
   /** Read-only: assemble the Maintenance Inbox for one project as of now. */
   narrativeMaintenanceInboxList(payload: any): Promise<string>
+  /** Read-only aggregate maintenance health counts for one project as of now. */
+  narrativeMaintenanceHealthSummary(payload: any): Promise<string>
   /** Read-only count of stale proposals for one project as of now. */
   narrativeMaintenanceStaleProposalCount(payload: any): Promise<string>
   /** Read-only scene counts for stale proposals in one project. */

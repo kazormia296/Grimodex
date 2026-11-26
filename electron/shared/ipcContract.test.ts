@@ -7300,6 +7300,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_extraction_undo_commit",
       "narrative_maintenance_attention_clear",
       "narrative_maintenance_attention_set",
+      "narrative_maintenance_health_summary",
       "narrative_maintenance_inbox_list",
       "narrative_maintenance_stale_proposal_count",
       "narrative_maintenance_stale_proposal_scenes",
@@ -7850,6 +7851,74 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
 
       expect(env.ok).toBe(false);
       expect(method).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("maintenance health summary", () => {
+    it("passes only projectId to native and parses the response", async () => {
+      const summary = {
+        proposalsChecked: 2,
+        proposalsStale: 1,
+        staleBreakdown: {
+          stale: 1,
+          "source-missing": 0,
+          "anchor-mismatch": 0,
+          "read-set-drift": 0,
+          unknown: 0,
+        },
+        maintenanceStopped: 3,
+        unrecognized: 0,
+      };
+      const method = vi.fn().mockResolvedValue(JSON.stringify(summary));
+      const { backend } = fakeBackend({
+        narrativeMaintenanceHealthSummary: method,
+      });
+      const env = await dispatchInvoke(
+        "narrative_maintenance_health_summary",
+        { payload: { projectId: "project-1" } },
+        { backend, shell: noShell },
+      );
+      expect(env).toEqual({ ok: true, value: summary });
+      expect(method).toHaveBeenCalledExactlyOnceWith({
+        projectId: "project-1",
+      });
+    });
+
+    it.each([
+      {},
+      { payload: {} },
+      { payload: { projectId: "" } },
+      { payload: { projectId: 7 } },
+      { payload: { projectId: "p", extra: true } },
+    ])("rejects invalid args before native call: %j", async (args) => {
+      const method = vi.fn();
+      const { backend } = fakeBackend({
+        narrativeMaintenanceHealthSummary: method,
+      });
+      const env = await dispatchInvoke(
+        "narrative_maintenance_health_summary",
+        args,
+        { backend, shell: noShell },
+      );
+      expect(env.ok).toBe(false);
+      expect(method).not.toHaveBeenCalled();
+    });
+
+    it("returns backend unavailable for an older native binding", async () => {
+      const { backend } = fakeBackend();
+      delete (backend as Partial<NapiBackendLike>)
+        .narrativeMaintenanceHealthSummary;
+      const env = await dispatchInvoke(
+        "narrative_maintenance_health_summary",
+        { payload: { projectId: "p" } },
+        { backend, shell: noShell },
+      );
+      expect(env).toMatchObject({
+        ok: false,
+        error: expect.stringContaining(
+          "native method narrativeMaintenanceHealthSummary",
+        ),
+      });
     });
   });
 
