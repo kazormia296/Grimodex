@@ -291,7 +291,7 @@ pub fn delete_messages_by_ids(
                 by_session.entry((session_id, project_id)).or_default().push(id);
             }
         }
-        for ((session_id, _), _) in &by_session {
+        for (session_id, _) in by_session.keys() {
             if session_has_pending_attempt(conn, session_id)? {
                 return refuse(ChatWriteRefusal::GenerationPending);
             }

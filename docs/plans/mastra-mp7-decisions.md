@@ -39,6 +39,7 @@
 - **DR-MP7B-3 — message と scope。** `sessionId` は `chat_sessions.id`、`resourceId` は `mastra_resources.id` に対応する。`nir1-local-*` session は SQL lookup/list から除外し、指定された書込みも拒否する。role が user／assistant／system 以外、または明示された `injected` user message は保存を skip する。別 session の message ID は typed refusal。version/capture 行は `parts_json` だけを更新する。その他の upsert は変化時だけ `ON CONFLICT DO UPDATE` し、SET に `role`／`session_id`／`created_at` を含めない。
 - **DR-MP7B-4 — vector の既存 schema 限界。** `mastra_memory_vectors` に index 定義列がないため index 作成は検証のみ、list は保存済み index、describe は保存済み vector から dimension を返す。metric は cosine 固定。空 index の永続化と metric 別設定は追加 table を要求するため行わない。各 vector は `metadata.messageId` から既存の非 `nir1-local-*` chat message に束ね、message FK cascade で削除する。
 - **DR-MP7B-5 — omitted capabilities。** Resource merge callback を Rust に渡せないため atomic merge は宣言しない（MP-8 は false）。run fencing、thread clone/copy、message 以外を参照する vector、非 cosine metric も MP-8 が使わない限り実装しない。Observational Memory の CRUD/lifecycle は typed operation で実装し、history と message/thread list の同時刻は id を tie-breaker にする。
+- **DR-MP7B-6 — N-API surface。** Main 専用の19 command は `memory_thread_{read,write,delete}`、`memory_message_{read,write,delete}`、`memory_resource_{read,write}`、`memory_observational_memory_{read,write}`、9つの `memory_vector_*`。renderer IPC contract と registry には追加しない。
 
 ### Impact matrix
 

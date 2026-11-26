@@ -279,6 +279,44 @@ export declare class Backend {
   editorStickyCreate(payload: any): Promise<string>
   editorStickyUpdate(payload: any): Promise<string>
   editorStickyDelete(payload: any): Promise<void>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryThreadRead(payload: any): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryThreadWrite(payload: any): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryThreadDelete(payload: any): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryMessageRead(payload: any): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryMessageWrite(payload: any): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryMessageDelete(payload: any): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryResourceRead(payload: any): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryResourceWrite(payload: any): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryObservationalMemoryRead(payload: any): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryObservationalMemoryWrite(payload: any): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryVectorCreateIndex(indexName: string, dimension: number): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryVectorUpsert(indexName: string, vectors: any): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryVectorQuery(indexName: string, query: Array<number>, topK: number): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryVectorListIndexes(): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryVectorDescribeIndex(indexName: string): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryVectorDeleteIndex(indexName: string): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryVectorUpdate(indexName: string, id: string, vector?: Array<number> | undefined | null, metadata?: any | undefined | null): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryVectorDelete(indexName: string, id: string): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryVectorDeleteMany(indexName: string, ids: Array<string>): Promise<string>
   /**
    * DA-2b CW (DR-DA2-50): delete messages of one chat session. Typed
    * `internal` writer; Main attaches the caller identity as the trailing

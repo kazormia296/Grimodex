@@ -6,7 +6,7 @@ use std::fmt;
 use anyhow::Result;
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -223,6 +223,16 @@ fn db_bool(value: bool) -> i64 {
     i64::from(value)
 }
 
+fn sql_usize(row: &Row<'_>, index: usize) -> rusqlite::Result<usize> {
+    usize::try_from(row.get::<_, i64>(index)?).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            index,
+            rusqlite::types::Type::Integer,
+            Box::new(error),
+        )
+    })
+}
+
 const MAX_VECTOR_ROWS: usize = 100_000;
 
 #[derive(Debug, Deserialize)]
@@ -258,7 +268,7 @@ fn vector_blob(values: &[f32]) -> Vec<u8> {
 }
 
 fn vector_values(bytes: &[u8]) -> Result<Vec<f32>> {
-    if bytes.is_empty() || bytes.len() % 4 != 0 {
+    if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
         return refuse(MemoryRefusal::InvalidRequest);
     }
     let values = bytes
@@ -274,14 +284,16 @@ pub fn vector_create_index(db: &Database, index_name: &str, dimension: usize) ->
     if dimension == 0 || dimension > 65_536 {
         return refuse(MemoryRefusal::InvalidRequest);
     }
+    let sql_dimension = i64::try_from(dimension)
+        .map_err(|_| anyhow::Error::new(MemoryRefusal::InvalidRequest))?;
     with_immediate_transaction(db, |conn| {
         // MP-7 databases may already be at the current schema version.
         conn.execute_batch("CREATE TABLE IF NOT EXISTS mastra_memory_vector_indexes (index_name TEXT PRIMARY KEY, dimension INTEGER NOT NULL CHECK(dimension > 0))")?;
-        conn.execute("INSERT INTO mastra_memory_vector_indexes(index_name, dimension) VALUES (?1, ?2) ON CONFLICT(index_name) DO NOTHING", params![index_name, dimension])?;
+        conn.execute("INSERT INTO mastra_memory_vector_indexes(index_name, dimension) VALUES (?1, ?2) ON CONFLICT(index_name) DO NOTHING", params![index_name, sql_dimension])?;
         let existing: usize = conn.query_row(
             "SELECT dimension FROM mastra_memory_vector_indexes WHERE index_name = ?1",
             [index_name],
-            |row| row.get(0),
+            |row| sql_usize(row, 0),
         )?;
         if existing != dimension {
             return refuse(MemoryRefusal::InvalidRequest);
@@ -301,7 +313,7 @@ pub fn vector_upsert(
             .query_row(
                 "SELECT dimension FROM mastra_memory_vector_indexes WHERE index_name = ?1",
                 [index_name],
-                |row| row.get(0),
+                |row| sql_usize(row, 0),
             )
             .optional()?
             .ok_or_else(|| anyhow::Error::new(MemoryRefusal::NotFound))?;
@@ -334,7 +346,7 @@ pub fn vector_query(
         return refuse(MemoryRefusal::InvalidRequest);
     }
     db.with_conn(|conn| {
-        let dimension: usize = conn.query_row("SELECT dimension FROM mastra_memory_vector_indexes WHERE index_name = ?1", [index_name], |row| row.get(0)).optional()?.ok_or_else(|| anyhow::Error::new(MemoryRefusal::NotFound))?;
+        let dimension: usize = conn.query_row("SELECT dimension FROM mastra_memory_vector_indexes WHERE index_name = ?1", [index_name], |row| sql_usize(row, 0)).optional()?.ok_or_else(|| anyhow::Error::new(MemoryRefusal::NotFound))?;
         if query.len() != dimension { return refuse(MemoryRefusal::InvalidRequest); }
         let mut statement = conn.prepare("SELECT id, vector, metadata_json, message_id FROM mastra_memory_vectors WHERE index_name = ?1 LIMIT ?2")?;
         let mut rows = statement.query(params![index_name, MAX_VECTOR_ROWS as i64 + 1])?;
@@ -356,8 +368,10 @@ pub fn vector_list_indexes(db: &Database) -> Result<Vec<String>> {
     db.with_conn(|conn| {
         let mut s = conn
             .prepare("SELECT index_name FROM mastra_memory_vector_indexes ORDER BY index_name")?;
-        Ok(s.query_map([], |r| r.get(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?)
+        let indexes = s
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(indexes)
     })
 }
 
@@ -368,14 +382,14 @@ pub fn vector_describe_index(db: &Database, index_name: &str) -> Result<Value> {
             .query_row(
                 "SELECT dimension FROM mastra_memory_vector_indexes WHERE index_name=?1",
                 [index_name],
-                |r| r.get(0),
+                |r| sql_usize(r, 0),
             )
             .optional()?
             .ok_or_else(|| anyhow::Error::new(MemoryRefusal::NotFound))?;
         let count: usize = conn.query_row(
             "SELECT count(*) FROM mastra_memory_vectors WHERE index_name=?1",
             [index_name],
-            |r| r.get(0),
+            |r| sql_usize(r, 0),
         )?;
         Ok(json!({"indexName":index_name,"dimension":dimension,"count":count}))
     })
@@ -410,7 +424,7 @@ pub fn vector_update(
             .query_row(
                 "SELECT dimension FROM mastra_memory_vector_indexes WHERE index_name=?1",
                 [index_name],
-                |r| r.get(0),
+                |r| sql_usize(r, 0),
             )
             .optional()?
             .ok_or_else(|| anyhow::Error::new(MemoryRefusal::NotFound))?;
@@ -1883,6 +1897,19 @@ mod tests {
         )
         .unwrap();
         Database::from_connection(conn)
+    }
+
+    #[test]
+    fn sql_usize_rejects_negative_integer_values() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert_eq!(
+            conn.query_row("SELECT 3", [], |row| sql_usize(row, 0))
+                .unwrap(),
+            3
+        );
+        assert!(conn
+            .query_row("SELECT -1", [], |row| sql_usize(row, 0))
+            .is_err());
     }
 
     fn input(id: &str, thread_id: &str, role: &str, content: &str) -> MemoryMessageInput {
