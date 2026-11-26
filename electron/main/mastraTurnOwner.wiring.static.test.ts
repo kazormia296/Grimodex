@@ -24,6 +24,7 @@ const codeOf = (rel: string): string =>
 const INDEX = codeOf("electron/main/index.ts");
 const IPC = codeOf("electron/main/ipc.ts");
 const OWNER = codeOf("electron/main/mastraTurnOwner.ts");
+const ADAPTER = codeOf("electron/main/mastra/agentToolAdapter.ts");
 
 describe("index.ts: the owner is an egress participant, a quit step and an event observer", () => {
   it("is registered as a main egress participant with both its quiesce (taking the gate's context) and its force stop", () => {
@@ -151,5 +152,21 @@ describe("the owner module", () => {
     expect(OWNER).not.toMatch(
       /issueAgentAuthorityCapabilities|agentAuthorityCapabilities/,
     );
+  });
+
+  it("binds the shared seven UI definitions through the one-shot question registry", () => {
+    expect(OWNER).toMatch(/createMastraUiToolDefinitions\(\)/);
+    expect(OWNER).toMatch(/MASTRA_UI_TOOL_NAMES\.find/);
+    expect(OWNER).toMatch(
+      /requestUiTool\( turn\.turnId, toolCallId, name, args as Readonly<Record<string, unknown>>, \)/,
+    );
+    expect(OWNER).toMatch(/result\.content == null \? result\.summary/);
+    expect(OWNER).toMatch(/JSON\.stringify\(result\.content\)/);
+  });
+
+  it("does not read Mastra resume or approval context as a UI answer", () => {
+    for (const source of [OWNER, ADAPTER]) {
+      expect(source).not.toMatch(/\b(?:resumeData|approved)\b/u);
+    }
   });
 });

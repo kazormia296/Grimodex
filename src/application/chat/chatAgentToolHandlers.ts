@@ -449,12 +449,11 @@ interface UsedIdsRecord {
 /**
  * ターンの開始時に 1 回作る、tool に渡す文脈（S1-B PR-B2）。
  *
- * `CHAT_AGENT_IR_ENABLED` が false、または private Agent でない送信のときは何も束ねず、
- * 入力の `executeTool`・`executeReadOnlyTool` を同一の関数のまま返す
- * （`attachUsedIds` は何もしない）。このとき挙動は今と byte 同一。
+ * `currentSceneId` は IR の gate と独立して turn の開始時に固定する。
+ * IR が無効、または private Agent でない送信では scene だけを束ねる。
  *
- * true のとき：main の `executeTool` には `{ scope, ir }` を第 5 引数に、sub-agent の
- * `executeReadOnlyTool` には `{ scope }` だけを第 4 引数に束ねる（IR は構造で渡さない）。
+ * IR が有効なとき：main には `{ currentSceneId, scope, ir }`、sub-agent には
+ * `{ currentSceneId, scope }` を渡す（IR は sub-agent に構造で渡さない）。
  * `scope.currentSceneId` は turn 開始時の値で、tool の中では store を読み直さない。
  * `usedIds` は tool call の `params` object を鍵にして持ち、`onToolComplete` の先頭で
  * `attachUsedIds(record)` が record へ写す。
@@ -473,16 +472,21 @@ export function createChatTurnToolContext(input: {
   executeReadOnlyTool: ExecuteReadOnlyTool;
   attachUsedIds: (record: UsedIdsRecord) => void;
 } {
+  const currentSceneId = input.currentSceneId || null;
   if (!CHAT_AGENT_IR_ENABLED || !input.enabled) {
     return {
-      executeTool: input.executeTool,
-      executeReadOnlyTool: input.executeReadOnlyTool,
+      executeTool: (name, toolCallId, params, authorization) =>
+        input.executeTool(name, toolCallId, params, authorization, {
+          currentSceneId,
+        }),
+      executeReadOnlyTool: (name, toolCallId, params) =>
+        input.executeReadOnlyTool(name, toolCallId, params, { currentSceneId }),
       attachUsedIds: () => {},
     };
   }
   const scope: ChatTurnToolScope = {
     projectId: input.projectId,
-    currentSceneId: input.currentSceneId || null,
+    currentSceneId,
   };
   const used = new WeakMap<object, ChatIrUsedIds>();
   const ir: ChatIrCapability = {
@@ -504,9 +508,13 @@ export function createChatTurnToolContext(input: {
   const { executeTool, executeReadOnlyTool } = input;
   return {
     executeTool: (name, toolCallId, params, authorization) =>
-      executeTool(name, toolCallId, params, authorization, { scope, ir }),
+      executeTool(name, toolCallId, params, authorization, {
+        currentSceneId,
+        scope,
+        ir,
+      }),
     executeReadOnlyTool: (name, toolCallId, params) =>
-      executeReadOnlyTool(name, toolCallId, params, { scope }),
+      executeReadOnlyTool(name, toolCallId, params, { currentSceneId, scope }),
     attachUsedIds: (record) => {
       const note = used.get(record.params);
       if (note) record.usedIds = note;
