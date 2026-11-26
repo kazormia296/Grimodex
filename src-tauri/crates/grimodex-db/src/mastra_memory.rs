@@ -1,4 +1,4 @@
-//! Typed persistence for Mastra memory. The five tables stay closed to generic
+//! Typed persistence for Mastra memory. Its tables stay closed to generic
 //! SQL; all access in this module is scoped and validated here.
 
 use std::fmt;
@@ -221,6 +221,240 @@ fn pagination(page: usize, limit: Option<usize>, total: usize) -> Value {
 
 fn db_bool(value: bool) -> i64 {
     i64::from(value)
+}
+
+const MAX_VECTOR_ROWS: usize = 100_000;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MemoryVectorInput {
+    pub id: String,
+    pub vector: Vec<f32>,
+    pub metadata: Option<Value>,
+    pub message_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryVectorResult {
+    pub id: String,
+    pub score: f32,
+    pub metadata: Value,
+    pub message_id: String,
+}
+
+fn valid_vector(values: &[f32]) -> Result<()> {
+    if values.is_empty() || values.len() > 65_536 || values.iter().any(|v| !v.is_finite()) {
+        return refuse(MemoryRefusal::InvalidRequest);
+    }
+    Ok(())
+}
+
+fn vector_blob(values: &[f32]) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect()
+}
+
+fn vector_values(bytes: &[u8]) -> Result<Vec<f32>> {
+    if bytes.is_empty() || bytes.len() % 4 != 0 {
+        return refuse(MemoryRefusal::InvalidRequest);
+    }
+    let values = bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+        .collect::<Vec<_>>();
+    valid_vector(&values)?;
+    Ok(values)
+}
+
+pub fn vector_create_index(db: &Database, index_name: &str, dimension: usize) -> Result<()> {
+    require_id(index_name)?;
+    if dimension == 0 || dimension > 65_536 {
+        return refuse(MemoryRefusal::InvalidRequest);
+    }
+    with_immediate_transaction(db, |conn| {
+        // MP-7 databases may already be at the current schema version.
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS mastra_memory_vector_indexes (index_name TEXT PRIMARY KEY, dimension INTEGER NOT NULL CHECK(dimension > 0))")?;
+        conn.execute("INSERT INTO mastra_memory_vector_indexes(index_name, dimension) VALUES (?1, ?2) ON CONFLICT(index_name) DO NOTHING", params![index_name, dimension])?;
+        let existing: usize = conn.query_row(
+            "SELECT dimension FROM mastra_memory_vector_indexes WHERE index_name = ?1",
+            [index_name],
+            |row| row.get(0),
+        )?;
+        if existing != dimension {
+            return refuse(MemoryRefusal::InvalidRequest);
+        }
+        Ok(())
+    })
+}
+
+pub fn vector_upsert(
+    db: &Database,
+    index_name: &str,
+    vectors: &[MemoryVectorInput],
+) -> Result<Vec<String>> {
+    require_id(index_name)?;
+    with_immediate_transaction(db, |conn| {
+        let dimension: usize = conn
+            .query_row(
+                "SELECT dimension FROM mastra_memory_vector_indexes WHERE index_name = ?1",
+                [index_name],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| anyhow::Error::new(MemoryRefusal::NotFound))?;
+        for item in vectors {
+            require_id(&item.id)?;
+            require_id(&item.message_id)?;
+            valid_vector(&item.vector)?;
+            if item.vector.len() != dimension {
+                return refuse(MemoryRefusal::InvalidRequest);
+            }
+            let metadata_json = match &item.metadata {
+                Some(metadata) => json_object(metadata)?,
+                None => "{}".into(),
+            };
+            conn.execute("INSERT INTO mastra_memory_vectors(index_name,id,vector,metadata_json,message_id) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(index_name,id) DO UPDATE SET vector=excluded.vector, metadata_json=excluded.metadata_json, message_id=excluded.message_id", params![index_name, item.id, vector_blob(&item.vector), metadata_json, item.message_id])?;
+        }
+        Ok(vectors.iter().map(|item| item.id.clone()).collect())
+    })
+}
+
+pub fn vector_query(
+    db: &Database,
+    index_name: &str,
+    query: &[f32],
+    top_k: usize,
+) -> Result<Vec<MemoryVectorResult>> {
+    require_id(index_name)?;
+    valid_vector(query)?;
+    if top_k == 0 || top_k > MAX_VECTOR_ROWS {
+        return refuse(MemoryRefusal::InvalidRequest);
+    }
+    db.with_conn(|conn| {
+        let dimension: usize = conn.query_row("SELECT dimension FROM mastra_memory_vector_indexes WHERE index_name = ?1", [index_name], |row| row.get(0)).optional()?.ok_or_else(|| anyhow::Error::new(MemoryRefusal::NotFound))?;
+        if query.len() != dimension { return refuse(MemoryRefusal::InvalidRequest); }
+        let mut statement = conn.prepare("SELECT id, vector, metadata_json, message_id FROM mastra_memory_vectors WHERE index_name = ?1 LIMIT ?2")?;
+        let mut rows = statement.query(params![index_name, MAX_VECTOR_ROWS as i64 + 1])?;
+        let mut results = Vec::new();
+        while let Some(row) = rows.next()? {
+            if results.len() == MAX_VECTOR_ROWS { return refuse(MemoryRefusal::InvalidRequest); }
+            let vector = vector_values(&row.get::<_, Vec<u8>>(1)?)?;
+            if vector.len() != dimension { return refuse(MemoryRefusal::InvalidRequest); }
+            let dot: f64 = query.iter().zip(&vector).map(|(a,b)| f64::from(*a)*f64::from(*b)).sum();
+            let qn = query.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>().sqrt(); let vn = vector.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>().sqrt();
+            let score = if qn == 0.0 || vn == 0.0 { 0.0 } else { (dot / (qn * vn)) as f32 };
+            results.push(MemoryVectorResult { id: row.get(0)?, score, metadata: serde_json::from_str(&row.get::<_, String>(2)?)?, message_id: row.get(3)? });
+        }
+        results.sort_by(|a,b| b.score.total_cmp(&a.score)); results.truncate(top_k); Ok(results)
+    })
+}
+
+pub fn vector_list_indexes(db: &Database) -> Result<Vec<String>> {
+    db.with_conn(|conn| {
+        let mut s = conn
+            .prepare("SELECT index_name FROM mastra_memory_vector_indexes ORDER BY index_name")?;
+        Ok(s.query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    })
+}
+
+pub fn vector_describe_index(db: &Database, index_name: &str) -> Result<Value> {
+    require_id(index_name)?;
+    db.with_conn(|conn| {
+        let dimension: usize = conn
+            .query_row(
+                "SELECT dimension FROM mastra_memory_vector_indexes WHERE index_name=?1",
+                [index_name],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| anyhow::Error::new(MemoryRefusal::NotFound))?;
+        let count: usize = conn.query_row(
+            "SELECT count(*) FROM mastra_memory_vectors WHERE index_name=?1",
+            [index_name],
+            |r| r.get(0),
+        )?;
+        Ok(json!({"indexName":index_name,"dimension":dimension,"count":count}))
+    })
+}
+
+pub fn vector_delete_index(db: &Database, index_name: &str) -> Result<()> {
+    require_id(index_name)?;
+    with_immediate_transaction(db, |conn| {
+        conn.execute(
+            "DELETE FROM mastra_memory_vectors WHERE index_name=?1",
+            [index_name],
+        )?;
+        conn.execute(
+            "DELETE FROM mastra_memory_vector_indexes WHERE index_name=?1",
+            [index_name],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn vector_update(
+    db: &Database,
+    index_name: &str,
+    id: &str,
+    vector: Option<&[f32]>,
+    metadata: Option<&Value>,
+) -> Result<()> {
+    require_id(index_name)?;
+    require_id(id)?;
+    with_immediate_transaction(db, |conn| {
+        let dimension: usize = conn
+            .query_row(
+                "SELECT dimension FROM mastra_memory_vector_indexes WHERE index_name=?1",
+                [index_name],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| anyhow::Error::new(MemoryRefusal::NotFound))?;
+        if let Some(v) = vector {
+            valid_vector(v)?;
+            if v.len() != dimension {
+                return refuse(MemoryRefusal::InvalidRequest);
+            }
+        }
+        let metadata_json = metadata.map(json_object).transpose()?;
+        let changed=conn.execute("UPDATE mastra_memory_vectors SET vector=COALESCE(?3,vector), metadata_json=COALESCE(?4,metadata_json) WHERE index_name=?1 AND id=?2",params![index_name,id,vector.map(vector_blob),metadata_json])?;
+        if changed == 0 {
+            return refuse(MemoryRefusal::NotFound);
+        }
+        Ok(())
+    })
+}
+
+pub fn vector_delete(db: &Database, index_name: &str, id: &str) -> Result<()> {
+    require_id(index_name)?;
+    require_id(id)?;
+    db.with_conn(|conn| {
+        conn.execute(
+            "DELETE FROM mastra_memory_vectors WHERE index_name=?1 AND id=?2",
+            params![index_name, id],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn vector_delete_many(db: &Database, index_name: &str, ids: &[String]) -> Result<()> {
+    require_id(index_name)?;
+    if ids.iter().any(|id| require_id(id).is_err()) {
+        return refuse(MemoryRefusal::InvalidRequest);
+    }
+    with_immediate_transaction(db, |conn| {
+        for id in ids {
+            conn.execute(
+                "DELETE FROM mastra_memory_vectors WHERE index_name=?1 AND id=?2",
+                params![index_name, id],
+            )?;
+        }
+        Ok(())
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -1632,6 +1866,8 @@ mod tests {
                  last_buffered_at_time TEXT, config_json TEXT NOT NULL DEFAULT '{}', metadata_json TEXT,
                  CHECK((scope='thread' AND thread_id IS NOT NULL AND project_id IS NULL) OR (scope='resource' AND thread_id IS NULL AND project_id IS NOT NULL))
              );
+             CREATE TABLE mastra_memory_vector_indexes (index_name TEXT PRIMARY KEY, dimension INTEGER NOT NULL CHECK(dimension > 0));
+             CREATE TABLE mastra_memory_vectors (index_name TEXT NOT NULL, id TEXT NOT NULL, vector BLOB NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}', message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE, PRIMARY KEY(index_name,id));
              CREATE TABLE nir1_generation_message_versions (message_id TEXT);
              CREATE TABLE nir1_chat_input_captures (
                  message_id TEXT, chat_session_id TEXT, state TEXT
@@ -2137,5 +2373,57 @@ mod tests {
             .unwrap()["deleted"],
             2
         );
+    }
+
+    #[test]
+    fn vector_index_dimension_query_cascade_and_bulk_delete() {
+        let db = db();
+        db.with_conn(|conn| {
+            conn.execute("INSERT INTO chat_messages(id,session_id,role,content,created_at) VALUES ('vm1','s1','assistant','a',?1),('vm2','s1','assistant','b',?1)", [CREATED])?;
+            Ok(())
+        }).unwrap();
+        vector_create_index(&db, "memory", 2).unwrap();
+        assert!(vector_upsert(
+            &db,
+            "memory",
+            &[MemoryVectorInput {
+                id: "bad".into(),
+                vector: vec![1.0],
+                metadata: None,
+                message_id: "vm1".into()
+            }]
+        )
+        .is_err());
+        vector_upsert(
+            &db,
+            "memory",
+            &[
+                MemoryVectorInput {
+                    id: "v1".into(),
+                    vector: vec![1.0, 0.0],
+                    metadata: Some(json!({"tag":"a"})),
+                    message_id: "vm1".into(),
+                },
+                MemoryVectorInput {
+                    id: "v2".into(),
+                    vector: vec![0.0, 1.0],
+                    metadata: None,
+                    message_id: "vm2".into(),
+                },
+            ],
+        )
+        .unwrap();
+        let results = vector_query(&db, "memory", &[0.9, 0.1], 2).unwrap();
+        assert_eq!(results[0].id, "v1");
+        assert!(vector_create_index(&db, "memory", 3).is_err());
+        db.with_conn(|conn| {
+            conn.execute("DELETE FROM chat_messages WHERE id='vm1'", [])?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(vector_describe_index(&db, "memory").unwrap()["count"], 1);
+        vector_delete_many(&db, "memory", &["v2".into()]).unwrap();
+        assert_eq!(vector_describe_index(&db, "memory").unwrap()["count"], 0);
+        assert_eq!(vector_list_indexes(&db).unwrap(), vec!["memory"]);
     }
 }
