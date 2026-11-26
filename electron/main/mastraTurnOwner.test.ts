@@ -36,7 +36,7 @@ vi.mock("./events.js", async (importOriginal) => {
 
 import type { AiAuditEventInput } from "../shared/aiAuditEvents.js";
 import { MAIN_READ_CALLER_TIMEOUT_MS } from "../shared/ipcCallerTimeouts.js";
-import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
+import { nativeSqlPolicyV3 } from "./d2aSqlPolicyFixture.js";
 import {
   consumeProfileActivation,
   createProfileEgressGate,
@@ -3696,7 +3696,7 @@ describe("restricted: the real activation (stage 3 of the egress gate)", () => {
     restricted: false,
     handlesInvalidated: false,
     inFlightStopped: true,
-    sqlPolicy: nativeSqlPolicyV2(),
+    sqlPolicy: nativeSqlPolicyV3(),
   };
   const RESTRICTED = {
     ...UNRESTRICTED,
