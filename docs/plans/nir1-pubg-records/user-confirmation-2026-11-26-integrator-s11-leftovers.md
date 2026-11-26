@@ -36,3 +36,5 @@
   - Mastra の lane は、枠と順番を待たずに PR を出し、CI を待たずに merge してよい。ただし schema の版は、merge の前に統合者と合わせる（Mastra の申し出）。
   - 他の lane は、今までどおりにする。製品 PR は同時 2 本までで、Quick と ci.yml を通してから merge する。
   - 統合者の読み：Mastra の PR は、他の lane の 2 本の枠に数えない。
+- 問 4 の理由（20:03、統合者の会話でユーザーが直接述べた。原文）：「MastraのlaneはSessionTasksのlaneのクリティカルパスになってるので例外です」
+  - 統合者の読み：例外の理由は、SessionTasks のクリティカルパスであること。Mastra の PR が他の lane の PR とぶつかったら、Mastra を先に通す。
