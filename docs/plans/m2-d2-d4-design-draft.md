@@ -308,7 +308,7 @@ SRA/1 の後は承認と取り込みが 1 つになる。そこで、取り込�
 - ~~案 D2-1 の画面の文言と見せ方~~：決まった（追記 17）が、案 D2-1 は取り下げた（追記 18）。
 - 案 D2-3（§2.6）の新しい読みの IPC（**新しい契約**）と置き場所。**SRA/1 の PR が見えた段で伺う。**
 - 案 D2-2 で、90 日を越えて前後の値を見せること。**保存の拡大。**
-- 抽出の run をまたいで年表の同じ出来事を表す仕組み（例：`probable-duplicate` を作者が確かめて既存の `events.id` に結ぶ）。**新しい契約。**
+- 抽出の run をまたいで年表の同じ出来事を表す仕組み。**新しい契約。** 利用者は起案を選んだ（2026-11-26 20:36、追記 19）。起案は [m2-d2-chronicle-cross-run-identity-draft.md](m2-d2-chronicle-cross-run-identity-draft.md)。
 - 年表の同一性の宣言を `narrative-object-identity-declarations.json` に足すこと。key を依存の辺に保存するなら、source の文法の変更も含む。**新しい契約面。**
 - Rust の側に Phase の型の検証を置くこと。**新しい契約**になりうる。
 - State Transition／Track の永続化。**保存の拡大。**
