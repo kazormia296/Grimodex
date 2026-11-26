@@ -14,7 +14,7 @@ type RendererCodexEntryContext = CoreCodexEntryContext & {
   getProjectEpoch: () => number;
 };
 
-/** `get_codex_entry` の renderer ports。store・DB・抽出器は呼出し時に読む。 */
+/** `get_codex_entry` の renderer ports。store・DB・抽出器は呼出し時に読み、agent executor が turn scene を固定する。 */
 export const LEGACY_CODEX_ENTRY_CONTEXT: RendererCodexEntryContext = {
   getDb: () => db,
   getTreeState: () => useTreeStore.getState(),
