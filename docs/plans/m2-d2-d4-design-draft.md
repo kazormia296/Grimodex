@@ -107,10 +107,10 @@
   - `narrative_change_events`（Change Feed、objectKey `chronicle-event`）：前後の version と digest、変えた path を持つ。値は持たない。消す経路は見つからなかった。ただし表は未公開の schema で作られたもので、残るのは表ができた後の分だけ。
   - 取り込みの時に日時を補う処理（metadata patch）は、`undo_journal` でなく `narrative_commit_journals` に日時の前後を残す。
 
-起案者の読み：比べる元は 2 つの候補がある。どれを採るかは利用者に伺う（§7）。
-- **案 D2-1：取り込む前の手直しの差。**
-  - 承認版（親）と手直しした子の差を見せる。違いに出るのは題・補足・secret だけ。
-  - 部品は §2.3 の (a)〜(c) で、新しい保存も新しい契約も要らない。
+起案者の読み：比べる元は 2 つの候補があった。利用者は案 D2-1 を選んだ（2026-11-26 19:44、contracts の M4 の記録 追記 14）。
+- **案 D2-1：取り込む前の手直しの差。（採用）**
+  - 承認版と手直しした子の差を見せる。違いに出るのは題・補足だけ。secret は落とす（下の設計）。
+  - 新しい保存も新しい契約も要らない。
   - ただし手直しの後は承認が外れ、同じ画面で再承認するので、見せる価値は小さい見込み。
 - **案 D2-2：取り込んだ後の出来事の変化。**
   - 変更レビューの前に承認した時点から、出来事の何が変わったかを Change Feed から見せる。
@@ -118,6 +118,36 @@
   - 90 日を越えて前後の値を見せるなら、Feed に値を持つ**保存の拡大**になる。
   - 比べるのは版でなく Domain の履歴で、D1 の「前に承認した版との違い」とは別の種類の画面になる。
 - 抽出の run をまたぐ同一性（§2.2）は、どちらの案にも入らない。
+
+### 2.5 案 D2-1 の設計（起案。実装の前に下の点を確かめる）
+
+材料は workflow `wf_e3e586c7-139`（調べ 4 本と点検 1 本）。
+- **新しい IPC は足さない。** 年表のレビューの読み `narrative_extraction_get_run_review_bundle` の提案の行に、任意の項目を 1 つ足す（名前は仮に `approvedRevision`）。
+  - main はこの応答を JSON のまま通している（`ipcContract.ts:11794-11804` の `parseWire`）。そのため契約の file は変えない。型は `nativeApi.ts` の `ReviewBundleProposal` に足す。
+  - D2a の区分は own-data-read のまま。そのため**外部送信を制限中の profile でも差が出る**。D1 の欄（制限中は「違いを表示できません」）とは挙動が違う。
+- **「承認した版」の定義**：今の版でない版に付いた決定のうち、approved で最新のものが指す版。proposal と project で束縛する。
+  - `parentRevisionId` では定めない。承認の後に 2 回手直しすると、親は承認していない版を指す。
+  - `latestDecision` でも定めない。手直しの後に保留・却下すると、承認が見えなくなる。
+  - 承認の判定に proposal の status は使わない。子ができた時点で必ず unreviewed に戻る。
+  - 子を作っても親の決定は消えない。また決定は今の版にしか書けないので、過去の版の決定は後から増えない（`human_materialization.rs:853-868`、`repository.rs` の `NEX_PROPOSAL_REVISION_MISMATCH`）。
+  - 同時刻の決定が並ぶ時と、payload が読めない時は、項目を付けない。
+- **項目の中身**：承認した版の revisionId・title・note・決定の日時だけ。本文・根拠・evidence・`revealDocumentRef`・参加者は返さない。
+  - 該当が無い時は null にせず、key ごと省く。bundle の形を固定している試験・journey・harness を動かさないため。
+- **secret を差から落とす理由**：Native はどの surface でも出来事の secret=true を拒む（#1118）。承認の時に store も `disclosure.secret` を false に書き換える（年表の担当の確認）。作者が選べる差ではない。
+- **置き場所**：年表の抽出の dialog の詳細ペイン（`ChronicleProposalReview.tsx`）の、編集の分岐の末尾。補足の後、根拠引用の前。
+  - 文言は ja.json に足さず、#1135 と同じ日本語の直書きにする。dialog は lazy なので起動時の graph に乗らない。
+  - 文言は出す前に利用者に伺う。
+- **他の担当との順序**：
+  - 年表の担当の RD（`get_run_review_bundle` に rejectedBy などを足す、`nativeApi.ts` の型を広げる）が先に merge する見込み。D2-1 はその後に master を取り込む。
+  - RA7（承認し直すボタン）は 11-27 以降で、置き場所は詳細ペインの状態・決定のボタンの所。D2-1 の欄とは離れている。
+
+実装の前に確かめること：
+- 承認した提案を人が手直しすると、Native が受け、親の承認の決定が残ること。今は推定なので、手書きの最小 schema でなく実際の migrate の schema で、最初の試験として確かめる。拒まれるなら D2-1 は成り立たない。
+- S4 の枝（`claude/cp4-s4-final`）が固定している 61 file と、触る file が重ならないこと。
+- まとめて承認（bulk approve）の決定の actor。承認の判定を actor で絞るかを決める前に確かめる。
+- bundle の行を丸ごと AI・MCP・書き出し・ログに渡す読み手が無いこと（全数を grep）。
+- 応答の拡張が own-data-read の台帳（K3/2、draftRef）の改訂に当たるか。
+- 正本の iron-laws の「immutable child／revision・bounded lookup」と GDX-PRECHECK-001。
 
 選択肢の前提の点検（`wf_2778772d-c1c`、反証つき）：
 - **製品の年表の抽出の run は V2 の envelope で作られる。** V2 を作る旗は定数 true で（`extractionCoordinator.ts:129`、`chronicleV2Production.ts:37`）、dialog は AI の実行になる。V1 が残るのは、AI を使わない実行、V2 にする前の古い run、receipt が空の例外の場合だけ。→ 案 D2-1 の親子は製品で作られる。
@@ -192,7 +222,7 @@ AI：年表の抽出は製品の既定で AI を使う（`chronicleExtractionApi
   - D4 は根だけ可。
 - 新しい key を保存したり突き合わせたりするなら、legacy の行の読み手の扱いが要る。
 - 証跡は 2 つに分けて書く。
-  - **公開版との互換の証跡**（7 項目の「互換 adapter」）：各 wave で、Gate A2 の fixture に Phase・Plot Thread・Foreshadow の行（D4 は子も）を足す。
+  - **公開版との互換の証跡**（7 項目の「互換 adapter」）：各 wave で、Gate A2 の fixture に Phase・Plot Thread・Foreshadow の行（D4 は子も）を足す。同じ file（`release_schema_fixture.rs`）を M2-D1 の残りの担当の PR（枝 `claude/m2-a2-release-fixture`、`codex_relations`・`change_events`・`undo_journal` を覆う）が先に触るので、その merge の後に足す。seed に無く v2.0.10 が作る表は残り 26 あり、扱いは公開の前に決める（未決、M2-D1 の残りの担当）。
   - **消す前の証跡**（7 項目の「移行の証跡」）：feature の要約や Freshness の store を消す前に出す証跡。規則は M2-D1 の残りの担当が決める（消す前に内容の digest か集合の比較と、旧い読み手が 0 件であること。消すこと自体は利用者に伺う）。D2〜D4 で消す候補は、この版では挙げていない（未確認）。
 
 ## 6. §5（第 1 版）の 4 点への答え
@@ -207,7 +237,8 @@ AI：年表の抽出は製品の既定で AI を使う（`chronicleExtractionApi
 
 ## 7. 伺う対象（実装の前に）
 
-- D2 の比べる元：案 D2-1（取り込む前の手直しの差）か、案 D2-2（取り込んだ後の出来事の変化）か、D2 を後に回して D3（Phase）から始めるか（§2.4）。
+- ~~D2 の比べる元~~：案 D2-1 に決まった（2026-11-26 19:44、追記 14）。
+- 案 D2-1 の画面の文言と見せ方（前後の値を出すか、出す期間。§2.5）。
 - 案 D2-2 で、90 日を越えて前後の値を見せること。**保存の拡大。**
 - 抽出の run をまたいで年表の同じ出来事を表す仕組み（例：`probable-duplicate` を作者が確かめて既存の `events.id` に結ぶ）。**新しい契約。**
 - 年表の同一性の宣言を `narrative-object-identity-declarations.json` に足すこと。key を依存の辺に保存するなら、source の文法の変更も含む。**新しい契約面。**
