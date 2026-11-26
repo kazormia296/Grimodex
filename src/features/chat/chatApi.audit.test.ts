@@ -96,12 +96,39 @@ vi.mock("@/features/ai-audit/api", () => ({
 import { sendAgentMessage, sendChatMessageStream } from "./chatApi";
 import { DEFAULT_AI_SETTINGS } from "./types";
 import { useAiSettingsStore } from "./store";
+import { debugLog } from "@/lib/debugLog";
 
 const AGENT_PATHS = [
   "AI audit path: chat_agent_main",
   "AI audit path: agent_research_subagent",
   "AI audit path: context_creator",
 ] as const;
+
+function sendAgentMessageWithSignal(executionId: string, signal: AbortSignal) {
+  return sendAgentMessage(
+    [{ role: "user", content: "review everything" }],
+    [],
+    {
+      projectId: "project-1",
+      pathId: "chat_agent_main",
+      executionId,
+    },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    signal,
+  );
+}
 
 function emitChat(
   channel: "chat:stream-chunk" | "chat:stream-done" | "chat:stream-error",
@@ -182,6 +209,139 @@ describe("chat and Agent audit contracts", () => {
         }),
       }),
     );
+  });
+
+  it("aborts an in-flight agent send and cancels its audit execution", async () => {
+    let rejectSend: ((error: Error) => void) | undefined;
+    invokeMock
+      .mockImplementationOnce((command: string) => {
+        order.push(`invoke:${command}`);
+        return new Promise<Awaited<ReturnType<typeof invokeMock>>>(
+          (_resolve, reject) => {
+            rejectSend = reject;
+          },
+        );
+      })
+      .mockImplementationOnce(async (command: string) => {
+        order.push(`invoke:${command}`);
+        throw new Error("abort request failed");
+      });
+    const controller = new AbortController();
+    const warn = vi.spyOn(debugLog, "warn");
+    const send = sendAgentMessageWithSignal(
+      "execution-agent-stop",
+      controller.signal,
+    );
+    await vi.waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "send_agent_message",
+        expect.anything(),
+      ),
+    );
+
+    controller.abort();
+    await vi.waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("abort_chat_stream", {
+        streamId: "execution-agent-stop",
+      }),
+    );
+    rejectSend?.(new Error("AI_REQUEST_STOPPED_BY_USER"));
+    await expect(send).rejects.toThrow("AI_REQUEST_STOPPED_BY_USER");
+
+    expect(cancelMock).toHaveBeenCalledWith(
+      expect.objectContaining({ executionId: "execution-agent-stop" }),
+      expect.objectContaining({
+        reason: "stopped",
+        metadata: expect.objectContaining({
+          transportAbortRequested: true,
+          abortCommandAcknowledged: false,
+          transportTerminationObserved: true,
+          providerAbortReceiptObserved: false,
+        }),
+      }),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      "ChatApi",
+      "abort agent send",
+      "abort command was not acknowledged",
+    );
+    warn.mockRestore();
+    expect(failMock).not.toHaveBeenCalled();
+  });
+
+  it("records a different failure as failed even after Stop", async () => {
+    let rejectSend: ((error: Error) => void) | undefined;
+    invokeMock.mockImplementationOnce(
+      () =>
+        new Promise<Awaited<ReturnType<typeof invokeMock>>>(
+          (_resolve, reject) => {
+            rejectSend = reject;
+          },
+        ),
+    );
+    const controller = new AbortController();
+    const send = sendAgentMessageWithSignal(
+      "execution-stop-then-error",
+      controller.signal,
+    );
+    await vi.waitFor(() => expect(rejectSend).toBeDefined());
+
+    controller.abort();
+    rejectSend?.(new Error("D2A_EGRESS_DENIED: legacy-request-stopped"));
+    await expect(send).rejects.toThrow("D2A_EGRESS_DENIED");
+
+    expect(failMock).toHaveBeenCalledOnce();
+    expect(cancelMock).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a provider error that quotes the stop marker as Stop", async () => {
+    let rejectSend: ((error: Error) => void) | undefined;
+    invokeMock.mockImplementationOnce(
+      () =>
+        new Promise<Awaited<ReturnType<typeof invokeMock>>>(
+          (_resolve, reject) => {
+            rejectSend = reject;
+          },
+        ),
+    );
+    const controller = new AbortController();
+    const send = sendAgentMessageWithSignal(
+      "execution-stop-quoted-marker",
+      controller.signal,
+    );
+    await vi.waitFor(() => expect(rejectSend).toBeDefined());
+
+    controller.abort();
+    rejectSend?.(
+      new Error('API error 400: {"message":"AI_REQUEST_STOPPED_BY_USER"}'),
+    );
+    await expect(send).rejects.toThrow("API error 400");
+
+    expect(failMock).toHaveBeenCalledOnce();
+    expect(cancelMock).not.toHaveBeenCalled();
+  });
+
+  it("requests native cancellation before invoking a send with an aborted signal", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await sendAgentMessageWithSignal(
+      "execution-pre-aborted",
+      controller.signal,
+    );
+
+    expect(order).toEqual([
+      "audit:begin",
+      "audit:dispatch",
+      "invoke:abort_chat_stream",
+      "invoke:send_agent_message",
+      "audit:complete",
+    ]);
+    expect(invokeMock).toHaveBeenCalledWith("abort_chat_stream", {
+      streamId: "execution-pre-aborted",
+    });
+    expect(cancelMock).not.toHaveBeenCalled();
+    expect(failMock).not.toHaveBeenCalled();
   });
 
   it("AI audit path: chat_stream_non_agent", async () => {

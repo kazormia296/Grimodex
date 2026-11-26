@@ -1759,13 +1759,48 @@ fn edited_revision_apply_survives_undo_and_redo_as_unmarked_events() {
         assert_eq!(reveal, None);
     }
     drain_freshness(&db);
+    // SRD/1 X (確認 138): the undo revoked both approvals and redo does not
+    // restore them, so neither revision is used until the author re-approves.
+    db.with_conn_mut(|conn| {
+        for revision in &revisions {
+            assert_unavailable(conn, &fixture, revision, fixture.scene("s2"));
+        }
+        Ok(())
+    })
+    .expect("revoked revisions stay unavailable after undo and redo");
+
+    use grimodex_db::narrative_extraction::{
+        narrative_extraction_reapprove_applied_proposals, ReapproveAppliedProposalsPayload,
+    };
+    let targets = prepare
+        .applications
+        .iter()
+        .map(|app| ChronicleBulkApproveTarget {
+            proposal_id: app.proposal_id.clone(),
+            revision_id: app.revision_id.clone(),
+        })
+        .collect();
+    let result = narrative_extraction_reapprove_applied_proposals(
+        &db,
+        ReapproveAppliedProposalsPayload {
+            project_id: fixture.project().to_owned(),
+            targets,
+        },
+        &mut || false,
+    )
+    .expect("human reapproval after redo");
+    assert_eq!(
+        result["approved"].as_array().unwrap().len(),
+        revisions.len(),
+        "{result}"
+    );
     db.with_conn_mut(|conn| {
         for revision in &revisions {
             assert_eligible(conn, &fixture, revision);
         }
         Ok(())
     })
-    .expect("eligibility is unchanged after undo and redo");
+    .expect("reapproval restores retrieval eligibility");
 }
 
 /// 作者が編集して承認した版を、承認済みの現行の全提案と一緒に取り込む（取り込みの計画は、

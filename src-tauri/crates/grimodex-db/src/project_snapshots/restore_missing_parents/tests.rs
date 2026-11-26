@@ -20,144 +20,138 @@ use super::*;
 /// a live row of one of them can survive a restore that replaces the scope.
 const PARTIAL_PARENTS: &[&str] = &["post_effect_annotations"];
 
-/// Foreign keys the canonical plan (or `reshape_authorship_inserts`) already
-/// deals with before this step runs. They are older, they do not tell the author
-/// (DR-SRX-30, PR body "remaining limits"), and this step leaves them alone.
+/// canonical plan が先に処理する列。親不在による除外・NULL 化は、既存 kind で件数を加える。
+/// authorship_spans は対応 kind がなく、codex_entries.source_chat_message_id は意図的な NULL 化。
 const CANONICAL_FILTERED: &[(&str, &str, &str)] = &[
     (
         "authorship_spans",
         "codex_entry_id",
-        "reshape_authorship_inserts: the document must exist after the restore",
+        "reshape_authorship_inserts: 対応する kind がない",
     ),
     (
         "authorship_spans",
         "detail_value_id",
-        "reshape_authorship_inserts: the document must exist after the restore",
+        "reshape_authorship_inserts: 対応する kind がない",
     ),
     (
         "authorship_spans",
         "phase_id",
-        "reshape_authorship_inserts: the document must exist after the restore",
+        "reshape_authorship_inserts: 対応する kind がない",
     ),
     (
         "authorship_spans",
         "snippet_id",
-        "reshape_authorship_inserts: the document must exist after the restore",
+        "reshape_authorship_inserts: 対応する kind がない",
     ),
     (
         "authorship_spans",
         "sticky_id",
-        "reshape_authorship_inserts: the document must exist after the restore",
+        "reshape_authorship_inserts: 対応する kind がない",
     ),
     (
         "codex_entries",
         "source_chat_message_id",
-        "canonical plan: always inserted as NULL",
-    ),
-    (
-        "editor_stickies",
-        "chronicle_event_id",
-        "canonical plan: a sticky whose unselected owner is gone is left out",
+        "canonical plan: 意図した NULL 化",
     ),
     (
         "editor_stickies",
         "codex_entry_id",
-        "canonical plan: a sticky whose unselected owner is gone is left out",
+        "canonical plan: Codex 親の不在を計上",
     ),
     (
         "editor_stickies",
         "phase_id",
-        "canonical plan: a sticky whose unselected owner is gone is left out",
+        "canonical plan: Codex Phase の親不在を計上",
     ),
     (
         "editor_stickies",
         "snippet_id",
-        "canonical plan: a sticky whose unselected owner is gone is left out",
+        "canonical plan: Snippet の親不在を計上",
     ),
     (
         "editor_stickies",
         "tree_node_id",
-        "canonical plan: a sticky whose unselected owner is gone is left out",
+        "canonical plan: 場面の親不在を計上",
     ),
     (
         "event_participants",
         "codex_entry_id",
-        "canonical plan: a participant whose entry is gone is left out",
+        "canonical plan: Codex 親の不在を計上",
     ),
     (
         "events",
         "location_codex_id",
-        "canonical plan: set to NULL when the entry is gone",
+        "canonical plan: Codex 親の不在を計上",
     ),
     (
         "events",
         "primary_codex_id",
-        "canonical plan: set to NULL when the entry is gone",
+        "canonical plan: Codex 親の不在を計上",
     ),
     (
         "foreshadow_codex_links",
         "codex_entry_id",
-        "canonical plan: a link whose entry is gone is left out",
+        "canonical plan: Codex 親の不在を計上",
     ),
     (
         "foreshadow_payoffs",
         "scene_id",
-        "canonical plan: a payoff whose scene is gone is left out",
+        "canonical plan: 場面の親不在を計上",
     ),
     (
         "foreshadow_setups",
         "scene_id",
-        "canonical plan: a setup whose scene is gone is left out",
+        "canonical plan: 場面の親不在を計上",
     ),
     (
         "foreshadows",
         "payoff_scene_id",
-        "canonical plan: set to NULL when the scene is gone",
+        "canonical plan: 場面の親不在を計上",
     ),
     (
         "lint_ignored_diagnostics",
         "scene_id",
-        "canonical plan: an ignore whose scene is gone is left out",
+        "canonical plan: 場面の親不在を計上",
     ),
     (
         "scene_beat_pov_cache",
         "pov_character_id",
-        "canonical plan: a cache row whose character is gone is left out",
+        "canonical plan: Codex 親の不在を計上",
     ),
     (
         "scene_codex_mentions",
         "codex_entry_id",
-        "canonical plan: a mention whose entry is gone is left out",
+        "canonical plan: Codex 親の不在を計上",
     ),
     (
         "scene_codex_pins",
         "entry_id",
-        "canonical plan: a pin whose entry is gone is left out",
+        "canonical plan: Codex 親の不在を計上",
     ),
     (
         "snippet_entry_tags",
         "tag_id",
-        "canonical plan: a tag link whose tag is gone is left out",
+        "canonical plan: Codex Tag 親の不在を計上",
     ),
     (
         "snippets",
         "scene_id",
-        "canonical plan: set to NULL when the scene is gone (P10)",
+        "canonical plan: 場面の親不在を計上 (P10)",
     ),
     (
         "tree_node_labels",
         "node_id",
-        "canonical plan: a label link whose scene is gone is left out",
+        "canonical plan: 場面の親不在を計上",
     ),
     (
         "tree_nodes",
         "location_id",
-        "canonical plan: set to NULL when the entry is gone",
+        "canonical plan: Codex 親の不在を計上",
     ),
     (
         "tree_nodes",
         "pov_character_id",
-        "canonical plan: set to NULL when the entry is gone",
+        "canonical plan: Codex 親の不在を計上",
     ),
 ];
 
@@ -184,6 +178,7 @@ fn parent_table(parent: ParentRef) -> &'static str {
         ParentRef::Snippets => "snippets",
         ParentRef::ChatMessages => "chat_messages",
         ParentRef::ChatSessions => "chat_sessions",
+        ParentRef::Events => "events",
         ParentRef::PostEffectRuns => "post_effect_runs",
         ParentRef::PostEffectAnnotations => "post_effect_annotations",
     }
@@ -397,7 +392,10 @@ fn every_edge_is_a_real_foreign_key_with_the_parent_owner_and_on_delete_it_says(
                 edge.column,
                 edge.kind
             );
-            assert_ne!(edge.kind, table, "a kind is a fixed id, never a table name");
+            // 付箋は、画面の kind（editor_stickies）が表の名前と同じ（canonical の filter と共通）。
+            if edge.kind != "editor_stickies" {
+                assert_ne!(edge.kind, table, "a kind is a fixed id, never a table name");
+            }
         }
         // Every edge names a distinct column.
         let names: BTreeSet<_> = MISSING_PARENT_EDGES
@@ -746,6 +744,7 @@ fn the_dangling_check_lists_the_tables_of_the_selected_scopes() {
                 T::MapEdges,
                 T::MapStickies,
                 T::MapAiBranches,
+                T::EditorStickies,
             ]
             .map(|t| t.as_str())
             .into(),

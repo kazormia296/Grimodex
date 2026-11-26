@@ -413,10 +413,23 @@ export async function getChronicleState(
     },
     ctx.getUiLanguage(),
   );
+  const content = calendarRow
+    ? {
+        ...snapshot,
+        // AI が日数を数えるのに要る分だけ（CED/1 の N7・◇9・確認 161）。
+        calendar: {
+          daysPerYear: calendarRow.daysPerYear,
+          startYear: calendarRow.startYear,
+          months: calendarRow.months,
+          leapRule: calendarRow.leapRule,
+          reform: calendarRow.reform,
+        },
+      }
+    : snapshot;
   return result(
     ctx,
     "get_chronicle_state",
-    snapshot,
+    content,
     `Chronicle state at scene (${anchor.source})`,
   );
 }

@@ -28,12 +28,15 @@ vi.mock("./events.js", async (importOriginal) => {
 });
 
 import type { AiAuditEventInput } from "../shared/aiAuditEvents.js";
+import { MAIN_READ_CALLER_TIMEOUT_MS } from "../shared/ipcCallerTimeouts.js";
 import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
 import {
   consumeProfileActivation,
   createProfileEgressGate,
 } from "./profileEgress.js";
 import type { NapiBackendLike } from "../shared/ipcContract.js";
+import type { CoreReadContext } from "../shared/mastraRead/ports.js";
+import { createReadExecutors } from "../shared/readDomain/core/readExecutors.js";
 import type {
   MastraAgentTurnStartRequest,
   MastraAgentTurnStartResult,
@@ -111,10 +114,11 @@ function deferred<T>(): Deferred<T> {
 }
 
 const flush = async (): Promise<void> => {
-  for (let i = 0; i < 24; i += 1) await Promise.resolve();
+  for (let i = 0; i < 32; i += 1) await Promise.resolve();
 };
 
 const PROJECT_ID = "project-1";
+const CHAT_POLICY_SQL = "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1";
 
 function startRequest(
   turnId: string,
@@ -184,7 +188,12 @@ interface Harness {
     events: AiAuditEventInput[];
   }[];
   readonly sends: { args: AgentWireArgs; settings: unknown; apiKey: string }[];
-  readonly dbQueries: { sql: string; params: unknown; method: string }[];
+  readonly dbQueries: {
+    sql: string;
+    params: unknown;
+    method: string;
+    callerIdentity: unknown;
+  }[];
   /** Resolves the oldest pending Native send. */
   nativeSends: Deferred<string>[];
   readonly loads: { count: number };
@@ -225,6 +234,7 @@ function harness(
     runRead?: (owner: MastraTurnOwner) => Promise<unknown>;
     runTurn?: (input: MastraAgentTurnInput) => Promise<void>;
     readDbExecute?: NapiBackendLike["dbExecute"];
+    policyDbExecute?: NapiBackendLike["dbExecute"];
     nativeReadMethods?: Partial<
       Pick<
         NapiBackendLike,
@@ -237,8 +247,11 @@ function harness(
     >;
   } = {},
 ): Harness {
-  const { loadReadBindings: readBindingsLoaderOverride, ...ownerOverrides } =
-    overrides;
+  const {
+    loadReadBindings: readBindingsLoaderOverride,
+    policyDbExecute,
+    ...ownerOverrides
+  } = overrides;
   const appended: Harness["appended"] = [];
   const sends: Harness["sends"] = [];
   const dbQueries: Harness["dbQueries"] = [];
@@ -269,7 +282,19 @@ function harness(
     async dbExecute(
       ...args: Parameters<NapiBackendLike["dbExecute"]>
     ): Promise<string> {
-      dbQueries.push({ sql: args[0], params: args[1], method: args[2] });
+      dbQueries.push({
+        sql: args[0],
+        params: args[1],
+        method: args[2],
+        callerIdentity: args[3],
+      });
+      if (args[0] === CHAT_POLICY_SQL) {
+        if (policyDbExecute) return policyDbExecute(...args);
+        return JSON.stringify({
+          __grimodexDbResultKind: "read",
+          rows: [{ ai_policy: null }],
+        });
+      }
       if (overrides.readDbExecute) return overrides.readDbExecute(...args);
       return JSON.stringify({
         __grimodexDbResultKind: "read",
@@ -305,6 +330,7 @@ function harness(
         const preparedRequest = input.prepareSend
           ? input.prepareSend(request, { sendIndex: 0, previous: null })
           : request;
+        await input.assertSendAllowed?.({ sendIndex: 0, previous: null });
         const handle = await input.audit.begin(preparedRequest);
         let raw;
         try {
@@ -467,6 +493,7 @@ async function sendPreparedRequest(
 ): Promise<{ response: AgentWireResponse; prepared: AgentAuditRequest }> {
   if (!input.prepareSend) throw new Error("prepareSend missing");
   const prepared = input.prepareSend(request, { sendIndex, previous: null });
+  await input.assertSendAllowed?.({ sendIndex, previous: null });
   const handle = await input.audit.begin(prepared);
   let response: AgentWireResponse;
   try {
@@ -1707,7 +1734,12 @@ describe("M4 read bindings (T-b)", () => {
       tokensOut: 5,
       cost: 0.1 + 0.2,
     });
-    expect(h.dbQueries).toHaveLength(3);
+    expect(
+      h.dbQueries.filter(({ sql }) => sql !== CHAT_POLICY_SQL),
+    ).toHaveLength(3);
+    expect(
+      h.dbQueries.filter(({ sql }) => sql === CHAT_POLICY_SQL),
+    ).toHaveLength(2);
     expect(h.sends).toHaveLength(2);
     expect(h.sends[0]?.args.tools?.map(({ name }) => name)).toEqual([
       "get_scene",
@@ -1804,6 +1836,172 @@ describe("M4 read bindings (T-b)", () => {
     ).toEqual(legacy.sentMessages);
   });
 
+  it("passes null, array, string, and number tool inputs through like the legacy executor", async () => {
+    // The renderer's legacy dispatcher invokes this shared executor without input normalization.
+    const legacyGetScene = createReadExecutors({
+      getDb: () => {
+        throw new Error("unexpected DB read for an empty id");
+      },
+      getTreeState: () => ({
+        projectId: PROJECT_ID,
+        nodes: [],
+        activeSceneId: "scene-1",
+      }),
+      countTokens: (text: string) => text.length,
+    } as unknown as CoreReadContext).get_scene;
+    const readBindings = await import("./mastraTurnReadBindings.js");
+    const { bindings } = await readBindings.createTurnReadBindings({
+      backend: {
+        async dbExecute() {
+          return readAnswer();
+        },
+      } as unknown as NapiBackendLike,
+      identity: { senderId: 7, workspaceId: WORKSPACE } as never,
+      hooks: {},
+      request: startRequest(TURN_A, { tools: ["get_scene"] }),
+      projectId: PROJECT_ID,
+      currentSceneId: "scene-1",
+      tokenizer: createPerCodePointTokenizer(),
+      toolDefinitions: [{ name: "get_scene", description: "scene" }],
+    });
+    const mainGetScene = bindings[0]!;
+    for (const params of [null, [], "raw", 7]) {
+      const [main, legacy] = await Promise.allSettled([
+        mainGetScene.execute(params, {
+          toolCallId: "input-shape",
+          signal: new AbortController().signal,
+        }),
+        legacyGetScene(params as never),
+      ]);
+      expect(main.status).toBe(legacy.status);
+      if (main.status === "fulfilled" && legacy.status === "fulfilled") {
+        expect(main.value).toEqual({
+          text:
+            legacy.value.content == null
+              ? legacy.value.summary || "No result (not found)."
+              : JSON.stringify(legacy.value.content),
+          tokensUsed: legacy.value.tokensUsed,
+          summary: legacy.value.summary,
+        });
+      } else if (main.status === "rejected" && legacy.status === "rejected") {
+        expect((main.reason as Error).message).toBe(
+          (legacy.reason as Error).message,
+        );
+      }
+    }
+  });
+
+  it("does not let a non-object get_codex_entry input throw in the injected-entry shortcut", async () => {
+    const h = harness({
+      responses: [
+        {
+          blocks: [
+            {
+              type: "tool_use",
+              id: "injected-null",
+              name: "get_codex_entry",
+              input: null as unknown as Record<string, unknown>,
+            },
+          ],
+          stopReason: "tool_use",
+        },
+        {
+          blocks: [{ type: "text", content: "Done." }],
+          stopReason: "end_turn",
+        },
+      ],
+      runTurn: driveCoreReadOwnerLoop,
+    });
+    const { context } = h.newContext();
+    const result = completed(
+      await h.owner.start(
+        context,
+        startRequest(TURN_A, {
+          fullyInjectedIds: ["injected-entry"],
+          tools: ["get_codex_entry"],
+        }),
+      ),
+    );
+
+    expect(result.loopResult?.stoppedReason).toBe("completed");
+    expect(h.sends[1]?.args.messages).toContainEqual({
+      role: "tool_result",
+      toolUseId: "injected-null",
+      content: "No id provided",
+      isError: false,
+    });
+  });
+
+  it("drops a read result when user Stop arrives after execution without recording or finishing it", async () => {
+    let stop = (): void => undefined;
+    let executions = 0;
+    const h = harness({
+      responses: [
+        {
+          blocks: [
+            {
+              type: "tool_use",
+              id: "stop-after-read",
+              name: "get_scene",
+              input: {},
+            },
+          ],
+          stopReason: "tool_use",
+        },
+      ],
+      readDbExecute: mainReadFixture("Scene"),
+      runTurn: async (input) => {
+        const bindings = input.bindings?.map((binding) =>
+          binding.name === "get_scene"
+            ? {
+                ...binding,
+                async execute(
+                  args: unknown,
+                  ctx: {
+                    toolCallId: string;
+                    signal: AbortSignal;
+                  },
+                ) {
+                  executions += 1;
+                  const result = await binding.execute(args, ctx);
+                  stop();
+                  return result;
+                },
+              }
+            : binding,
+        );
+        await driveCoreReadOwnerLoop({ ...input, bindings });
+      },
+    });
+    const { context } = h.newContext();
+    stop = () => h.owner.cancel(context, { turnId: TURN_A } as never);
+
+    const result = completed(
+      await h.owner.start(
+        context,
+        startRequest(TURN_A, { tools: ["get_scene"] }),
+      ),
+    );
+    const toolEvents = progressDeliveries
+      .map(
+        ([, , payload]) =>
+          (payload as { event: Record<string, unknown> }).event,
+      )
+      .filter((event) => event.kind === "tool");
+
+    expect(executions).toBe(1);
+    expect(result.loopResult).toMatchObject({
+      stoppedReason: "aborted",
+      toolCallRecords: [],
+      usage: { totalTokens: 0 },
+    });
+    expect(toolEvents.map(({ phase }) => phase)).toEqual(["started"]);
+    expect(h.sends).toHaveLength(1);
+    expect(JSON.stringify(h.sends)).not.toContain(
+      "Tool execution skipped because the turn stopped.",
+    );
+  });
+
   it("rejects a tool at the execution boundary after the owner's limit removes its declaration", async () => {
     const responses: AgentWireResponse[] = [
       {
@@ -1869,7 +2067,9 @@ describe("M4 read bindings (T-b)", () => {
       summary: ALREADY_INJECTED_CODEX_ENTRY_SUMMARY,
       tokensUsed: JSON.stringify(content).length,
     };
-    let queriesAtRun = 0;
+    let toolQueriesAtRun = 0;
+    const toolQueryCount = (): number =>
+      h.dbQueries.filter(({ sql }) => sql !== CHAT_POLICY_SQL).length;
     const h = harness({
       responses: [
         {
@@ -1889,7 +2089,7 @@ describe("M4 read bindings (T-b)", () => {
         },
       ],
       runTurn: async (input) => {
-        queriesAtRun = h.dbQueries.length;
+        toolQueriesAtRun = toolQueryCount();
         await driveCoreReadOwnerLoop(input);
       },
     });
@@ -1904,7 +2104,7 @@ describe("M4 read bindings (T-b)", () => {
       ),
     );
 
-    expect(h.dbQueries).toHaveLength(queriesAtRun);
+    expect(toolQueryCount()).toBe(toolQueriesAtRun);
     expect(h.sends[1]?.args.messages).toContainEqual({
       role: "tool_result",
       toolUseId: "injected-call",
@@ -1921,7 +2121,7 @@ describe("M4 read bindings (T-b)", () => {
     ]);
   });
 
-  it("does not build or run read ports when request.tools is empty", async () => {
+  it("checks chat policy without loading read ports when request.tools is empty", async () => {
     const h = harness({
       runTurn: async (input) => {
         expect(input.bindings).toEqual([]);
@@ -1930,7 +2130,7 @@ describe("M4 read bindings (T-b)", () => {
     });
     const { context } = h.newContext();
     completed(await h.owner.start(context, startRequest(TURN_A)));
-    expect(h.dbQueries).toEqual([]);
+    expect(h.dbQueries.map(({ sql }) => sql)).toEqual([CHAT_POLICY_SQL]);
     expect(h.readBindingLoads.count).toBe(0);
   });
 
@@ -4096,5 +4296,212 @@ describe("read lifecycle: the hooks, the count and the waits (DR-MP4-5)", () => 
       );
       expect(h.sends).toHaveLength(0);
     });
+  });
+});
+
+describe("the per-send chat policy check (DR-MP4-26)", () => {
+  const storedPolicy = (chat: boolean): string =>
+    JSON.stringify({
+      preset: "full",
+      toggles: { chat, bodyWrite: true, analysis: true },
+    });
+
+  it("blocks the first send before audit begin and reads with the turn identity", async () => {
+    const h = harness({
+      policyDbExecute: async () =>
+        readAnswer([{ ai_policy: storedPolicy(false) }]),
+    });
+    const c = h.newContext();
+
+    await expect(
+      h.owner.start(c.context, startRequest(TURN_A)),
+    ).rejects.toThrow(/CANCELLED/);
+
+    expect(h.dbQueries).toEqual([
+      {
+        sql: CHAT_POLICY_SQL,
+        params: [PROJECT_ID],
+        method: "get",
+        callerIdentity: JSON.stringify(c.identity),
+      },
+    ]);
+    expect(h.appended).toEqual([]);
+    expect(h.sends).toEqual([]);
+    expect(
+      progressDeliveries.map(
+        ([, , payload]) => (payload as { event: { kind: string } }).event.kind,
+      ),
+    ).not.toContain("send-accepted");
+  });
+
+  it("blocks the next send after a tool round without beginning another audit row", async () => {
+    let reads = 0;
+    const h = harness({
+      responses: [responseWith("tool_use", "", ["probe"])],
+      runTurn: driveOwnerLoop,
+      policyDbExecute: async () =>
+        readAnswer([{ ai_policy: storedPolicy(reads++ === 0) }]),
+    });
+    const { context } = h.newContext();
+
+    const result = completed(
+      await h.owner.start(context, startRequest(TURN_A)),
+    );
+
+    expect(h.sends).toHaveLength(1);
+    expect(
+      h.dbQueries.filter(({ sql }) => sql === CHAT_POLICY_SQL),
+    ).toHaveLength(2);
+    expect(
+      h.types().filter((type) => type === "execution.started"),
+    ).toHaveLength(1);
+    expect(
+      progressDeliveries.filter(
+        ([, , payload]) =>
+          (payload as { event: { kind: string } }).event.kind ===
+          "send-accepted",
+      ),
+    ).toHaveLength(1);
+    expect(result.loopResult?.stoppedReason).toBe("aborted");
+  });
+
+  it("allows NULL and rejects a missing row, malformed row, or unreadable policy", async () => {
+    const allowed = harness({
+      policyDbExecute: async () => readAnswer([{ ai_policy: null }]),
+    });
+    const allowedContext = allowed.newContext();
+    completed(
+      await allowed.owner.start(allowedContext.context, startRequest(TURN_A)),
+    );
+    expect(allowed.sends).toHaveLength(1);
+
+    for (const result of [
+      readAnswer([]),
+      JSON.stringify({ rows: [[null]] }),
+      readAnswer([{}]),
+      readAnswer([{ ai_policy: "not-json" }]),
+    ]) {
+      const h = harness({ policyDbExecute: async () => result });
+      const { context } = h.newContext();
+      await expect(
+        h.owner.start(context, startRequest(uuid())),
+      ).rejects.toThrow(/CANCELLED/);
+      expect(h.appended).toEqual([]);
+      expect(h.sends).toEqual([]);
+    }
+
+    const failed = harness({
+      policyDbExecute: async () => {
+        throw new Error("policy read failed");
+      },
+    });
+    const failedContext = failed.newContext();
+    await expect(
+      failed.owner.start(failedContext.context, startRequest(uuid())),
+    ).rejects.toThrow("policy read failed");
+    expect(failed.appended).toEqual([]);
+    expect(failed.sends).toEqual([]);
+  });
+
+  it("re-checks Stop after the read resolves, before audit begin", async () => {
+    const policyRead = deferred<string>();
+    const h = harness({ policyDbExecute: () => policyRead.promise });
+    const c = h.newContext();
+    const started = h.owner.start(c.context, startRequest(TURN_A));
+
+    await flush();
+    expect(h.dbQueries).toHaveLength(1);
+    h.owner.cancel(c.context, { turnId: TURN_A });
+    policyRead.resolve(readAnswer([{ ai_policy: null }]));
+
+    await expect(started).rejects.toThrow(/CANCELLED/);
+    expect(h.appended).toEqual([]);
+    expect(h.sends).toEqual([]);
+  });
+
+  it("re-checks a forced abort after the read and keeps its slot until Native settles", async () => {
+    const policyRead = deferred<string>();
+    const h = harness({ policyDbExecute: () => policyRead.promise });
+    const c = h.newContext();
+    const started = h.owner.start(c.context, startRequest(TURN_A));
+    const outcome = started.then(
+      () => "resolved",
+      (error: Error) => error.message,
+    );
+
+    await flush();
+    expect(h.dbQueries).toHaveLength(1);
+    c.sender.emit("destroyed");
+    expect(await outcome).toMatch(/ABORTED: sender-gone/);
+    expect(h.owner.slotsInUse()).toBe(1);
+    expect(h.appended).toEqual([]);
+    expect(h.sends).toEqual([]);
+
+    policyRead.resolve(readAnswer([{ ai_policy: null }]));
+    await flush();
+    expect(h.owner.slotsInUse()).toBe(0);
+  });
+
+  it("times out a silent policy read before send and ignores its late answer", async () => {
+    vi.useFakeTimers();
+    const policyRead = deferred<string>();
+    const h = harness({ policyDbExecute: () => policyRead.promise });
+    const { context } = h.newContext();
+    const started = h.owner.start(context, startRequest(TURN_A));
+    let outcome: unknown;
+    let settled = false;
+    void started.then(
+      () => {
+        settled = true;
+      },
+      (error: unknown) => {
+        outcome = error;
+        settled = true;
+      },
+    );
+
+    await flush();
+    expect(h.dbQueries).toHaveLength(1);
+    expect(h.sends).toEqual([]);
+    expect(h.owner.readsInFlight()).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(MAIN_READ_CALLER_TIMEOUT_MS.db_execute);
+    await flush();
+    expect(settled).toBe(true);
+    expect(outcome).toMatchObject({
+      message: expect.stringMatching(/did not answer within/),
+    });
+    expect(h.owner.activeTurnCount()).toBe(0);
+    expect(h.sends).toEqual([]);
+    expect(h.owner.readsInFlight()).toBe(1);
+    expect(h.owner.slotsInUse()).toBe(1);
+
+    policyRead.resolve(readAnswer([{ ai_policy: null }]));
+    await flush();
+    expect(h.sends).toEqual([]);
+    expect(h.owner.readsInFlight()).toBe(0);
+    expect(h.owner.slotsInUse()).toBe(0);
+  });
+
+  it("ends on forced abort before the policy read answers and drops the late result", async () => {
+    const policyRead = deferred<string>();
+    const h = harness({ policyDbExecute: () => policyRead.promise });
+    const { context, sender } = h.newContext();
+    const started = h.owner.start(context, startRequest(TURN_A));
+
+    await flush();
+    expect(h.owner.readsInFlight()).toBe(1);
+    sender.emit("destroyed");
+
+    await expect(started).rejects.toThrow(/ABORTED: sender-gone/);
+    expect(h.owner.activeTurnCount()).toBe(0);
+    expect(h.owner.readsInFlight()).toBe(1);
+    expect(h.sends).toEqual([]);
+
+    policyRead.resolve(readAnswer([{ ai_policy: null }]));
+    await flush();
+    expect(h.sends).toEqual([]);
+    expect(h.owner.readsInFlight()).toBe(0);
+    expect(h.owner.slotsInUse()).toBe(0);
   });
 });

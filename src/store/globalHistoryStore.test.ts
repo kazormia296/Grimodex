@@ -463,6 +463,48 @@ describe("useGlobalHistoryStore", () => {
     expect(state.future).toEqual([]);
   });
 
+  it("keeps both stacks when Native could not revoke an approval, even if the text says version conflict", async () => {
+    // SRD/1 HK3: the code is checked before the version-conflict wording.
+    const refused = () =>
+      new IpcInvokeError("history_replay", {
+        code: "NEX_EXISTENCE_SYNC_FAILED",
+        message: "NEX_EXISTENCE_SYNC_FAILED: version conflict",
+        retryable: true,
+        outcome: "failed",
+      });
+    let fail = true;
+    const command = {
+      kind: "plot" as const,
+      label: "remove imported event",
+      undo: async () => {
+        if (fail) throw refused();
+      },
+      redo: async () => {
+        if (fail) throw refused();
+      },
+    };
+    useGlobalHistoryStore.getState().push(command);
+
+    await expect(useGlobalHistoryStore.getState().undo()).rejects.toThrow(
+      "NEX_EXISTENCE_SYNC_FAILED",
+    );
+    let state = useGlobalHistoryStore.getState();
+    expect(state.past).toEqual([command]);
+    expect(state.future).toEqual([]);
+    expect(state.isReplaying).toBe(false);
+
+    fail = false;
+    await useGlobalHistoryStore.getState().undo();
+    fail = true;
+    await expect(useGlobalHistoryStore.getState().redo()).rejects.toThrow(
+      "NEX_EXISTENCE_SYNC_FAILED",
+    );
+    state = useGlobalHistoryStore.getState();
+    expect(state.past).toEqual([]);
+    expect(state.future).toEqual([command]);
+    expect(state.isReplaying).toBe(false);
+  });
+
   it("undo while already replaying is a no-op", async () => {
     let undoCount = 0;
     useGlobalHistoryStore.getState().push({

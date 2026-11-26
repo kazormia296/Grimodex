@@ -106,12 +106,15 @@
 
 use rusqlite::{params, Connection};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use serde_json::Value;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::attention::{
     get_attention, is_attention_applicable, AttentionDisposition, AttentionRow,
 };
-use super::consumer_identity::consumer_finding_key;
+use super::consumer_identity::{
+    consumer_finding_key, CONTRACT_CONSUMER_KINDS, PROPOSAL_REVISION_CONSUMER_KIND,
+};
 use super::evaluator::{BuildAction, EvidenceFreshness};
 use super::finding_observation::{
     latest_finding_lifecycle_for_identity, latest_terminal_failure_lifecycle_for_identity,
@@ -120,6 +123,22 @@ use super::finding_observation::{
 };
 use super::semantic_epoch::get_current_epoch;
 use super::terminal_failure::TERMINAL_FAILURE_CONSUMER_KIND;
+
+const STALE_PROPOSAL_CONSUMER_PREDICATE: &str = "f.consumer_kind = 'proposal-revision'
+    AND f.evidence_freshness IN
+        ('stale', 'source-missing', 'anchor-mismatch', 'read-set-drift', 'unknown')";
+const EXCLUDED_PROPOSAL_REVISION_PREDICATE: &str = "EXISTS (
+        SELECT 1
+          FROM narrative_proposal_revisions r
+          JOIN narrative_proposals p ON p.id = r.proposal_id
+          JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+         WHERE r.id = f.consumer_key
+           AND s.project_id = f.project_id
+           AND (p.status = 'rejected'
+                OR (p.current_revision_id IS NOT NULL AND p.current_revision_id <> r.id))
+    )";
+const STALE_PROPOSAL_SCENES_PAGE_DEFAULT: u64 = 50;
+const STALE_PROPOSAL_SCENES_PAGE_MAX: u64 = 200;
 
 /// Identifies which read authority produced an Inbox entry. Terminal failure
 /// entries are Observation/lifecycle projections, not Consumer Freshness
@@ -221,6 +240,76 @@ pub struct InboxEntry {
     pub latest_observation: Option<FindingObservationRow>,
     pub attention: Option<AttentionRow>,
     pub is_snoozed_and_active: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StaleProposalSceneCount {
+    pub scene_id: String,
+    pub proposal_count: u64,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StaleProposalScenesPage {
+    pub scenes: Vec<StaleProposalSceneCount>,
+    pub without_scene_count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct StaleProposalBreakdown {
+    pub stale: u64,
+    pub source_missing: u64,
+    pub anchor_mismatch: u64,
+    pub read_set_drift: u64,
+    pub unknown: u64,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaintenanceHealthSummary {
+    pub proposals_checked: u64,
+    pub proposals_stale: u64,
+    pub stale_breakdown: StaleProposalBreakdown,
+    pub maintenance_stopped: u64,
+    pub unrecognized: u64,
+}
+
+#[derive(Debug, Default)]
+struct FreshnessSummaryCounts {
+    fresh: u64,
+    stale: u64,
+    source_missing: u64,
+    anchor_mismatch: u64,
+    read_set_drift: u64,
+    unknown: u64,
+    unrecognized: u64,
+}
+
+impl FreshnessSummaryCounts {
+    fn stale_total(&self) -> u64 {
+        self.stale + self.source_missing + self.anchor_mismatch + self.read_set_drift + self.unknown
+    }
+
+    fn into_summary(self, maintenance_stopped: u64) -> MaintenanceHealthSummary {
+        let proposals_stale = self.stale_total();
+        MaintenanceHealthSummary {
+            proposals_checked: self.fresh + proposals_stale,
+            proposals_stale,
+            stale_breakdown: StaleProposalBreakdown {
+                stale: self.stale,
+                source_missing: self.source_missing,
+                anchor_mismatch: self.anchor_mismatch,
+                read_set_drift: self.read_set_drift,
+                unknown: self.unknown,
+            },
+            maintenance_stopped,
+            unrecognized: self.unrecognized,
+        }
+    }
 }
 
 /// Return the latest current-epoch observation for each Finding identity that
@@ -414,6 +503,144 @@ fn terminal_resolution_is_strictly_newer(
     }
 }
 
+fn freshness_summary_counts(
+    conn: &Connection,
+    project_id: &str,
+) -> anyhow::Result<FreshnessSummaryCounts> {
+    let sql = format!(
+        "SELECT f.consumer_kind, f.evidence_freshness, f.build_action, COUNT(*),
+                SUM(CASE WHEN f.consumer_kind = 'proposal-revision'
+                              AND NOT ({EXCLUDED_PROPOSAL_REVISION_PREDICATE})
+                         THEN 1 ELSE 0 END)
+           FROM narrative_consumer_freshness f
+          WHERE f.project_id = ?1
+          GROUP BY f.consumer_kind, f.evidence_freshness, f.build_action"
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map(params![project_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+        ))
+    })?;
+
+    let mut counts = FreshnessSummaryCounts::default();
+    for row in rows {
+        let (consumer_kind, raw_freshness, raw_action, row_count, countable_proposals) = row?;
+        let freshness = EvidenceFreshness::try_from(raw_freshness.as_str())?;
+        BuildAction::try_from(raw_action.as_str())?;
+        let row_count = u64::try_from(row_count)?;
+        if !CONTRACT_CONSUMER_KINDS.contains(&consumer_kind.as_str()) {
+            counts.unrecognized += row_count;
+        }
+        if consumer_kind == PROPOSAL_REVISION_CONSUMER_KIND {
+            let count = u64::try_from(countable_proposals)?;
+            match freshness {
+                EvidenceFreshness::Fresh => counts.fresh += count,
+                EvidenceFreshness::Stale => counts.stale += count,
+                EvidenceFreshness::SourceMissing => counts.source_missing += count,
+                EvidenceFreshness::AnchorMismatch => counts.anchor_mismatch += count,
+                EvidenceFreshness::ReadSetDrift => counts.read_set_drift += count,
+                EvidenceFreshness::Unknown => counts.unknown += count,
+            }
+        }
+    }
+    Ok(counts)
+}
+
+/// The header calls this often, so it stays a single pass: the exclusion is
+/// only evaluated for rows that already match the stale predicate. It decodes
+/// every row's freshness and build action as fail-closed as
+/// [`freshness_summary_counts`] does.
+fn stale_proposal_candidate_count(conn: &Connection, project_id: &str) -> anyhow::Result<u64> {
+    let sql = format!(
+        "SELECT COALESCE(SUM(CASE WHEN {STALE_PROPOSAL_CONSUMER_PREDICATE}
+                                      AND NOT ({EXCLUDED_PROPOSAL_REVISION_PREDICATE})
+                                 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN f.evidence_freshness NOT IN
+                                          ('fresh', 'stale', 'source-missing', 'anchor-mismatch', 'read-set-drift', 'unknown')
+                                 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN f.build_action NOT IN
+                                          ('none', 'revalidate-exact', 'reanchor-candidate', 'resolve-only', 'recompile-only', 'rebuild-required', 'refresh-available', 'manual')
+                                 THEN 1 ELSE 0 END), 0)
+           FROM narrative_consumer_freshness f
+          WHERE f.project_id = ?1"
+    );
+    let (count, invalid_freshness, invalid_action): (i64, i64, i64) =
+        conn.query_row(&sql, params![project_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+    if invalid_freshness > 0 {
+        anyhow::bail!("NEX_EVIDENCE_FRESHNESS_INVALID: unknown evidence freshness");
+    }
+    if invalid_action > 0 {
+        anyhow::bail!("NEX_BUILD_ACTION_INVALID: unknown build action");
+    }
+    Ok(u64::try_from(count)?)
+}
+
+fn hidden_consumers(
+    conn: &Connection,
+    project_id: &str,
+    epoch_id: &str,
+    now: &str,
+    consumer_predicate: &str,
+    include_unrecognized_consumers: bool,
+) -> anyhow::Result<HashMap<(String, String), EvidenceFreshness>> {
+    let sql = format!(
+        "SELECT f.consumer_kind, f.consumer_key, f.evidence_freshness
+           FROM narrative_consumer_freshness f
+           JOIN narrative_maintenance_attention a
+             ON a.project_id = f.project_id
+            AND a.finding_key = f.consumer_kind || ':' || f.consumer_key
+          WHERE f.project_id = ?1
+            AND ({consumer_predicate})
+            AND a.disposition = 'snoozed'
+          ORDER BY f.consumer_kind, f.consumer_key"
+    );
+    let snoozed_consumers = conn
+        .prepare(&sql)?
+        .query_map(params![project_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut hidden = HashMap::new();
+    for (consumer_kind, consumer_key, raw_freshness) in snoozed_consumers {
+        // The summary counts proposal rows and unreadable kinds only.
+        if include_unrecognized_consumers
+            && consumer_kind != PROPOSAL_REVISION_CONSUMER_KIND
+            && CONTRACT_CONSUMER_KINDS.contains(&consumer_kind.as_str())
+        {
+            continue;
+        }
+        let finding_key = consumer_finding_key(&consumer_kind, &consumer_key);
+        let observations = list_observations_for_epoch(conn, project_id, epoch_id, &finding_key)?;
+        let (active_observations, has_unresolved_identity, _) =
+            active_finding_observations(conn, project_id, &observations)?;
+        let attention = get_attention(conn, project_id, &finding_key)?;
+        if snooze_hides_consumer(
+            &active_observations,
+            has_unresolved_identity,
+            attention.as_ref(),
+            now,
+        ) {
+            hidden.insert(
+                (consumer_kind, consumer_key),
+                EvidenceFreshness::try_from(raw_freshness.as_str())?,
+            );
+        }
+    }
+    Ok(hidden)
+}
+
 /// Count stale proposal Consumers without assembling the full Inbox.
 /// Observation history and Attention are read only for matching Consumers
 /// that actually have a Snoozed Attention row.
@@ -429,67 +656,237 @@ pub fn count_stale_proposals(
         return Ok(0);
     };
 
-    // Match list_consumer_freshness's fail-closed enum decoding while doing
-    // the candidate count in SQLite.
-    let (count, invalid_freshness, invalid_action): (i64, i64, i64) = conn.query_row(
-        "SELECT COALESCE(SUM(CASE WHEN consumer_kind = 'proposal-revision'
-                                      AND evidence_freshness IN
-                                          ('stale', 'source-missing', 'anchor-mismatch', 'read-set-drift', 'unknown')
-                                 THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN evidence_freshness NOT IN
-                                          ('fresh', 'stale', 'source-missing', 'anchor-mismatch', 'read-set-drift', 'unknown')
-                                 THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN build_action NOT IN
-                                          ('none', 'revalidate-exact', 'reanchor-candidate', 'resolve-only', 'recompile-only', 'rebuild-required', 'refresh-available', 'manual')
-                                 THEN 1 ELSE 0 END), 0)
-           FROM narrative_consumer_freshness
-          WHERE project_id = ?1",
-        params![project_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    let count = stale_proposal_candidate_count(conn, project_id)?;
+    let stale_predicate = format!(
+        "{STALE_PROPOSAL_CONSUMER_PREDICATE} AND NOT ({EXCLUDED_PROPOSAL_REVISION_PREDICATE})"
+    );
+    let hidden = hidden_consumers(
+        conn,
+        project_id,
+        &current_epoch.id,
+        now,
+        &stale_predicate,
+        false,
     )?;
-    if invalid_freshness > 0 {
-        anyhow::bail!("NEX_EVIDENCE_FRESHNESS_INVALID: unknown evidence freshness");
-    }
-    if invalid_action > 0 {
-        anyhow::bail!("NEX_BUILD_ACTION_INVALID: unknown build action");
+    Ok(count.saturating_sub(u64::try_from(hidden.len())?))
+}
+
+/// Read maintenance counts without assembling Consumer Freshness Inbox rows.
+pub fn maintenance_health_summary(
+    conn: &Connection,
+    project_id: &str,
+    now: &str,
+) -> anyhow::Result<MaintenanceHealthSummary> {
+    anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
+    anyhow::ensure!(!now.trim().is_empty(), "now is required");
+
+    let Some(current_epoch) = get_current_epoch(conn, project_id)? else {
+        return Ok(FreshnessSummaryCounts::default().into_summary(0));
+    };
+
+    let mut counts = freshness_summary_counts(conn, project_id)?;
+    let summary_snooze_predicate = format!(
+        "(f.consumer_kind <> '{PROPOSAL_REVISION_CONSUMER_KIND}'
+         OR NOT ({EXCLUDED_PROPOSAL_REVISION_PREDICATE}))"
+    );
+    let hidden = hidden_consumers(
+        conn,
+        project_id,
+        &current_epoch.id,
+        now,
+        &summary_snooze_predicate,
+        true,
+    )?;
+    for ((consumer_kind, _), freshness) in hidden {
+        if consumer_kind == PROPOSAL_REVISION_CONSUMER_KIND {
+            match freshness {
+                EvidenceFreshness::Fresh => counts.fresh = counts.fresh.saturating_sub(1),
+                EvidenceFreshness::Stale => counts.stale = counts.stale.saturating_sub(1),
+                EvidenceFreshness::SourceMissing => {
+                    counts.source_missing = counts.source_missing.saturating_sub(1)
+                }
+                EvidenceFreshness::AnchorMismatch => {
+                    counts.anchor_mismatch = counts.anchor_mismatch.saturating_sub(1)
+                }
+                EvidenceFreshness::ReadSetDrift => {
+                    counts.read_set_drift = counts.read_set_drift.saturating_sub(1)
+                }
+                EvidenceFreshness::Unknown => counts.unknown = counts.unknown.saturating_sub(1),
+            }
+        } else {
+            counts.unrecognized = counts.unrecognized.saturating_sub(1);
+        }
     }
 
-    let snoozed_consumers = conn
-        .prepare(
-            "SELECT f.consumer_kind, f.consumer_key
-               FROM narrative_consumer_freshness f
-               JOIN narrative_maintenance_attention a
-                 ON a.project_id = f.project_id
-                AND a.finding_key = f.consumer_kind || ':' || f.consumer_key
-              WHERE f.project_id = ?1
-                AND f.consumer_kind = 'proposal-revision'
-                AND f.evidence_freshness IN
-                    ('stale', 'source-missing', 'anchor-mismatch', 'read-set-drift', 'unknown')
-                AND a.disposition = 'snoozed'
-              ORDER BY f.consumer_kind, f.consumer_key",
-        )?
-        .query_map(params![project_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut maintenance_stopped = 0;
+    visit_visible_terminal_failures(conn, project_id, &current_epoch.id, now, |_, _, _, _| {
+        maintenance_stopped += 1
+    })?;
+    Ok(counts.into_summary(maintenance_stopped))
+}
 
-    let mut hidden = 0_u64;
-    for (consumer_kind, consumer_key) in snoozed_consumers {
-        let finding_key = consumer_finding_key(&consumer_kind, &consumer_key);
-        let observations =
-            list_observations_for_epoch(conn, project_id, &current_epoch.id, &finding_key)?;
-        let (active_observations, has_unresolved_identity, _) =
+fn scene_ids_from_envelope(envelope_json: &str) -> Option<HashSet<String>> {
+    let envelope: Value = serde_json::from_str(envelope_json).ok()?;
+    let entries = envelope
+        .pointer("/effectiveMaterialBasis/evidenceSet")?
+        .as_array()?;
+    let mut scene_ids = HashSet::new();
+    for entry in entries {
+        // A quote without a source (the extractor allows it) names no Scene;
+        // skip that entry only, as the Scene-side read does.
+        let Some(source_key) = entry.get("sourceKey").and_then(Value::as_str) else {
+            continue;
+        };
+        if let Some(scene_id) = source_key.strip_prefix("project:scene:") {
+            if !scene_id.is_empty() {
+                scene_ids.insert(scene_id.to_owned());
+            }
+        }
+    }
+    Some(scene_ids)
+}
+
+/// Read scene counts for the same stale proposal revisions as
+/// [`count_stale_proposals`], paging only after the full project aggregation.
+pub fn stale_proposal_scenes(
+    conn: &Connection,
+    project_id: &str,
+    now: &str,
+    cursor: Option<&str>,
+    limit: Option<u64>,
+) -> anyhow::Result<StaleProposalScenesPage> {
+    anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
+    anyhow::ensure!(!now.trim().is_empty(), "now is required");
+    anyhow::ensure!(
+        cursor.is_none_or(|value| !value.is_empty() && value.len() <= 256),
+        "cursor must be a non-empty string of at most 256 bytes"
+    );
+    anyhow::ensure!(
+        limit.is_none_or(|value| value > 0),
+        "limit must be positive"
+    );
+
+    let Some(current_epoch) = get_current_epoch(conn, project_id)? else {
+        return Ok(StaleProposalScenesPage {
+            scenes: Vec::new(),
+            without_scene_count: 0,
+            next_cursor: None,
+        });
+    };
+
+    stale_proposal_candidate_count(conn, project_id)?;
+    let stale_predicate = format!(
+        "{STALE_PROPOSAL_CONSUMER_PREDICATE} AND NOT ({EXCLUDED_PROPOSAL_REVISION_PREDICATE})"
+    );
+    let hidden = hidden_consumers(
+        conn,
+        project_id,
+        &current_epoch.id,
+        now,
+        &stale_predicate,
+        false,
+    )?;
+    let sql = format!(
+        "SELECT f.consumer_key, r.reconciliation_envelope_json
+           FROM narrative_consumer_freshness f
+           LEFT JOIN narrative_proposal_revisions r
+             ON r.id = f.consumer_key
+            AND EXISTS (SELECT 1
+                          FROM narrative_proposals p
+                          JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+                         WHERE p.id = r.proposal_id AND s.project_id = ?1)
+          WHERE f.project_id = ?1
+            AND ({stale_predicate})
+          ORDER BY f.consumer_key"
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let mut rows = statement.query(params![project_id])?;
+
+    // One envelope at a time: a large project has many stale revisions.
+    let mut scene_counts = BTreeMap::<String, u64>::new();
+    let mut without_scene_count = 0_u64;
+    while let Some(row) = rows.next()? {
+        let revision_id: String = row.get(0)?;
+        if hidden.contains_key(&(
+            PROPOSAL_REVISION_CONSUMER_KIND.to_owned(),
+            revision_id.clone(),
+        )) {
+            continue;
+        }
+        let envelope_json: Option<String> = row.get(1)?;
+        let scene_ids = envelope_json
+            .as_deref()
+            .and_then(scene_ids_from_envelope)
+            .filter(|scene_ids| !scene_ids.is_empty());
+        if let Some(scene_ids) = scene_ids {
+            for scene_id in scene_ids {
+                *scene_counts.entry(scene_id).or_default() += 1;
+            }
+        } else {
+            without_scene_count += 1;
+        }
+    }
+
+    let page_limit = limit
+        .unwrap_or(STALE_PROPOSAL_SCENES_PAGE_DEFAULT)
+        .min(STALE_PROPOSAL_SCENES_PAGE_MAX) as usize;
+    let mut scenes: Vec<_> = scene_counts
+        .into_iter()
+        .filter(|(scene_id, _)| cursor.is_none_or(|cursor| scene_id.as_str() > cursor))
+        .map(|(scene_id, proposal_count)| StaleProposalSceneCount {
+            scene_id,
+            proposal_count,
+        })
+        .collect();
+    let next_cursor = if scenes.len() > page_limit {
+        scenes.truncate(page_limit);
+        scenes.last().map(|scene| scene.scene_id.clone())
+    } else {
+        None
+    };
+
+    Ok(StaleProposalScenesPage {
+        scenes,
+        without_scene_count,
+        next_cursor,
+    })
+}
+
+fn visit_visible_terminal_failures(
+    conn: &Connection,
+    project_id: &str,
+    epoch_id: &str,
+    now: &str,
+    mut visit: impl FnMut(String, String, FindingObservationRow, Option<AttentionRow>),
+) -> anyhow::Result<()> {
+    let terminal_prefix = format!("{TERMINAL_FAILURE_CONSUMER_KIND}:");
+    for finding_key in list_terminal_failure_finding_keys_for_epoch(conn, project_id, epoch_id)? {
+        let observations = list_observations_for_epoch(conn, project_id, epoch_id, &finding_key)?;
+        let (active_observations, has_unresolved_identity, latest_observation) =
             active_finding_observations(conn, project_id, &observations)?;
+        let Some(latest_observation) = latest_observation.cloned() else {
+            continue;
+        };
         let attention = get_attention(conn, project_id, &finding_key)?;
-        hidden += u64::from(snooze_hides_consumer(
+        if snooze_hides_consumer(
             &active_observations,
             has_unresolved_identity,
             attention.as_ref(),
             now,
-        ));
+        ) {
+            continue;
+        }
+        let consumer_key = finding_key
+            .strip_prefix(terminal_prefix.as_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_FINDING_KEY_INVALID: terminal failure key '{finding_key}' has an invalid prefix"
+                )
+            })?
+            .to_string();
+        visit(finding_key, consumer_key, latest_observation, attention);
     }
-
-    Ok(u64::try_from(count)?.saturating_sub(hidden))
+    Ok(())
 }
 
 /// Assemble the Maintenance Inbox for `project_id` as of `now`. Read-only:
@@ -568,47 +965,25 @@ pub fn build_maintenance_inbox(
     // Terminal maintenance failures do not have a Consumer Freshness row.
     // Read their current-epoch Observation history directly, preserving the
     // same lifecycle/Attention/snooze semantics as ordinary Findings.
-    let terminal_prefix = format!("{TERMINAL_FAILURE_CONSUMER_KIND}:");
-    for finding_key in
-        list_terminal_failure_finding_keys_for_epoch(conn, project_id, &current_epoch.id)?
-    {
-        let observations =
-            list_observations_for_epoch(conn, project_id, &current_epoch.id, &finding_key)?;
-        let (active_observations, has_unresolved_identity, latest_observation) =
-            active_finding_observations(conn, project_id, &observations)?;
-        let Some(latest_observation) = latest_observation.cloned() else {
-            continue;
-        };
-        let attention = get_attention(conn, project_id, &finding_key)?;
-        let is_snoozed_and_active = snooze_hides_consumer(
-            &active_observations,
-            has_unresolved_identity,
-            attention.as_ref(),
-            now,
-        );
-        if is_snoozed_and_active {
-            continue;
-        }
-        let consumer_key = finding_key
-            .strip_prefix(terminal_prefix.as_str())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "NEX_FINDING_KEY_INVALID: terminal failure key '{finding_key}' has an invalid prefix"
-                )
-            })?
-            .to_string();
-        entries.push(InboxEntry {
-            entry_kind: InboxEntryKind::TerminalFailure,
-            consumer_kind: TERMINAL_FAILURE_CONSUMER_KIND.to_string(),
-            consumer_key,
-            evidence_freshness: None,
-            build_action: None,
-            finding_key,
-            latest_observation: Some(latest_observation),
-            attention,
-            is_snoozed_and_active: false,
-        });
-    }
+    visit_visible_terminal_failures(
+        conn,
+        project_id,
+        &current_epoch.id,
+        now,
+        |finding_key, consumer_key, latest_observation, attention| {
+            entries.push(InboxEntry {
+                entry_kind: InboxEntryKind::TerminalFailure,
+                consumer_kind: TERMINAL_FAILURE_CONSUMER_KIND.to_string(),
+                consumer_key,
+                evidence_freshness: None,
+                build_action: None,
+                finding_key,
+                latest_observation: Some(latest_observation),
+                attention,
+                is_snoozed_and_active: false,
+            });
+        },
+    )?;
 
     entries.sort_by(|left, right| {
         left.consumer_kind
@@ -741,6 +1116,61 @@ mod tests {
         .expect("seed consumer freshness row");
     }
 
+    fn seed_proposal_revision_for_test(
+        conn: &Connection,
+        project_id: &str,
+        revision_id: &str,
+        envelope_json: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let proposal_set_id = format!("set-{revision_id}");
+        let proposal_id = format!("proposal-{revision_id}");
+        conn.execute(
+            "INSERT INTO narrative_proposal_sets
+                (id, run_id, project_id, set_kind, status, summary_json,
+                 created_at, updated_at, version)
+             VALUES (?1, 'run-test', ?2, 'test', 'draft', '{}',
+                     '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z', 0)",
+            params![proposal_set_id, project_id],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_proposals
+                (id, proposal_set_id, proposal_key, kind, status, payload_json,
+                 current_revision_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'test.proposal', 'unreviewed', '{}', ?4,
+                     '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z')",
+            params![proposal_id, proposal_set_id, revision_id, revision_id],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_proposal_revisions
+                (id, proposal_id, revision_number, payload_json,
+                 reconciliation_envelope_json, created_at, created_by)
+             VALUES (?1, ?2, 1, '{}', ?3,
+                     '2026-08-15T00:00:00.000Z', 'test')",
+            params![revision_id, proposal_id, envelope_json],
+        )?;
+        Ok(())
+    }
+
+    fn seed_stale_proposal_revision_for_test(
+        conn: &Connection,
+        project_id: &str,
+        epoch_id: &str,
+        revision_id: &str,
+        envelope_json: Option<&str>,
+    ) -> anyhow::Result<()> {
+        seed_consumer_freshness(
+            conn,
+            project_id,
+            "proposal-revision",
+            revision_id,
+            "stale",
+            "rebuild-required",
+            epoch_id,
+            "2026-08-15T00:00:00.000Z",
+        );
+        seed_proposal_revision_for_test(conn, project_id, revision_id, envelope_json)
+    }
+
     fn seed_dependency_edge(
         conn: &Connection,
         edge_id: &str,
@@ -764,12 +1194,13 @@ mod tests {
         .expect("seed dependency edge");
     }
 
-    fn summarize_stale_proposals(entries: &[InboxEntry]) -> u64 {
+    fn summarize_stale_proposals(entries: &[InboxEntry], excluded: &HashSet<String>) -> u64 {
         entries
             .iter()
             .filter(|entry| {
                 entry.entry_kind == InboxEntryKind::ConsumerFreshness
                     && entry.consumer_kind == "proposal-revision"
+                    && !excluded.contains(&entry.consumer_key)
                     && entry
                         .evidence_freshness
                         .as_deref()
@@ -778,6 +1209,50 @@ mod tests {
                         })
             })
             .count() as u64
+    }
+
+    fn summarize_checked_proposals(entries: &[InboxEntry], excluded: &HashSet<String>) -> u64 {
+        entries
+            .iter()
+            .filter(|entry| {
+                entry.entry_kind == InboxEntryKind::ConsumerFreshness
+                    && entry.consumer_kind == PROPOSAL_REVISION_CONSUMER_KIND
+                    && !excluded.contains(&entry.consumer_key)
+                    && entry
+                        .evidence_freshness
+                        .as_deref()
+                        .is_some_and(|freshness| {
+                            freshness == "fresh"
+                                || matches!(
+                                    freshness,
+                                    "stale"
+                                        | "source-missing"
+                                        | "anchor-mismatch"
+                                        | "read-set-drift"
+                                        | "unknown"
+                                )
+                        })
+            })
+            .count() as u64
+    }
+
+    fn excluded_proposal_revision_ids_for_test(
+        conn: &Connection,
+        project_id: &str,
+    ) -> anyhow::Result<HashSet<String>> {
+        let mut statement = conn.prepare(
+            "SELECT r.id
+               FROM narrative_proposal_revisions r
+               JOIN narrative_proposals p ON p.id = r.proposal_id
+               JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+              WHERE s.project_id = ?1
+                AND (p.status = 'rejected'
+                     OR (p.current_revision_id IS NOT NULL AND p.current_revision_id <> r.id))",
+        )?;
+        let ids = statement
+            .query_map(params![project_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<HashSet<_>, _>>()?;
+        Ok(ids)
     }
 
     #[test]
@@ -912,11 +1387,10 @@ mod tests {
                             }
 
                             let now = "2026-08-15T01:00:00.000Z";
-                            let expected = summarize_stale_proposals(&build_maintenance_inbox(
-                                conn,
-                                "project-1",
-                                now,
-                            )?);
+                            let inbox = build_maintenance_inbox(conn, "project-1", now)?;
+                            let excluded =
+                                excluded_proposal_revision_ids_for_test(conn, "project-1")?;
+                            let expected = summarize_stale_proposals(&inbox, &excluded);
                             let expected_from_seed = u64::from(
                                 kind_index == 0
                                     && freshness != "fresh"
@@ -925,6 +1399,11 @@ mod tests {
                             assert_eq!(expected, expected_from_seed, "Inbox oracle case {tested}");
                             assert_eq!(count_stale_proposals(conn, "project-1", now)?, expected,
                                 "case {tested}: kind={consumer_kind}, freshness={freshness}, attention={attention_case}, observations={observation_case}");
+                            let summary = maintenance_health_summary(conn, "project-1", now)?;
+                            assert_eq!(summary.proposals_stale, expected,
+                                "summary case {tested}: kind={consumer_kind}, freshness={freshness}, attention={attention_case}, observations={observation_case}");
+                            assert_eq!(summary.proposals_checked, summarize_checked_proposals(&inbox, &excluded),
+                                "checked count case {tested}");
                             Ok(())
                         })
                         .expect("with_conn");
@@ -934,6 +1413,211 @@ mod tests {
             }
         }
         assert_eq!(tested, 240);
+    }
+
+    #[test]
+    fn proposal_revision_exclusions_match_count_summary_scenes_and_filtered_inbox() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-2', 'Other Project')",
+                [],
+            )?;
+            let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
+
+            for revision_id in [
+                "revision-replaced",
+                "revision-rejected",
+                "revision-deferred",
+                "revision-held",
+                "revision-null-current",
+                "revision-normal",
+                // No snooze on these two: only the exclusion can drop them.
+                "revision-replaced-quiet",
+                "revision-rejected-quiet",
+            ] {
+                seed_stale_proposal_revision_for_test(
+                    conn,
+                    "project-1",
+                    &epoch_id,
+                    revision_id,
+                    None,
+                )?;
+            }
+            conn.execute(
+                "INSERT INTO narrative_proposal_revisions
+                    (id, proposal_id, revision_number, payload_json,
+                     reconciliation_envelope_json, created_at, created_by)
+                 VALUES ('revision-replacement-current', 'proposal-revision-replaced', 2,
+                         '{}', NULL, '2026-08-15T00:00:00.000Z', 'test')",
+                [],
+            )?;
+            conn.execute(
+                "UPDATE narrative_proposals
+                    SET current_revision_id = 'revision-replacement-current'
+                  WHERE id = 'proposal-revision-replaced'",
+                [],
+            )?;
+            conn.execute(
+                "UPDATE narrative_proposals SET status = 'rejected'
+                  WHERE id = 'proposal-revision-rejected'",
+                [],
+            )?;
+            conn.execute(
+                "UPDATE narrative_proposals SET current_revision_id = 'a-later-revision'
+                  WHERE id = 'proposal-revision-replaced-quiet'",
+                [],
+            )?;
+            conn.execute(
+                "UPDATE narrative_proposals SET status = 'rejected'
+                  WHERE id = 'proposal-revision-rejected-quiet'",
+                [],
+            )?;
+            conn.execute(
+                "UPDATE narrative_proposals SET status = 'deferred'
+                  WHERE id = 'proposal-revision-deferred'",
+                [],
+            )?;
+            conn.execute(
+                "UPDATE narrative_proposals SET status = 'held'
+                  WHERE id = 'proposal-revision-held'",
+                [],
+            )?;
+            conn.execute(
+                "UPDATE narrative_proposals SET current_revision_id = NULL
+                  WHERE id = 'proposal-revision-null-current'",
+                [],
+            )?;
+            for revision_id in ["revision-replaced", "revision-rejected"] {
+                let edge_id = format!("edge-{revision_id}");
+                let finding_key =
+                    consumer_finding_key(PROPOSAL_REVISION_CONSUMER_KIND, revision_id);
+                let basis = test_material_basis(
+                    &edge_id,
+                    FindingReasonCode::SourceRevisionChanged,
+                    EvidenceFreshness::Stale,
+                );
+                seed_dependency_edge(
+                    conn,
+                    &edge_id,
+                    "project-1",
+                    PROPOSAL_REVISION_CONSUMER_KIND,
+                    revision_id,
+                );
+                record_finding_observation_in_tx(
+                    conn,
+                    "project-1",
+                    &format!("run-{revision_id}"),
+                    &epoch_id,
+                    Some(&edge_id),
+                    &finding_key,
+                    FindingReasonCode::SourceRevisionChanged,
+                    EvidenceFreshness::Stale,
+                    &basis,
+                    "2026-08-15T00:00:01.000Z",
+                )?;
+                set_attention_for_test(
+                    conn,
+                    "project-1",
+                    &finding_key,
+                    AttentionDisposition::Snoozed,
+                    &basis,
+                    Some("2026-08-15T02:00:00.000Z"),
+                    "2026-08-15T00:00:02.000Z",
+                    Some("test-actor"),
+                )?;
+            }
+
+            seed_consumer_freshness(
+                conn,
+                "project-1",
+                PROPOSAL_REVISION_CONSUMER_KIND,
+                "revision-missing",
+                "stale",
+                "rebuild-required",
+                &epoch_id,
+                "2026-08-15T00:00:00.000Z",
+            );
+            seed_consumer_freshness(
+                conn,
+                "project-1",
+                PROPOSAL_REVISION_CONSUMER_KIND,
+                "revision-missing-proposal",
+                "stale",
+                "rebuild-required",
+                &epoch_id,
+                "2026-08-15T00:00:00.000Z",
+            );
+            conn.execute(
+                "INSERT INTO narrative_proposal_revisions
+                    (id, proposal_id, revision_number, payload_json,
+                     reconciliation_envelope_json, created_at, created_by)
+                 VALUES ('revision-missing-proposal', 'proposal-does-not-exist', 1,
+                         '{}', NULL, '2026-08-15T00:00:00.000Z', 'test')",
+                [],
+            )?;
+            seed_consumer_freshness(
+                conn,
+                "project-1",
+                PROPOSAL_REVISION_CONSUMER_KIND,
+                "revision-other-project",
+                "stale",
+                "rebuild-required",
+                &epoch_id,
+                "2026-08-15T00:00:00.000Z",
+            );
+            seed_proposal_revision_for_test(conn, "project-2", "revision-other-project", None)?;
+            // project-2's own stale rows must not reach project-1's numbers.
+            let other_epoch = create_epoch_in_tx(conn, "project-2", "initial", None)?;
+            seed_stale_proposal_revision_for_test(
+                conn,
+                "project-2",
+                &other_epoch,
+                "revision-project-2-only",
+                None,
+            )?;
+
+            let now = "2026-08-15T01:00:00.000Z";
+            let inbox = build_maintenance_inbox(conn, "project-1", now)?;
+            let excluded = excluded_proposal_revision_ids_for_test(conn, "project-1")?;
+            let filtered_inbox: Vec<_> = inbox
+                .iter()
+                .filter(|entry| {
+                    entry.consumer_kind == PROPOSAL_REVISION_CONSUMER_KIND
+                        && !excluded.contains(&entry.consumer_key)
+                })
+                .collect();
+            let expected_checked = filtered_inbox.len() as u64;
+            let expected_stale = filtered_inbox
+                .iter()
+                .filter(|entry| entry.evidence_freshness.as_deref() != Some("fresh"))
+                .count() as u64;
+            let count = count_stale_proposals(conn, "project-1", now)?;
+            let summary = maintenance_health_summary(conn, "project-1", now)?;
+            let scenes = stale_proposal_scenes(conn, "project-1", now, None, None)?;
+
+            // The Inbox still lists the two quiet rows (9), so a read that
+            // forgot the exclusion would answer 9 instead of 7.
+            assert_eq!(
+                inbox
+                    .iter()
+                    .filter(|entry| entry.consumer_kind == PROPOSAL_REVISION_CONSUMER_KIND)
+                    .count(),
+                9
+            );
+            assert_eq!(expected_checked, 7);
+            assert_eq!(expected_stale, 7);
+            assert_eq!(count, 7);
+            assert_eq!(summary.proposals_stale, 7);
+            assert_eq!(scenes.without_scene_count, 7);
+            assert_eq!(count, expected_stale);
+            assert_eq!(summary.proposals_checked, expected_checked);
+            assert_eq!(summary.proposals_stale, expected_stale);
+            assert_eq!(summary.stale_breakdown.stale, expected_stale);
+            assert_eq!(scenes.without_scene_count, expected_stale);
+            Ok(())
+        })
+        .expect("with_conn");
     }
 
     #[test]
@@ -961,6 +1645,392 @@ mod tests {
                 build_maintenance_inbox(conn, "project-1", "2026-08-15T01:00:00.000Z").is_err()
             );
             assert!(count_stale_proposals(conn, "project-1", "2026-08-15T01:00:00.000Z").is_err());
+            assert!(
+                maintenance_health_summary(conn, "project-1", "2026-08-15T01:00:00.000Z").is_err()
+            );
+            Ok(())
+        })
+        .expect("with_conn");
+    }
+
+    #[test]
+    fn health_summary_counts_unrecognized_kinds_and_rejects_unknown_vocabularies() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
+            seed_consumer_freshness(
+                conn,
+                "project-1",
+                "future-kind",
+                "visible",
+                "stale",
+                "manual",
+                &epoch_id,
+                "2026-08-15T00:00:00.000Z",
+            );
+            seed_consumer_freshness(
+                conn,
+                "project-1",
+                "future-kind",
+                "snoozed",
+                "fresh",
+                "none",
+                &epoch_id,
+                "2026-08-15T00:00:00.000Z",
+            );
+            // A reserved contract kind that Rust does not model is still known.
+            seed_consumer_freshness(
+                conn,
+                "project-1",
+                "semantic-index",
+                "reserved",
+                "stale",
+                "manual",
+                &epoch_id,
+                "2026-08-15T00:00:00.000Z",
+            );
+            seed_dependency_edge(conn, "edge-future", "project-1", "future-kind", "snoozed");
+            let finding_key = "future-kind:snoozed";
+            let basis = test_material_basis(
+                "edge-future",
+                FindingReasonCode::SourceRevisionChanged,
+                EvidenceFreshness::Stale,
+            );
+            record_finding_observation_in_tx(
+                conn,
+                "project-1",
+                "run-future",
+                &epoch_id,
+                Some("edge-future"),
+                finding_key,
+                FindingReasonCode::SourceRevisionChanged,
+                EvidenceFreshness::Stale,
+                &basis,
+                "2026-08-15T00:00:01.000Z",
+            )?;
+            set_attention_for_test(
+                conn,
+                "project-1",
+                finding_key,
+                AttentionDisposition::Snoozed,
+                &basis,
+                Some("2026-08-15T02:00:00.000Z"),
+                "2026-08-15T00:00:02.000Z",
+                Some("test-actor"),
+            )?;
+
+            let now = "2026-08-15T01:00:00.000Z";
+            let summary = maintenance_health_summary(conn, "project-1", now)?;
+            assert_eq!(summary.unrecognized, 1);
+            set_attention_for_test(
+                conn,
+                "project-1",
+                finding_key,
+                AttentionDisposition::Snoozed,
+                &basis,
+                Some("2026-08-15T00:30:00.000Z"),
+                "2026-08-15T00:00:03.000Z",
+                Some("test-actor"),
+            )?;
+            assert_eq!(
+                maintenance_health_summary(conn, "project-1", now)?.unrecognized,
+                2
+            );
+
+            conn.pragma_update(None, "ignore_check_constraints", "ON")?;
+            conn.execute(
+                "UPDATE narrative_consumer_freshness SET evidence_freshness = 'unreadable'
+                  WHERE project_id = 'project-1' AND consumer_key = 'visible'",
+                [],
+            )?;
+            assert!(maintenance_health_summary(conn, "project-1", now)
+                .unwrap_err()
+                .to_string()
+                .contains("NEX_EVIDENCE_FRESHNESS_INVALID"));
+            conn.execute(
+                "UPDATE narrative_consumer_freshness SET evidence_freshness = 'stale',
+                        build_action = 'unreadable'
+                  WHERE project_id = 'project-1' AND consumer_key = 'visible'",
+                [],
+            )?;
+            assert!(maintenance_health_summary(conn, "project-1", now)
+                .unwrap_err()
+                .to_string()
+                .contains("NEX_BUILD_ACTION_INVALID"));
+            Ok(())
+        })
+        .expect("with_conn");
+    }
+
+    #[test]
+    fn stale_proposal_scenes_match_count_and_scope_revisions_to_project() {
+        let db = test_db();
+        let (count, page) = db
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('project-2', 'Other Project')",
+                    [],
+                )?;
+                let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
+                let multi_scene = serde_json::json!({
+                    "effectiveMaterialBasis": {"evidenceSet": [
+                        {"sourceKey": "project:scene:scene-z"},
+                        {"sourceKey": "project:scene:scene-a"},
+                        {"sourceKey": "project:scene:scene-a"}
+                    ]}
+                })
+                .to_string();
+                let repeated_scene = serde_json::json!({
+                    "effectiveMaterialBasis": {"evidenceSet": [
+                        {"quote": "quote without a source"},
+                        {"sourceKey": "project:scene:"},
+                        {"sourceKey": "project:scene:scene-a"},
+                        {"sourceKey": "project:scene:scene-a"},
+                        {"sourceKey": "project:scene:scene-a"}
+                    ]}
+                })
+                .to_string();
+                let no_scene = serde_json::json!({
+                    "effectiveMaterialBasis": {"evidenceSet": [
+                        {"sourceKey": "project:codex-entry:entry-1"}
+                    ]}
+                })
+                .to_string();
+                seed_stale_proposal_revision_for_test(
+                    conn,
+                    "project-1",
+                    &epoch_id,
+                    "revision-multi",
+                    Some(&multi_scene),
+                )?;
+                seed_stale_proposal_revision_for_test(
+                    conn,
+                    "project-1",
+                    &epoch_id,
+                    "revision-repeat",
+                    Some(&repeated_scene),
+                )?;
+                seed_stale_proposal_revision_for_test(
+                    conn,
+                    "project-1",
+                    &epoch_id,
+                    "revision-no-scene",
+                    Some(&no_scene),
+                )?;
+                seed_stale_proposal_revision_for_test(
+                    conn,
+                    "project-1",
+                    &epoch_id,
+                    "revision-broken",
+                    Some("{"),
+                )?;
+                seed_consumer_freshness(
+                    conn,
+                    "project-1",
+                    "proposal-revision",
+                    "revision-missing",
+                    "stale",
+                    "rebuild-required",
+                    &epoch_id,
+                    "2026-08-15T00:00:00.000Z",
+                );
+                seed_consumer_freshness(
+                    conn,
+                    "project-1",
+                    "proposal-revision",
+                    "revision-other-project",
+                    "stale",
+                    "rebuild-required",
+                    &epoch_id,
+                    "2026-08-15T00:00:00.000Z",
+                );
+                seed_proposal_revision_for_test(
+                    conn,
+                    "project-2",
+                    "revision-other-project",
+                    Some(r#"{"effectiveMaterialBasis":{"evidenceSet":[{"sourceKey":"project:scene:foreign"}]}}"#),
+                )?;
+                seed_snoozed_proposal_for_test(
+                    conn,
+                    &epoch_id,
+                    "revision-snoozed",
+                    &["edge-snoozed"],
+                    "2026-08-15T02:00:00.000Z",
+                    None,
+                )?;
+                seed_proposal_revision_for_test(
+                    conn,
+                    "project-1",
+                    "revision-snoozed",
+                    Some(r#"{"effectiveMaterialBasis":{"evidenceSet":[{"sourceKey":"project:scene:scene-a"}]}}"#),
+                )?;
+                seed_consumer_freshness(
+                    conn,
+                    "project-1",
+                    "proposal-revision",
+                    "revision-fresh",
+                    "fresh",
+                    "none",
+                    &epoch_id,
+                    "2026-08-15T00:00:00.000Z",
+                );
+                seed_proposal_revision_for_test(
+                    conn,
+                    "project-1",
+                    "revision-fresh",
+                    Some(r#"{"effectiveMaterialBasis":{"evidenceSet":[{"sourceKey":"project:scene:ignored"}]}}"#),
+                )?;
+
+                let now = "2026-08-15T01:00:00.000Z";
+                let count = count_stale_proposals(conn, "project-1", now)?;
+                let page = stale_proposal_scenes(conn, "project-1", now, None, None)?;
+                Ok((count, page))
+            })
+            .expect("seed and query");
+
+        assert_eq!(count, 6);
+        assert_eq!(
+            page.scenes,
+            vec![
+                StaleProposalSceneCount {
+                    scene_id: "scene-a".to_owned(),
+                    proposal_count: 2,
+                },
+                StaleProposalSceneCount {
+                    scene_id: "scene-z".to_owned(),
+                    proposal_count: 1,
+                },
+            ]
+        );
+        assert_eq!(page.without_scene_count, 4);
+        assert_eq!(page.without_scene_count + 2, count);
+        assert_eq!(page.next_cursor, None);
+    }
+
+    #[test]
+    fn stale_proposal_scenes_pages_after_aggregation_with_cursor_boundaries() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
+            for (index, scene_id) in ["scene-a", "scene-b", "scene-c", "scene-d"]
+                .into_iter()
+                .enumerate()
+            {
+                let revision_id = format!("page-revision-{index}");
+                let envelope = serde_json::json!({
+                    "effectiveMaterialBasis": {"evidenceSet": [
+                        {"sourceKey": format!("project:scene:{scene_id}")}
+                    ]}
+                })
+                .to_string();
+                seed_stale_proposal_revision_for_test(
+                    conn,
+                    "project-1",
+                    &epoch_id,
+                    &revision_id,
+                    Some(&envelope),
+                )?;
+            }
+            let no_scene = r#"{"effectiveMaterialBasis":{"evidenceSet":[{"sourceKey":"project:codex-entry:entry-1"}]}}"#;
+            seed_stale_proposal_revision_for_test(
+                conn,
+                "project-1",
+                &epoch_id,
+                "page-revision-without-scene",
+                Some(no_scene),
+            )?;
+
+            let exact = stale_proposal_scenes(
+                conn,
+                "project-1",
+                "2026-08-15T01:00:00.000Z",
+                None,
+                Some(4),
+            )?;
+            assert_eq!(exact.scenes.len(), 4);
+            assert_eq!(exact.next_cursor, None);
+            assert_eq!(exact.without_scene_count, 1);
+
+            let first = stale_proposal_scenes(
+                conn,
+                "project-1",
+                "2026-08-15T01:00:00.000Z",
+                None,
+                Some(3),
+            )?;
+            assert_eq!(
+                first
+                    .scenes
+                    .iter()
+                    .map(|scene| scene.scene_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["scene-a", "scene-b", "scene-c"]
+            );
+            assert_eq!(first.next_cursor.as_deref(), Some("scene-c"));
+            assert_eq!(first.without_scene_count, 1);
+
+            let next = stale_proposal_scenes(
+                conn,
+                "project-1",
+                "2026-08-15T01:00:00.000Z",
+                first.next_cursor.as_deref(),
+                Some(3),
+            )?;
+            assert_eq!(next.scenes.len(), 1);
+            assert_eq!(next.scenes[0].scene_id, "scene-d");
+            assert_eq!(next.next_cursor, None);
+            assert_eq!(next.without_scene_count, 1);
+            Ok(())
+        })
+        .expect("with_conn");
+    }
+
+    #[test]
+    fn stale_proposal_scenes_default_and_maximum_limits_are_bounded() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
+            for index in 0..201 {
+                let revision_id = format!("limit-revision-{index:03}");
+                let envelope = serde_json::json!({
+                    "effectiveMaterialBasis": {"evidenceSet": [
+                        {"sourceKey": format!("project:scene:scene-{index:03}")}
+                    ]}
+                })
+                .to_string();
+                seed_stale_proposal_revision_for_test(
+                    conn,
+                    "project-1",
+                    &epoch_id,
+                    &revision_id,
+                    Some(&envelope),
+                )?;
+            }
+
+            let default_page =
+                stale_proposal_scenes(conn, "project-1", "2026-08-15T01:00:00.000Z", None, None)?;
+            assert_eq!(default_page.scenes.len(), 50);
+            assert_eq!(default_page.next_cursor.as_deref(), Some("scene-049"));
+
+            let max_page = stale_proposal_scenes(
+                conn,
+                "project-1",
+                "2026-08-15T01:00:00.000Z",
+                None,
+                Some(250),
+            )?;
+            assert_eq!(max_page.scenes.len(), 200);
+            assert_eq!(max_page.scenes[0].scene_id, "scene-000");
+            assert_eq!(max_page.scenes[199].scene_id, "scene-199");
+            assert_eq!(max_page.next_cursor.as_deref(), Some("scene-199"));
+            assert!(stale_proposal_scenes(
+                conn,
+                "project-1",
+                "2026-08-15T01:00:00.000Z",
+                None,
+                Some(0),
+            )
+            .is_err());
             Ok(())
         })
         .expect("with_conn");
@@ -1352,6 +2422,10 @@ mod tests {
             )?;
             let now = "2026-08-15T01:00:00.000Z";
             assert_eq!(count_stale_proposals(conn, "project-1", now)?, 0);
+            assert_eq!(
+                maintenance_health_summary(conn, "project-1", now)?.proposals_checked,
+                0
+            );
 
             let sibling_basis = test_material_basis(
                 "edge-b",
@@ -1372,6 +2446,9 @@ mod tests {
                 "2026-08-15T00:00:03.000Z",
             )?;
             assert_eq!(count_stale_proposals(conn, "project-1", now)?, 1);
+            let summary = maintenance_health_summary(conn, "project-1", now)?;
+            assert_eq!(summary.proposals_checked, 1);
+            assert_eq!(summary.proposals_stale, 1);
 
             set_attention_for_test(
                 conn,
@@ -1384,6 +2461,42 @@ mod tests {
                 Some("test-actor"),
             )?;
             assert_eq!(count_stale_proposals(conn, "project-1", now)?, 1);
+
+            seed_snoozed_proposal_for_test(
+                conn,
+                &epoch_id,
+                "item-fresh",
+                &["edge-fresh"],
+                "2026-08-15T02:00:00.000Z",
+                None,
+            )?;
+            conn.execute(
+                "UPDATE narrative_consumer_freshness SET evidence_freshness = 'fresh'
+                  WHERE project_id = 'project-1' AND consumer_key = 'item-fresh'",
+                [],
+            )?;
+            let summary = maintenance_health_summary(conn, "project-1", now)?;
+            assert_eq!(summary.proposals_checked, 1);
+            assert_eq!(summary.proposals_stale, 1);
+
+            set_attention_for_test(
+                conn,
+                "project-1",
+                "proposal-revision:item-fresh",
+                AttentionDisposition::Snoozed,
+                &test_material_basis(
+                    "edge-fresh",
+                    FindingReasonCode::SourceRevisionChanged,
+                    EvidenceFreshness::Stale,
+                ),
+                Some("2026-08-15T00:30:00.000Z"),
+                "2026-08-15T00:00:05.000Z",
+                Some("test-actor"),
+            )?;
+            assert_eq!(
+                maintenance_health_summary(conn, "project-1", now)?.proposals_checked,
+                2
+            );
             Ok(())
         })
         .expect("with_conn");
@@ -1394,6 +2507,10 @@ mod tests {
                 assert_eq!(
                     count_stale_proposals(conn, "project-1", "2026-08-15T01:00:00.000Z")?,
                     0
+                );
+                assert_eq!(
+                    maintenance_health_summary(conn, "project-1", "2026-08-15T01:00:00.000Z")?,
+                    FreshnessSummaryCounts::default().into_summary(0)
                 );
                 Ok(())
             })
@@ -1462,6 +2579,40 @@ mod tests {
             Ok(())
         })
         .expect("seed 50k Consumers");
+        // Give every proposal Consumer its proposal and revision, so the
+        // rejected / replaced exclusion does real lookups. About one in forty
+        // is rejected and one in forty is replaced; scenes cycle over 300.
+        db.with_conn_mut(|conn| {
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            for index in (0..50_000).filter(|index| index % 10 < 7) {
+                let key = format!("item-{index:05}");
+                let envelope = format!(
+                    r#"{{"effectiveMaterialBasis":{{"evidenceSet":[{{"sourceKey":"project:scene:scene-{:03}"}}]}}}}"#,
+                    index % 300
+                );
+                seed_proposal_revision_for_test(conn, "project-1", &key, Some(&envelope))?;
+                let proposal_id = format!("proposal-{key}");
+                match index % 40 {
+                    3 => {
+                        conn.execute(
+                            "UPDATE narrative_proposals SET status = 'rejected' WHERE id = ?1",
+                            params![proposal_id],
+                        )?;
+                    }
+                    5 => {
+                        conn.execute(
+                            "UPDATE narrative_proposals SET current_revision_id = 'later'
+                              WHERE id = ?1",
+                            params![proposal_id],
+                        )?;
+                    }
+                    _ => {}
+                }
+            }
+            conn.execute_batch("COMMIT")?;
+            Ok(())
+        })
+        .expect("seed proposals");
         for index in (0..50_000).step_by(10) {
             let finding_key = format!("proposal-revision:item-{index:05}");
             let disposition = if (index / 10) % 2 == 0 {
@@ -1493,18 +2644,37 @@ mod tests {
             .expect("count");
         let count_elapsed = started.elapsed();
         let started = std::time::Instant::now();
+        let summary = db
+            .with_conn(|conn| maintenance_health_summary(conn, "project-1", now))
+            .expect("health summary");
+        let summary_elapsed = started.elapsed();
+        assert_eq!(summary.proposals_stale, counted);
+        let started = std::time::Instant::now();
+        let scenes = db
+            .with_conn(|conn| stale_proposal_scenes(conn, "project-1", now, None, Some(200)))
+            .expect("scene counts");
+        let scenes_elapsed = started.elapsed();
+        eprintln!(
+            "stale_proposal_scenes first page={} without_scene={} in {} ms",
+            scenes.scenes.len(),
+            scenes.without_scene_count,
+            scenes_elapsed.as_millis()
+        );
+        let started = std::time::Instant::now();
         let inbox_count = db
             .with_conn(|conn| build_maintenance_inbox(conn, "project-1", now))
             .expect("build Inbox")
             .len();
         let inbox_elapsed = started.elapsed();
         eprintln!(
-            "count_stale_proposals={} in {} ms; build_maintenance_inbox_rows={} in {} ms; ratio={:.3}",
+            "count_stale_proposals={} in {} ms; maintenance_health_summary={} in {} ms; build_maintenance_inbox_rows={} in {} ms; summary_ratio={:.3}",
             counted,
             count_elapsed.as_millis(),
+            summary.proposals_stale,
+            summary_elapsed.as_millis(),
             inbox_count,
             inbox_elapsed.as_millis(),
-            count_elapsed.as_secs_f64() / inbox_elapsed.as_secs_f64()
+            summary_elapsed.as_secs_f64() / inbox_elapsed.as_secs_f64()
         );
         drop(db);
         let _ = std::fs::remove_file(&path);

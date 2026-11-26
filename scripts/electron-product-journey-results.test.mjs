@@ -1459,6 +1459,57 @@ test("lifecycle journey assertion requires one transition id with the exact six-
   );
 });
 
+test("lifecycle journey assertion lets only the stopped chat omit the stream milestone", async () => {
+  const run = (phases, options) =>
+    assertLifecycleTransitionOrder(
+      {
+        readLifecycleTrace: async () =>
+          phases.map((phase, sequence) => ({
+            schemaVersion: 1,
+            transitionId: "workspace:one",
+            sequence,
+            timestampMs: 100 + sequence,
+            kind: "workspace",
+            phase,
+            from: { workspacePath: "/old" },
+            to: { workspacePath: "/new" },
+          })),
+        recordTimeline: () => {},
+      },
+      {},
+      {
+        kind: "workspace",
+        from: { workspacePath: "/old" },
+        to: { workspacePath: "/new" },
+        label: "stopped switch",
+        ...options,
+      },
+    );
+  const before = ["switch-requested", "quiescence-started"];
+  const after = ["authority-commit", "new-scope-hydrated"];
+  const completed = "old-stream-completed";
+  const persisted = "old-scope-persisted";
+  const chat = { chatStoppedBeforeSwitch: true };
+
+  for (const middle of [[persisted], [completed, persisted]]) {
+    const matched = await run([...before, ...middle, ...after], chat);
+    assert.equal(matched.length, 4 + middle.length);
+  }
+  const required = /did not emit the required lifecycle order/;
+  // The persistence milestone stays required, before the authority commit.
+  for (const phases of [
+    [...before, ...after],
+    [...before, completed, ...after],
+    [...before, persisted, completed, ...after],
+    [...before, "authority-commit", persisted, "new-scope-hydrated"],
+    ["switch-requested", persisted, ...after],
+  ]) {
+    await assert.rejects(run(phases, chat), required);
+  }
+  // Without the option every milestone stays required.
+  await assert.rejects(run([...before, persisted, ...after], {}), required);
+});
+
 test("affected execution resolves a strict catalog-ordered runner subset", () => {
   const selected = resolveSelectedProductJourneys(
     PRODUCT_JOURNEYS,

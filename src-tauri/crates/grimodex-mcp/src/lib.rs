@@ -398,7 +398,7 @@ mod schema_compatibility_tests {
                 ordinal: None,
                 primary_codex_id: None,
                 location_codex_id: None,
-                start_time: None,
+                start_time: Some(0),
                 end_time: None,
                 start_minute: None,
                 end_minute: None,

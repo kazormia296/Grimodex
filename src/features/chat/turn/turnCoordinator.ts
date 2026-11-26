@@ -37,6 +37,7 @@ export interface TurnRequest {
 export interface TurnControl {
   readonly id: string;
   readonly request: TurnRequest;
+  readonly abortController: AbortController;
   readonly surface: TurnSurface;
   readonly userMessageId: string;
   readonly assistantMessageId: string;
@@ -80,6 +81,7 @@ export function createTurnControl(input: CreateTurnControlInput): TurnControl {
   return {
     id: input.request.requestId,
     request: input.request,
+    abortController: new AbortController(),
     surface: input.surface,
     userMessageId: input.userMessageId,
     assistantMessageId: input.assistantMessageId,
@@ -160,6 +162,7 @@ export function createTurnCoordinator(): TurnCoordinator {
         return false;
       target.aborted = true;
       target.phase = "aborted";
+      target.abortController.abort();
       return true;
     },
 

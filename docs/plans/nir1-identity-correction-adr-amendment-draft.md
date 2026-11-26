@@ -1,12 +1,12 @@
 # 作者の同定の訂正を規則として再利用する — ADR 改訂案（draft）
 
-> **作ると決まった場合の設計案。作るかは測定の後のユーザー判断（決定③）で、まだ決まっていない。**以下の「v1 は〜にする」「足す」「入れる」「満たす」はすべて案の書き方で、決まったことではない。
+> **2026-11-26 改訂**：M3 を全部完了させる指示（contracts の M3 の確認記録の追記 32。原文はそこに記録。直前に示した M3 の未達の一覧に対する指示）を受け、roadmap の Epic P0-A にある ERM-0〜ERM-3 と Exit criteria 全件を扱う（この範囲は起案者の読み）。推奨・技術判断・未決はユーザー決定と区別する。2026-11-23 までの回答記録は §13 に残し、今回の更新は §15 に記す。
 
 | 項目 | 内容 |
 | ---- | ---- |
 | draftRef | `nir1-identity-correction-proposal/1` |
-| Status | `[precheck]` の draft。**ユーザーの確認まで実装しない。**★1・★2・★3・★6・★7 は 2026-11-23 に構造化質問で回答済み（各 ★ の「2026-11-23 の回答」に記した。回答は**作る場合の方針**で、ERM の実装の承認ではない。ERM を作るか自体は、同定の review の負荷の測定の後のユーザー判断のまま。★7 は設計の前提の確認で、§10 の脅威モデルの全文の承認ではなく、全文は作る場合の実装の前に改めて伺う）。★4・★5・★8 は未回答（測定の後）。草稿の Status は `[precheck]` の draft のまま。既存の ADR・policy・コードは変えていない。**2026-11-23 の改訂（§13）**：ユーザーの決定は次の 5 点（記録の正本は contracts 枝の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-23-m3-pullforward.md`、commit `71e45bb4`。この枝にファイルは無く、`git show 71e45bb4` の本文と照合した）。①範囲は LSB ロードマップの M3（Living Codex Core）まで、M4 は範囲外。②M3 の技術判断（作り方・PR の分け方・試験）は、NIR-1 の残りの lane と同じ範囲で委任。③ERM は先に測る（同定の review の負荷を先に測ってから伺う、という 11-11 の決定のまま）。作るかは測定の後のユーザー判断。④方針の問い（★1・2・3・6・7）は測定と並行で先に伺う（古くなった起案を直してから、作者から見える場面の形で 1 回にまとめて伺う）。⑤凍結の後でも M3 の製品の変更は master に merge してよい。**2026-11-11 の「測ってから伺う」（★8 つを測定の結果と一緒に伺う）のうち、方針の ★1・2・3・6・7 は、④で測定を待たずに伺うことになった。**なお、測定で材料が出るのは ★5 だけで、★4・★8 は参考値、★1・2・3・6・7 は数字では決まらない、という区分（事前登録 §7.3）は、記録の上では回答ではなく、2 回目の問いで「前提として示したこと」である。記録の帰結は、これは方向の決定で、ERM の契約（★1〜★8）・保存範囲・脅威モデルの承認ではなく、起案の後に個別に伺う、としている。したがって、新しい契約・保存範囲の拡大・AI への新しい送信・ADR の新設・脅威モデルは、委任の外として確認する（根拠は記録の帰結。AGENTS.md の「委任に含まれないもの」は、新しい契約・authority、保存範囲の拡大、データの新しい送信先などを挙げる）。以下の「推奨」はどれも決定ではない（回答の事実は「推奨」を書き換えず、各 ★ に「2026-11-23 の回答」として足した）。2026-11-11 に確かめた点の現在位置：`CodexEntityResolutionPicker` は同定の review の画面で使われる（`src/features/codex/CodexEntityProposalReview.tsx:518`）／`candidateKey` は前後の空白の除去・NFC・英大文字の小文字化だけで、全角と半角・かなの揺れは吸収しない（`src/features/codex/codexCandidates.ts:25-30`）／観測は根拠として `sourceRef` を持つ（`src/features/narrative-extraction/ir/observations/entityIdentity.ts:44-47` の `ObservationBase.evidence` が `RawEvidenceReference[]`、その型は `src/features/narrative-extraction/evidence/types.ts:11-16`） |
-| 基点 | 今回の改訂：worktree `claude-m3-docs`（枝 `claude/m3-docs-roadmap-erm0`、origin/master `b7f8fa336`）。コードの行番号は §13 で記した範囲を `b7f8fa336` で確かめ直したもの。roadmap は、同じ PR が追記して行がずれるので、節の名前で参照する（行番号を書く場合は「基点 `b7f8fa336` で」と付ける）。起案時：worktree `unruffled-shamir-d6147f`（master `2caf67a6`、今の head の祖先であることを確認）。確かめ方は §12 |
+| Status | 2026-11-26 改訂の draft。指示（追記 32）を受け、Epic P0-A の ERM-0〜3 と Exit criteria 全件を扱う（起案者の読み）。★1・2・3・6・7 の既回答は §13 に保持し、★5・8 の回答（追記 33）と脅威モデル（版 v3）・新しい保存の回答（追記 34）を反映した。今回変更するのはこの草稿だけ。【2026-11-26 追記：追加の回答で、脅威モデルは版 v4（§10 の末尾）、規則は 5 種すべて（★4）。】 |
+| 基点 | worktree claude-m3-erm-design（2026-11-26のこのcheckout）。コード事実はこのcheckoutで照合し、file:line / 関数名で参照する。roadmap は追記で行が変わるため節名で参照する。過去の基点は§13の改訂記録に保持。 |
 | 由来 | roadmap（`docs/plans/narrative-semantic-core-roadmap.md`）の M3「Epic P0-A」節の「ERM-0: Identity correction contract」。原案（`1b1bedbd3` の版）は「ユーザーの選択（2026-11-10）は『規則の ADR も起こす』」と書いたが、その原文の記録は repo の docs・git log（`git log --all -S`）に見つからない（2026-11-23。会話の記憶にあるかもしれないが、この枝では確かめていない）。ここでは決定として扱わず、起案の依頼の範囲の読みにとどめ、ADR を起こすかは ★1 で伺う |
 | 前提 | 作者に長い文書を読ませない。Codex の名前・設定は抽出の文脈として provider に送ってよい（2026-11-05）。ADR 013（AI への開示方針）は、抽出の経路を作者視点の例外とし（`docs/adr/013-ai-disclosure-policy.md:115`）、Codex の hidden と年表の secret は「どの経路でも AI に渡さない」（J2。:282）と確認済みである。ただし :118-126 の漏れの一覧が残る間は、:128 が「主な内容の経路」についての約束に限っている（直すまでの時限つきで、hidden を送らない向きで次の PR で直すのが既定）。本草稿は J2 の「どの経路でも」を目標とし、この時限と両立させる（§9-2） |
 
@@ -20,13 +20,15 @@
 
 ## 一枚目：推奨と残る問い
 
-推奨（要点。**ERM を作ると決まった場合の案**。いずれも決定ではなく、作るかは測定の後のユーザー判断＝決定③）
-- 新しい ADR（番号は今の空き 015。merge の時に取り直す）「Identity Correction Rule Contract」として起こす案。ADR 005 には参照の 1 行だけ足す（§1）。ADR を起こすか自体は ★1 で伺う。
-- 最初は `must-link-surface`（表記 → Entry）の 1 種だけにする案。scope は「作品全体」か「この場面だけ」の 2 択（§2）。
-- 規則は作者の宣言の Source として新しい表に immutable な版で保存し、`human-direct` の経路から書く案。保存範囲の拡大なので ★2 で伺う。ただし呼び出し元を作者の UI だけに絞る方法は今の検査で表現できず、決めることが残る（§3）。
-- 規則は model の出力より先に決定的に適用し、矛盾したら勝者を選ばず「未解決」に戻して見せる案。既存の別名との前後は決めること（§4、§5.2 の 4）。適用の位置は matcher の手前で、呼び出しは 3 箇所ある（§4、§5）。**この 3 箇所は、今の製品 build では、どれも作者の操作で動かない（旗の裏。§5.1）**。
-- 規則の中身は AI に送らない。model の出力の後で native／決定的な層が当てる（§5、★3）。人物の名前そのものが AI に届くかは、規則と別に各機能が hidden を守るかによる（§9-2）。
-- 入口は、作者が review で人物を選んだ直後の 1 行の問い「次からも『（その表記）』→（その人物）にする？［この場面だけ］［全体］［しない］」。ただし review の画面は今は作者に見えない（§8）。
+2026-11-26 の作業範囲は M3 の完了に必要な ERM-0〜3 と Exit criteria 全件。以下の「推奨」は設計案で、決定済みのユーザー回答とは区別する。
+
+- ★1 の回答に従い、同定訂正契約の新 ADR を起こす（現時点の次番号 015、merge 時に再確認）。ADR 005 は参照だけを足す案。
+- roadmap の ERM-0 に列挙された5種の規則すべてを設計対象に含めるのが起案者の読み。ただし、これはユーザー決定ではない（★4）。【2026-11-26 追記：作者が 5 種すべてと回答した（★4）。】
+- 規則は版つきの作者宣言として保存し、決定的な native 層で適用する。AI には規則の中身を送らない（★2・★3の回答）。
+- 抽出・取込み・検索・関連シーン・chat の文脈・Structure Health に公開前の訂正を適用する。AI を使わず、訂正直後に同じ呼び名の確認待ち提案へ当て直し、適用件数を示す（2026-11-26回答）。
+- 場面の訂正は作品全体の訂正の例外として優先し、作成時にその例外であることを表示する（2026-11-26回答）。
+- Merge / Split は影響を列挙する Proposal として扱い、参照 ID の対応を ERM 側に記録する案。完全な影響列挙には現行の参照索引に不足がある（§7・§12）。
+- schema・復元・Change Feed・保護 writer・profile egress の台帳を揃え、依存順の PR 分割は §14 に置く。
 
 ### ★ ユーザーに伺う点（作者の画面で何が起きるか）
 
@@ -34,7 +36,7 @@
 
 【2026-11-25 訂正（DR-M3-32）：この旗の既定は、Work Layer の live 表示と同時に「開く」へ変える予定（`"false"`／`"0"` で閉じる。測定の後の P7。ユーザー回答 W13）。この節の「製品の作者には見えない」は、その PR が merge されるまでの記述として読む。】共通の前提：規則を作る入口の画面（構造抽出の review）は、今は開発 build か、旗 `VITE_CODEX_STRUCTURE_EXTRACTION_REVIEW=true` を付けて build したときだけ開く。この旗は Vite の build 時の値で、作者が実行時に設定できるものではない。したがって製品の作者には見えない（`src/features/codex/codexStructureExtractionFlag.ts:1-18`、`src/features/codex/CodexCandidatesReport.tsx:69`・:309・:490）。製品の作者に今見えるのは、候補一覧と Codex の編集画面（別名・除外語）。そこで「訂正を覚える機能」と「その画面を作者に出すこと」は別の確認に分ける（§8）。以下で「作者の画面で起きること」と書くのは、画面が作者に出た後の話。同じ理由で、今の製品 build では、同定の照合（規則を当てる 3 箇所。§5.1）はどれも作者の操作では動かない。
 
-決め方の区分（`docs/plans/nir1-fusion-records/identity-review-load-2026-11/preregistration-v1-draft.md` の冒頭と §7.3）：**測定の数字で材料が出るのは ★5 だけ（それも「一部」）。★4・★8 は測定の数字が参考値で、数字だけでは決まらない。★1・2・3・6・7 は方針で、測定では決まらない。**どの数字でどの選択肢に決まるかは事前登録側の話で、本草稿には書かない。
+測定計画の区分は当時の記録として残す。2026-11-26 の回答で ★5・★8 は測定を待たずに決まり、M3 の完了は測定の結果を待たない（追記 32 の指示を受けた起案者の読み）。★4 は全5種を設計対象にする起案者の読みで、ユーザー決定ではない。
 
 **★1 ADR を新しく 1 本起こしてよいか**（方針）
 - 推奨：A＝新しい ADR（今の空き番号 015）を起こす。B＝ADR 005 の Amendment。
@@ -61,14 +63,15 @@
 - 推奨：A＝「この呼び名はこの人物」の 1 種類だけ。B＝「この 2 人は同じ人ではない」も同時。
 - A を選ぶと作者の画面で起きること：訂正は「この呼び名はこの人物」だけ。別人を同じと提案する誤りを抑える操作は出ない。
 - B を選ぶと：その操作が出るが、適用先になる「2 項目を同じ人物として統合する提案」の機能が今は無く、現行の抽出が既存の 2 項目の同一視を提案するかも未確認なので、押して効く場面があるかは不明である。
-- 回答：未回答（測定の後）。
+- 2026-11-26 の起案者の読み（ユーザー決定ではない）：roadmap の ERM-0 の5種すべてを設計対象に含める。★4 の「最初の種類」を、M3 完了指示が全5種の設計を求めたものと読む。実装対象を全5種と確定するには作者に確認が要る。
+- 2026-11-26 の回答：「5 種すべて（推奨）」。roadmap の 5 種（呼び名と人物の対応、別の人物、優先する結び先、正式名、まとめの提案を出さない）をすべて作る。
 
 **★5 「この場面だけ」の訂正と「作品全体」の訂正が食い違ったとき**（材料は測定で出る。選ぶのは方針）
 - 推奨：A＝場面の訂正を全体の訂正の例外として優先する。
 - A を選ぶと：作る時に「作品全体の決めの例外になります」と表示され、その場面では場面の訂正が効く。
 - 選ばない（B：両方あれば競合として止める）と：食い違うたびに review に「未解決」が残る。単純だが、同じ肩書きの場面ごとの使い分けのたびに作者が決め直すことになる。
 - 区分：測定で材料が出るのは「場面で指す人が変わる表記」の数と、それが提案・候補に出る件数だけ。この表記は名簿を作る AI が見つけたもので、作者の確認は層別の数行だけなので、少ない場合に「見つけていない」のか「少ない」のか区別できない（事前登録 §7.3）。どちらを選ぶかは方針。
-- 回答：未回答（測定の後）。
+- 2026-11-26 の回答：場面の訂正を作品全体の訂正より優先する。作成時に「作品全体の規則に対する、この場面の例外」と作者に表示する。
 
 **★6 訂正を作れるのは作者の画面だけか**（方針）
 - 推奨：A＝作者が自分の画面で選んだときだけ作れる。
@@ -76,105 +79,99 @@
 - 選ばない（B：chat の AI の操作からも作れる）と：頼むだけで作れて便利だが、AI が規則を書く経路が増え、脅威モデルが変わる。
 - 注意：「作者の画面だけ」を検査で固定する方法は今の policy で表現できない（§3）。方法の選択も確認に含まれうる。
 - 2026-11-23 の回答：「作者の画面だけ（推奨）」を選んだ（→ 回答：推奨どおり A）。chat の AI からは作れない。「作者の画面からだけ」を今の検査で固定する方法はまだ無く、実装側で呼び出し元を確かめる方向（§3 の決めること (a)）で進める。検査の規則を変える（b）・規則専用の新しい経路を足す（c）場合は、その時に改めて伺う。
+- 2026-11-26 の追加の回答：呼び出し元を確かめる仕組みは作らない（§10 の末尾）。chat の AI の道具から作れないこと（上の 11-23 の回答）は残る。今回の回答はこれを撤回していない、というのが起案者の読み。
 
 **★7 脅威モデルの 4 点（§10）**（方針）
 - 推奨：確認まで draft のまま。守りの約束は次の 2 点に要約できる。AI や本文の文面が、作者の知らないうちに訂正を作る・変えることはできない。隠した（hidden）人物を指す訂正の中身は、AI・検索・読者向けの書き出しに出ない（§9-2）。
 - 確認すると作者の画面で起きること：画面の変化は無い（守りの約束）。
 - 確認しないと：規則の実装に進めない。
 - 2026-11-23 の回答：「2 点とも前提としてよい（推奨）」を選んだ（→ 回答：推奨どおり）。(1) AI や本文の文面が、作者の知らないうちに訂正を作る・変えることはできない。(2)「AI に隠す」にした人物を指す訂正の中身は、AI・検索・読者向けの書き出しに出さない（作者の画面にだけ出し、年表の参加者としても保存しない）。**ただし、これは設計の前提の確認で、§10 の脅威モデルの全文の承認ではない。**全文は、作る場合の実装の前に、改めて伺う。
+- 2026-11-26 の回答：範囲の広がった全版（規則の全種、統合・分割、当て直し、検索・関連シーン・chat）の脅威モデルを §10 のとおり確認した。受け入れで公開前に必須なのは守りの試験。
 
 **★8 訂正を作った直後の、同じ呼び名の確認待ちの提案**（測定は参考値。数字だけでは決まらない）
 - 推奨：A＝同じ呼び名の確認待ちの提案に、AI を使わずその場で規則を当て直し、「ほかに 4 件に当てました［見る］」と件数を見せる。B＝次の抽出から当てる。
 - A を選ぶと：訂正した直後に、review 画面の同じ呼び名の確認待ちが減り、件数が出る。当て直しの仕組みと件数の表示を足す（新しい契約になるので、これも伺う）。適用済みの内容は触らない。
 - B を選ぶと：訂正した後も、同じ呼び名の確認待ちは残り、次の抽出から効く（打ち手 1 の別名と同じ動き）。
 - 区分：参考値は「前の回の確認待ちが同じ呼び名で残る件数」だが、これは抽出の揺れで、作者の繰り返しの負荷ではない（事前登録 §5、§7.3）。
-- 回答：未回答（測定の後）。
+- 2026-11-26 の回答：訂正直後に、同じ呼び名の確認待ち提案へ AI を使わずその場で当て直し、件数を表示する。読み書きは新しい契約として設計する（§3）。
 
-伺い方（作者に長い文書を読ませない）：決定記録（`71e45bb4`）の 2 回目の回答のとおり、方針の問い（★1・2・3・6・7）は、作者から見える場面の形で **1 回にまとめて**伺う。1 回の中の並べ方は、★2・★3・★6 を「review で肩書き・愛称をある人物に結んだ直後の 1 行の問い」とその保存・送信の約束として、★1（ADR を 1 本起こす）は 1 行で、★7 は守りの約束 2 点の確認として。★5 は測定の材料が出た後、★4・★8 は測定の参考値と並べて後で。入口の画面を製品の作者に出すか（§8）は、記録の問いの範囲外なので、同じ 1 回に添えるか別にするかは未確認。
+2026-11-23 の★1・2・3・6・7の回答記録は保持し、再確認しない。★5・★8の2026-11-26回答はこの節に追記した。★4の全5種は起案者の解釈（追記 32 の指示の範囲からの読み。作者の回答ではない）。【2026-11-26 追記：★4 は作者の回答で確定した。】M3完了のための技術設計は、回答済みの範囲内で本草稿に記し、未決を§12に分ける。
 
 ## 1. 新しい ADR か、ADR 005 の Amendment か
 
-推奨は新しい ADR（★1）。理由は 3 つ。
-- ADR 005 は Scope・Route・Dependency を別 ADR に正本として委ねる前例を持つ（`docs/adr/005-narrative-semantic-core-boundary.md:9-12`。006・009・010 を指す）。規則も同じ形にできる。
-- 規則は 005 の Deferred decisions（:1018-1033）のどれにも当たらない新しい Source の種類・writer・優先順位で、005 の本文（1,234 行）に足すと境界の本文と混ざる。
-- ADR 013（AI への開示方針）が、ADR 002 の「AI に隠すための仕組み」という位置づけだけを改め（013:20）、ADR 009・010・011 を「置き換えない」とした書き方の前例がある（013:22）。新しい ADR も ADR 013 を置き換えないと明記する。
+★1 の2026-11-23回答は、新しい ADR を1本起こすこと。ADR 005 は参照だけを足す案を維持する。理由は、ADR 005 が Scope・Route・Dependency の契約を別 ADR に委ねた前例を持つこと（docs/adr/005-narrative-semantic-core-boundary.md:9-12）、同定訂正が新しい Source・writer・優先順位を定めること、ADR 013 が既存の ADR を置き換えずに開示方針を定めたこと（docs/adr/013-ai-disclosure-policy.md:20-22）。
 
-番号：今の `docs/adr/` は 001〜014（004 は本体と checklist の 2 file）。**013＝AI への開示方針、014＝場面の情報をエディタに統合**で、起案時の「新 ADR 013」は使用済み。`docs/adr/README.md` の表も 014 まで。今の空きは **015**（仮）。確かめ方は ADR 013 の Status（013:16）と同じで、local・remote・tag の全 ref の `docs/adr/` を `git ls-tree` で調べ、015 以上を持つものは 0 件だった（2026-11-23。他のセッションの未保存分は見えない）。HSR/1・SRD/1・AWA/1 などが ADR を起こす可能性は見えないので、**番号は merge の時に取り直す**。README に番号の付け方の規則は無く、表の連番に従う。
-
-ADR 005 側の変更は、Status の正本の一覧に「同定の訂正規則は ADR 015（仮）」を 1 行足すだけにする。Iron Law（:848-873）は変えない。規則は Iron Law 1「本文と明示的な作者宣言を一次 Source とする」（:850）の「作者宣言」に当たる。新しい ADR の Status には、ADR 013 と同じく「ユーザー確認なしの委任（AGENTS.md の NIR-1 の残レーン）の外」と注記し、M3 の前倒しの委任（上の決定②、記録は `71e45bb4`）が及ぶ範囲を書く。ADR の新設は、記録の帰結（契約の承認ではない）に従い、★1 で伺う。
+現時点の docs/adr は ADR 014 までで、次の空き番号は 015。merge 時に再確認する（docs/adr/README.md、一覧確認 2026-11-26）。新 ADR が ADR 013 を置き換えないことを明記する。ADR 005 の Iron Law は変更しない。今回の依頼は草稿1 fileに限るため、実際の ADR はここでは作らない。
 
 ## 2. 規則の種類と型
 
-roadmap の ERM-0 の 5 種のうち、v1 は `must-link-surface` だけにする案（★4）。
-- `preferred-binding`（複数の候補から 1 つを優先）は、曖昧な表記に `must-link-surface` を置けば同じ結果になるので、型を増やさない。
-- `preferred-canonical-name` は Codex の名前と別名の編集（既存の作者の編集）で足りる。
-- `cannot-link-entries`・`suppressed-merge-candidate` は merge の提案（ERM-2。roadmap の「ERM-2: Merge / Split proposals」）が適用先になる。現行の抽出が既存の 2 Entry の同一視を提案するかは未確認。
+roadmap の Epic P0-A / ERM-0 は5種を列挙する。★4に関する2026-11-26の「起案者の読み」は、5種全部を設計対象にするというものだが、ユーザー決定ではない。【2026-11-26 追記：作者の回答で 5 種すべてに確定した。】型と適用先の案を次に示す。
 
-型の案（v1。確定は ★2・★7 の後）。
-```ts
-interface IdentityCorrectionRuleRevision {
-  ruleId: string;            // 規則の安定 id
-  revision: number;          // 版。上書きせず版を足す
-  kind: "must-link-surface";
-  surfaceKey: string;        // 正規化後の完全一致キー（candidateKey と同じ正規化）
-  surfaceDisplay: string;    // 作者が見た表記
-  entryId: string;           // Codex Entry の id
-  scope: { scene: { kind: "any" } | { kind: "exact"; ref: string } }; // ADR 009 の scene 軸の部分集合
-  state: "active" | "retired";
-  supersedesRevision: number | null;
-  author: "human"; createdAt: string; reason: string | null; // reason は任意の短文
-  provenance: { fromProposalRevisionId?: string; fromReviewDecisionId?: string };
-}
-```
-roadmap の ERM-0 の「Each rule records author, time, scope, provenance, supersession, and reason」の 6 つをすべて持つ。**規則には hidden の状態を持たせない**（§9-2。Phase で変わるため、焼き付けない）。
+| 規則 | 型の要点（案） | 適用先（案） |
+| --- | --- | --- |
+| must-link-surface | 正規化した表記、Entry ID、scope | 抽出・取込み時の表記解決 |
+| cannot-link-entries | 同一 project の Entry ID 2件、scope | 同一 entity / merge としての提案を抑止 |
+| preferred-binding | 表記と候補 Entry ID、scope | 複数の exact 候補の優先 |
+| preferred-canonical-name | canonical name、旧名を alias に残すか | canonical 表示と関連する提案 |
+| suppressed-merge-candidate | Entry ID の組、scope | 同じ範囲の merge 候補を再提案しない |
 
-**場面ごとに変わる規則**（同じ肩書きが場面で別人）は `scope.scene = exact` の規則を場面ごとに置いて表す。
-- ADR 009 の Scope V2 の scene 軸（`docs/adr/009-narrative-scope-relation-contract.md:146-187`）から `any` と `exact` だけを借りる閉じた部分集合にする。`unresolved` と他の軸は持たない。
-- ADR 009 §1（:115-132）は「Scope は出所でなく適用範囲」とし、意味が Scene 局所のときだけ `scene = exact` を許す。「この場面のその肩書きはある人物」は意味が場面局所なので、この条件に合う。
-- ADR 009 §4（:214-282）の軸の profile は Assertion 種別ごとなので、規則用の閉じた profile（scene は any／exact、他の軸は any 固定）は新しい ADR が定義する。
-- 場面は言及ごとに、その言及の根拠の文書から取る。cluster は複数の言及の observation を持つ（`src/features/narrative-extraction/ir/inferences/codexEntityHypothesis.ts:79` の `EntityClusterManifestEntry.mentionObservationIds`）。各 observation は根拠の `sourceRef` を持つ（`src/features/narrative-extraction/evidence/types.ts:11-16`）。**`sourceRef`（型は `NarrativeSourceView["ref"]`、`src/features/narrative-extraction/source/sourceView.ts` で `ref: string`）が場面そのものを指すかは未確認**。1 つの cluster や提案の中で言及ごとの結果が割れたら、その表記は未解決に戻して見せる。場面の ref が消えた規則は当てない（fail closed）。cluster を作る段で場面の規則により束を分けるかは後の設計。
-- ADR 009 の比較器・Order Oracle は `declared` で本番の入口が無い（:11-15、:27-29）。v1 は「言及の場面 = ref か、規則が any か」の一致だけを使い、009 の比較器に依存しない。
-- 「第 3 章以降は別人」のような範囲は `readingOrder` の interval が要り、Order Oracle を待つ。v1 は場面ごとの規則を UI でまとめて作ることで代える（限界）。
-- 同じ場面に同じ表記で 2 人がいる場合（例：同じ肩書きの 2 人）は表せない。その場面の表記は未解決のまま review に残す（限界）。
+各規則は roadmap の指定どおり author、time、scope、provenance、supersession、reason を持つ。上表は型の意味を整理する推奨で、保存列・UI・全5種の実装をユーザーが決定した記録ではない。
+
+cannot-link-entries は「別の人物だ」と全域に固定する意味にせず、宣言 scope の中で2 Entryを同一 entity として扱わない規則にする案。候補ペアは順序を正規化して同じ組として扱う。場面 scope の ID が言及ごとの場面に届くことは前提にせず、scene ref の対応が未確認なら fail closed にする（§12）。
+
+scene は ADR 009 の any / exact を使う閉じた部分集合にする案。scene scope が作品全体の規則と競合した場合の優先はユーザー決定済みで、場面の規則が優先し、作成時に例外と表示する（★5）。場面 ref が削除済み、Entry が存在しない、別 project を指す場合は規則を当てない。
+
+同じ型の版は上書きせず追記する。全型で共通の履歴欄を持ち、旧版・提案・適用履歴を残す。hidden は保存時に焼き付けず利用時に判定する（§9-2）。
 
 ## 3. 保存先と authority
 
-- 規則は roadmap の Epic P0-A「Product promise」の節の「explicit, versioned author declaration Source」として、新しい表に immutable な版で保存する案（★2。保存範囲の拡大なので確認が要る）。
-  `policies/narrative/narrative-ir-contract.json:43,50` の `modality-author-declaration`／`author-declaration` は IR の Assertion の語彙で、`assertionKinds` は `scene-event@1` だけ（:35）。規則は IR の Assertion ではないので、この語彙は流用しない。
-- authority は新設しない。`policies/narrative/semantic-core-authorities.json:17-22` の concern `domain-state`（canonical authority は「typed native writer」、`typed-writer-only`）に乗せる。Feature-private な authority は作らない（ADR 005 :1032-1033）。
-- 書込みの経路は ADR 006 の `human-direct`（`docs/adr/006-narrative-mutation-authority-routes.md:53-65`、`policies/narrative/mutation-authority-routes.json:24` の allowedCallers は `human-ui`・`manual-wrapper`・`typed-domain-api`）。typed writer・actor context・OCC・canonical Change Event・Change Feed を通る。
-  `attention-typed-writer` は Change Feed を出さない（006:139-143）ので Freshness に乗らず、使わない。
-- **訂正（2026-11-23）：writer ごとに allowedCallers を `human-ui` だけへ絞る案は、今の検査で表現できない。**起案時は「writer ごとの allowedCallers は `change-feed-writers.json:1829` などに既に例がある」と書いたが、確かめ直すと次のとおり。
-  - `policies/narrative/change-feed-writers.json` の 76 件の variant（`authorityRoute` と `allowedCallers` を持つもの）は、すべて route の allowlist と完全一致する（JSON を読んで集計した）。`human-direct` の variant 16 件はいずれも `human-ui`・`manual-wrapper`・`typed-domain-api`。
-  - `scripts/quality/validate-semantic-core-boundary.mjs:1253-1260` は、variant の `allowedCallers` が route の allowlist と一致しないとエラーにする。
-  - `human-ui` だけの route は `attention-typed-writer`（`mutation-authority-routes.json:142`）だけで、これは Change Feed を出さない。`change-feed-writers.json` の :1829 は無関係な行で、:1784・:1865・:1870 の `allowedCallers` は別 route（`history-replay`・`import-apply`）の allowlist そのもの。
-  - したがって「AI や `manual-wrapper`・`typed-domain-api` から規則を書けない」を allowedCallers の否定で固定する案（§11 の旧試験）は、この形では成り立たない。
-  - **決めること（決めたことにしない）**：(a) `human-direct` の allowlist のまま使い、規則の writer の実装側で呼び出しが作者の UI 由来であることを検証する。(b) validator を「route の部分集合なら可」に改める（品質規則の変更）。(c) 規則専用の route を足す（新しい authority で、委任の外）。(c) は ADR 005 :1032-1033 が避ける Feature-private な authority に近づく。推奨は (a) の方向だが、`manual-wrapper`・`typed-domain-api` の中身と、writer 側で呼び出し元をどう検証できるかは未確認で、確かめるまで推奨を確定しない。(b)(c) になる場合は ★6・★7 の確認に含める。★6 の回答（2026-11-23）で (a) の方向。(b)(c) になる場合は改めて伺う。
-- Freshness：規則の版の変更は Change Feed に出て、role `author-correction`（`policies/narrative/narrative-dependency-role-registry.json:76-77`、ADR 010 :139）の Dependency を通じて、その規則を使った提案の版を stale にする（規則 `author-correction-input-changed`、registry :217-224、consumerKind `proposal-revision`、`resolve-only`）。
-  - 適用済みの Domain Data は書き換えない。Dependency の伝播は freshness だけ（ADR 005 Iron Law 9、:860-861、roadmap の ERM-2 の節の末尾「Dependency propagation alone may never perform it」）。
-  - この role の語彙は、`src/features/narrative-semantic-core/contracts/dependencyRole.ts:16`、`src-tauri/crates/grimodex-core/src/narrative_dependency.rs`（:48・:138）、`src-tauri/crates/grimodex-core/src/narrative_ir.rs:2224`、`policies/narrative/schemas/narrative-dependency-role-registry.schema.json:476`、role registry（`policies/narrative/narrative-dependency-role-registry.json`）にある。しかし、この role を使う producer の宣言は `policies/narrative/` に無い（`narrative-dependency-producer-registry.json` に author-correction は無い。`grep` で確認）。v1 の案：その producer registry に抽出の producer の宣言を足す。**これは policy の契約を足すことなので、★2 の保存の確認と一緒に、新しい契約として確認する**（決めたことにしない）。索引・chat の consumer に同じ Freshness を足すのも、同じく新しい契約になる。
-- 新しい writer は `policies/narrative/change-feed-writers.json` と保護 writer の一覧（`policies/narrative/protected-writers.json`、実装は `src-tauri/crates/grimodex-db/src/protected_writers.rs`。中身は未読）に登録する。
-- schema の版：**今は 46**（`src-tauri/crates/grimodex-core/src/lib.rs:3` の `SCHEMA_VERSION: i32 = 46`。:9 の `PREVIOUS_COMPATIBLE_SCHEMA_VERSION` は 45、:10 の `PREVIOUS_COMPATIBLE_TARGET_SCHEMA_VERSION` は 46）。`src-tauri/crates/grimodex-core/src/workspace_schema.rs:798` の検査も `SCHEMA_VERSION == 46` を固定している。表を足すと 47 以降になる。ほかに版を取る見込みがあるのは、`docs/plans/nir1-proposal-findings-design-draft.md:70` の observations 表の CHECK の作り直し（「SCHEMA_VERSION 46→47」と明記）。**HSR/1 が版を上げるかは未確認**（この枝に HSR/1 の本文が無い）。したがって ERM が表を足す PR は、版を持つ他の PR と直列にし、**番号は merge の順で最後に決める**。
+規則は作品ファイル内の新しい immutable revision 表に置く。これは★2の回答済み方針で、保存範囲を広げる判断を再質問しない。新しい authority は作らず、ADR 006 の human-direct と typed native writer を使う案（docs/adr/006-narrative-mutation-authority-routes.md:53-65、policies/narrative/semantic-core-authorities.json:17-22）。AI や本文は規則を作成・変更しない（★6の回答）。
+
+現行 human-direct route は human-ui / manual-wrapper / typed-domain-api を許し、change-feed-writers の検査は route の allowlist と一致させる（policies/narrative/mutation-authority-routes.json:24、scripts/quality/validate-semantic-core-boundary.mjs:1253-1260）。規則 writer では作者 UI 由来の呼出しを検証する必要がある。route・authority・品質規則を新設または変更するなら、現行委任の外なので作者に確認する。★6の回答は、実装側の検証で進める方向であり、その方法自体は未確定のまま残す。【2026-11-26 追記：作者の回答で、呼び出し元を確かめる仕組みは作らない（§10 の末尾）。route の分類を human-direct にする案は変えない。】
+
+### 3.1 規則の読み書きと即時当て直し
+
+★8の2026-11-26回答を満たすには、既存の API に依存せず、新しい read/write 契約が要る。推奨する形は次のとおり。
+
+- read は project・正規化 surface・scope を入力とし、その表記と一致する未適用・確認待ちの proposal revision だけを列挙する。範囲を明示した結果と、当て直し対象数を返す。
+- write は rule revision ID と読み取り時の proposal revision ID を受け取り、各 proposal に訂正を deterministic に適用する。AI を呼ばず、元の model output と review history を残し、新しい proposal revision を記録する。OCC / stale を再確認し、適用済み Domain Data は変更しない。
+- 1回の結果に、更新件数と未更新理由の件数を返す。部分失敗を成功件数に混ぜない。読取りと書込みは typed native writer の境界を通す。
+
+これは新しい契約である。既存の提案 revision の再計画がどの writer で安全に実現できるかは【未確認】（proposal の revision を作る現行経路を実装前に照合する）。
+
+### 3.2 Merge / Split と ID の対応
+
+Codex の通常の同一性は同じ Codex ID だけ（M4 の担当の 2026-11-26 の回答。ユーザーの回答ではない）。merge / split 後の対応表は ERM 側で持つ案とし、ID 対応を M2-D1 の同一性定義にはしない。
+
+推奨する ERM-owned lineage 記録は operation ID、operation revision、source Entry ID、target Entry ID、merge/split の向き、scope、provenance を保持する。merge は退役した ID から survivor ID への対応を記録する。split は1つの source ID から複数 target ID への lineage を記録するが、その関係だけでは各既存参照の行先は決まらない。参照ごとの割当てを author が選ぶか、参照型ごとの deterministic policy を別途定める必要がある。自動で一つに割り当てない。
+
+影響表示が Phase / State / Chronicle の実体変更に及ぶ場合は、M2-D2〜D4 の同一性契約が必要になる見込み（未決）。M2-D1〜D4 の identity を ERM で代用しない。
+
+### 3.3 Freshness と writer registry
+
+規則変更は Change Feed に記録し、author-correction dependency で依存する提案を stale にする案（policies/narrative/narrative-dependency-role-registry.json:76-77, 215-226）。即時当て直しも同じ change lineage に記録する。依存辺の伝播だけで merge / split を実行しない（roadmap Epic P0-A / ERM-2）。
+
+新しい表・writer は change-feed-writers.json、protected-writers.json と src-tauri/crates/grimodex-db/src/protected_writers.rs の registry に登録する。snapshot restore は project_snapshots.rs の SnapshotRestoreTable、AuxSpec、restore_links::park / restore の対象に追加し、必要な park 列を定める。profile egress は profile_egress_policy.rs の PROFILE_EGRESS_TABLES に明示分類する。規則表は AI への egress を避けるため closed を推奨するが、profile backup に含める範囲は未決。
 
 ## 4. 優先順位と競合
 
-適用の順序の案（Codex の抽出の照合 `matchExistingEntity`。§5 のとおり呼び出しは 3 箇所で、規則は 3 箇所の手前に当てる）。**規則と、作者の別名・exact-name が別の Entry を指すときの優先は決めること（§5.2 の 4）。次の順序は、その競合が無いときの適用の順の案**。
-1. 作者の規則（scope が言及の場面に当たる active な `must-link-surface`）。
-2. model が返す `explicitIdentityRefs`。**AI 経路が配線されたときの話**（今の seed 経路には `explicitIdentityRefs` が無い。§5）。`src/features/codex/extraction/existingEntityMatcher.ts:152-157` が最初に見て、1 件なら自動で解決する。供給元は `src/application/narrative-extraction/aiTasks/runEntityResolutionTask.ts:183-191`。
-3. exact-name → exact-alias。敬称の除去・prefix・substring は今も自動で解決せず review の候補だけ（:143-144、:225-267）。この扱いは変えない。（`existingEntityMatcher.ts` は起案時（`2caf67a6`）から約 86 行増えた〔主に打ち手 2 の #899〕が、引いた位置のずれは 6〜8 行ほど〔例：`matchExistingEntity` の定義 :140→:146、`explicitIdentityRefs` の使用 :146→:152、ambiguous の返却は :175・:239・:250・:266〕）
+ユーザーが決定した優先順位は一つ：同じ surface に場面規則と作品全体規則があるとき、場面規則を例外として優先する。作成時には「作品全体の規則に対する、この場面の例外」と表示する（★5、2026-11-26）。
 
-規則と model が食い違うときは規則を採り、model の候補は「AI は別の人物を示した」として review に並べる（model の確信度は authority にならない。Iron Law 13、:867）。
+それ以外の優先順位は未決。次は推奨案であってユーザー決定ではない。
 
-競合（fail closed）。
-- 同じ表記・同じ scope の active な規則が別の Entry を指す → どちらも当てず、表記を未解決に戻し、review カードに「規則どうしが食い違う」と出す。Structure Health（roadmap の P0-B）が入ったらそこにも出す。
-- 規則の Entry が消えた・別 project → 規則を当てず、同じく表示する。
-- 場面の規則と全体の規則が別の Entry を指す → ★5。推奨 A では場面の規則を例外として採る。これは作成時に作者が「例外」と明示した宣言で、勝者の自動選択ではない、と ADR に書く。
-- 規則と、作者の別名（打ち手 1 で足された別名や、手で足した別名）が別の Entry を指す → 決めること（§5）。
+1. scope が言及に一致する規則を列挙し、場面 exact を作品全体 any より先に評価する。
+2. 同じ優先度で矛盾する規則があれば、どちらも勝者にせず unresolved とする。
+3. compatible な規則を deterministic に適用し、AI の出力・confidence・fuzzy ranking はその後の情報として review に残す。model output は消さない。
+4. exact-name / exact-alias と規則が異なる Entry を示した場合は競合として fail closed にする案。規則を黙って優先させない。
 
-Rejection と規則の違い（ADR 005 :581-604、Iron Law 7）。
-- Rejection は「この版・この source basis・この scope で採らなかった」だけで、次の抽出を縛らない。
-- 規則は以後の抽出を縛る。Rejection から規則を自動で作らない。作るのは作者の明示の操作だけ。
-- 打ち手 3（却下を覚えて畳む、#906）は Rejection の覚えで、規則の v1 とは別の機構。この区別は変えない。
+競合として扱うケース（表示先は review と Structure Health）：
+- 同じ surface・重なる scope の must-link / preferred-binding が異なる Entry を指す。
+- must-link / preferred-binding の対象が cannot-link-entries の禁止ペアに当たる。
+- merge Proposal が active な cannot-link または同じ scope の suppressed-merge-candidate に反する。
+- 異なる active な preferred-canonical-name が同じ対象を異なる名前に固定する。
+- target Entry が消失、別 project、または lineage が曖昧である。
+
+推奨する回復は、作者が競合規則を明示的に retire / supersede し、新しい revision を作ること。明示的な author merge が cannot-link に反する場合も、規則を先に retire してから提案し直す。既存 Rejection は1つの proposal revision / source basis / scope の却下であり、恒久規則に自動昇格しない（ADR 005:581-604）。
 
 ## 5. 適用の箇所と順序
 
@@ -185,34 +182,39 @@ Rejection と規則の違い（ADR 005 :581-604、Iron Law 7）。
 | 箇所 | 位置 | 渡すもの | 今の状態（旗が閉じた製品 build を基準に） |
 | ---- | ---- | -------- | ---------------- |
 | AI 経路 | `src/application/narrative-extraction/aiTasks/runEntityResolutionTask.ts:188-193` | `[canonicalName, ...surfaces]` と `explicitIdentityRefs` | `src` に test 以外の呼び手が無い。旗を開いても動かない。`src/features/codex/codexStructureExtractionApi.ts:1739-1741` は `request.useAi` が立っても何もしない「将来の配線」の stub |
-| AI なしの seed 経路 | `src/features/codex/codexStructureExtractionApi.ts:1633-1636` | `[seed.surface]`（seed ごと） | 今の構造抽出の本線（旗を開いた build で動く）。ただし呼び手は `startCodexStructureExtraction`（:1514）→ `src/features/codex/CodexStructureExtractDialog.tsx:199` だけで、このダイアログは `structureReviewEnabled`（旗）のときだけ描かれる（`CodexCandidatesReport.tsx:309`）。**旗が閉じた今の製品 build では、作者の操作で動かない**。`explicitIdentityRefs` は無い |
+| AI なしの seed 経路 | `src/features/codex/codexStructureExtractionApi.ts:1667` | `[seed.surface]`（seed ごと） | 今の構造抽出の本線（旗を開いた build で動く）。ただし呼び手は `startCodexStructureExtraction`（:1514）→ `src/features/codex/CodexStructureExtractDialog.tsx:199` だけで、このダイアログは `structureReviewEnabled`（旗）のときだけ描かれる（`CodexCandidatesReport.tsx:309`）。**旗が閉じた今の製品 build では、作者の操作で動かない**。`explicitIdentityRefs` は無い |
 | cluster の `candidateExistingRefs` | `src/features/codex/extraction/entityClustering.ts:244` | 束ねた言及の表記 | `clusterEntityMentions`（:98）に test 以外の呼び手が無い。旗を開いても動かない |
 
 起案時の §4・§5 は AI 経路の `explicitIdentityRefs` の優先順位だけで書いていた。旗を開いた build で実際に動くのは seed 経路だけで、旗が閉じた今の製品 build では 3 箇所のどれも作者の操作で動かない（静的な読み。実行では未確認。旗の値は Vite の build 時の値で、作者が環境変数で開けるものではない）。したがって、以下の「規則が効く」「自動で通る」は、旗を開いた build の話である。規則は 3 箇所のどれにも効く必要があるので、**matcher の前段（3 箇所の手前、または `matchExistingEntity` の入口）で 1 回当てる**形になる。
 
-### 5.2 決めること（決めたことにしない）
+### 5.2 適用順・対応の方針
 
-規則の位置は、今あるほかの機構との前後を決める必要がある。いずれも技術判断（M3 の委任の範囲）に入る見込みだが、このうち項目 3 と 4 は作者の画面で見える挙動なので、決める前に一覧で伺う。
-1. **位置**：`matchExistingEntity` の入力に規則の結果を渡すか、3 箇所の手前の関数で先に当てて matcher を呼ばないか。後者は呼び出しを 3 箇所とも直す。
-2. **打ち手 2（一括承認、#899）との前後**：規則で結んだ表記を、一括承認（`src/features/codex/extraction/entityBulkSafety.ts`、`BULK_EXACT_BIND_DECISION_SOURCE`）の対象にするか、規則は別の根拠（method）として 1 件ずつ review に出すか。
-3. **打ち手 4（関係の呼び名の除外、#894）との前後**：今は seed 経路で、名簿に当たらない（`existingResolution.status === "none"`）ときだけ `relationalTermKind` で呼び名を落とす（`codexStructureExtractionApi.ts:1639-1645` の周辺）。作者が規則で結んだ呼び名を落とさないよう、規則を呼び名の除外の前に当てる必要がある。
-4. **別名（打ち手 1、#903）・exact-name との優先と見せ方**：規則と別名が別の Entry を指すとき（§4 の最後の競合）に、規則を採るか、競合として止めるか、どう見せるか。§4 の順序の案は、この競合が無いときの話。
+各経路で規則を model に送らず、作者が宣言した完全一致の対応を native / deterministic 層で適用する。抽出では model output を保持したうえで confidence / fuzzy ranking の前に規則を解決する（roadmap ERM-1）。複数言及が異なる scene scope に解決する場合は、一つの束に強制せず未解決で review に出す案。
 
-### 5.3 適用の箇所の表
+### 5.3 適用箇所
 
-| 順 | 箇所 | v1（案） | 根拠 |
-| -- | ---- | -- | ---- |
-| 1 | Codex の Entity の抽出の照合（3 箇所。§5.1。旗の裏） | 入れる案 | `existingEntityMatcher.ts:146`、review は `src/features/codex/CodexEntityResolutionPicker.tsx`（使用は `CodexEntityProposalReview.tsx:518`） |
-| 2 | Chronicle の提案の参加者の表記の解決（**表示だけ**。「表示だけ」は、年表の参加者として保存しないという保存の範囲の話で、規則を作る入口の有無とは別。§8） | 入れる案 | 表記は `unresolvedMetadata.participantSurfaces` に未解決で残る（`src/features/chronicle/extraction/proposalPlanner.ts:141`、書込み :185-186）。表示は文字列の連結だけ（`src/features/chronicle/ChronicleEvidencePane.tsx:87-88`）。保存は §9-2 |
-| 3 | 言及の索引・エディタの強調 | 後 | `src/features/codex/codexMatcher.ts`・`rustMatcher.ts` は作品全体の別名で照合し、場面の scope を持たない（構造からの推測）。規則で解決した人物を当てるときは hidden の判定を通す（§9-2） |
-| 4 | 検索・Related Scenes・chat の文脈・Graph | 後 | ADR 013 の「残るもの 1」（IR admission と Graph の path 規則の見直しは PUB-G の後。013:21・:93・:107）に従う。起案時の理由「開示の方針（ADR 005 :1196-1197）を通す設計が先」は、位置づけがこちらへ移った（005 の本文は動いていない） |
+| 経路 | 訂正を使う位置（案） | 必須の条件 |
+| --- | --- | --- |
+| Codex 抽出 | matchExistingEntity の候補照合前 | scope、Entry の project 所属、規則競合を再検証。既存の3 call site は §5.1 |
+| 取込み | Import の proposal / apply 前 | 訂正後も元の import data と出所を保持し、apply 前に scope・OCC を再確認 |
+| Semantic Search | query と hit を Entry ID に結ぶ決定的層 | query text 自体を規則記録として AI に渡さない |
+| Related Scenes | scene / Entry の関係集計前 | 位置つき言及索引がないため、未索引を完全な impact と数えない |
+| Chat Context | context pack の Entry 選択後、provider 送信前 | hidden 判定を通し、規則の値・理由・provenance は request に含めない |
+| Structure Health | rule conflict、dangling target、参照先の欠落検査 | 原因と適用 scope を作者に表示し、AI tool には読ませない |
 
-- review 待ちの提案：Dependency の辺は規則を使った提案にしか無く、Codex の解決は hypothesis の作成時に決まる（`runEntityResolutionTask.ts:183-194`）。新しい規則は既存の提案を stale にしない。★8 で扱いを選ぶ：A＝規則を作った時に、同じ表記の未 review の提案に、AI を使わずその場で規則を当て直し、「ほかに 4 件に当てました［見る］」と件数を見せる／B＝次の抽出からだけ当てる。A でも適用済みの Domain Data は触らない。打ち手 1 の別名は B 相当（次の apply から効くだけ。`docs/plans/nir1-identity-review-load-reduction-design-draft.md` §8）。
-- Chronicle では元の `participantSurfaces` を書き換えず、解決の結果を別の欄（どの規則の版か付き）として重ねる。**表示だけで、出来事の参加者としては保存しない**（§9-2）。
-- 決定的な Core が同一性を推測しない原則（ADR 005 :409-410、:1191-1193）との区別：規則の適用は、作者が宣言した表記を正規化後の完全一致で引くだけで、推測ではない。敬称の除去や部分一致では規則を当てない。対象は Codex Entry の id で、Assertion の `assertionId` の扱い（:392-410、nullable のまま）は動かさない。
-- AI への送信：推奨（★3 A）では規則の中身を送らず、model の出力の後に当てる。roadmap の ERM-1 の「Apply author correction rules before model confidence or fuzzy ranking」は判定の順序の話で、送らなくても満たせる。
+Rule revision の変更後、同じ surface の未適用・確認待ち proposal を直ちに当て直す。対象と件数を read/write 契約の応答に含める（§3.1）。適用済みデータは当て直さない。
+
+### 5.4 ERM-2 の影響表示
+
+Proposal の前に roadmap の全対象を列挙する：Codex Detail / Relation、Phase / State、Chronicle / Timeline、Plot Thread / Foreshadow、Map references、Mention indexes / editor highlights、Search / retrieval / packed contexts。各領域で対象 ID・件数・変更内容・対応不能を示す。未知または未索引の範囲はゼロ件と表示せず「未解決」とし、完全な影響表示ができない状態で apply しない案。
+
+現状、plot_threads と plot_thread_scene_links は thread / scene ID を持つが Codex ID の直接参照はない（migrate.rs の plot_threads / plot_thread_scene_links 定義）。本文の scene_codex_mentions は scene / codex_entry / source / role 単位で、文字位置は持たない（migrate.rs:1598-1606）。従って direct Plot Thread impact と本文中の位置別 impact は列挙できない。間接の scene link / prose は別の影響として表示し、位置の完全性は索引追加後の受入れとする。
+
+決定的 Core は同一性を推測しない。rule は正規化後の完全一致で適用し、部分一致や敬称除去で拡張しない。Assertion の assertionId / M2 identity は変更しない（ADR 005:392-410）。
 
 ## 6. 別名で足りる範囲と、規則が要る範囲
+
+2026-11-26改訂では、ここに記した初期の一種類案を、§2の5種を設計対象とする起案者の読みで更新する。以下の6.1・6.2は従来の打ち手と残課題の記録として読む。
 
 別名（`codex_entries.aliases`、除外は `excluded_aliases`。作者の UI は `src/features/codex/components/AliasesField.tsx`・`AliasesChip.tsx`・`ExcludedAliasesField.tsx`）で足りるのは、次の 3 つがそろうとき。
 - 作品全体で 1 人だけを指す。
@@ -232,99 +234,149 @@ Rejection と規則の違い（ADR 005 :581-604、Iron Law 7）。
 
 ### 6.2 規則が要る範囲に何が残るか
 
-- 残る：場面で指す人が変わる表記（役職の呼称など。呼び名の一覧には入れていない）／exact-alias が複数の Entry に当たって曖昧になる（`existingEntityMatcher.ts:239`・:250 で ambiguous に止まる）／表記を Codex の別名にしたくない（別名にするとエディタの強調・検索で作品全体に効く。推測）／否定（「この表記はこの人ではない」）。抽出側の照合は `excluded_aliases` を見ていない（`existingEntityMatcher.ts` に excluded の参照は 0 件。言及側の `rustMatcher.ts:66-69` は見る。除外語は打ち手 1 の「別名に足せない」判定が見るだけ）。
-- 実現した分は、規則の需要から外れる：作品全体で 1 人だけを指す敬称つきの表記は、打ち手 1 と 2 で、規則なしに次の抽出から自動で通る（旗を開いた build の話）。したがって「規則が要る範囲」は、起案時より狭い。review の負荷を下げる目的に規則がどれだけ寄与するかは、打ち手 1・2 の後の測り直しが材料になる（測定は事前登録側の話。本草稿は判断表を持たない）。
-- 未実現：Chronicle の表記を別名で解決して表示し、1 クリックで別名に足す案（起案時の「別名での解決」）。`ChronicleEvidencePane.tsx:87-88` は今も参加者の表記を連結して出すだけ（年表の表示は別 lane が触る）。新しい保存が要らないので、規則の確認と独立に先に入れてもよい（推測：規則 v1 の §5.3 の 2 は、この表示に規則の層を足す形になる）。
+- 残る：場面で指す人が変わる表記／exact-alias の曖昧さ／別名にしたくない表記／cannot-link-entries が扱う Entry 間の同一化。既存 excluded_aliases は表記の除外であり、Entry ID のペアを禁止する規則とは別である。
+- 測定ゲートの旧記述（2026-11-23時点）：作品全体で1人だけを指す敬称つき表記は、打ち手1・2で規則なしに次の抽出から自動で通る（旗を開いた build の話）。負荷を測り直す案も当時の記録として残すが、2026-11-26 の指示（追記 32）の後は、測定は完了の停止条件ではないと読む（起案者の読み）。
+- 旧草稿の Chronicle 参加者表記の解決案は、2026-11-26に指定された ERM-1 の対象一覧には含めない。Chronicle / Timeline は ERM-2 の影響表示では対象とする。
 
 ## 7. 履歴と取り消し（ERM-3）
 
-- 規則は版を足すだけで、上書き・削除をしない。取り消しは `state = retired` の新しい版（roadmap の ERM-3 の節）。作者の Undo は通常の Undo の系譜（`history-replay`、006:113-114）を使う。
-- 提案の版は「どの規則の版を当てたか」の id を持つ。元の model の出力（hypothesis の payload と `explicitIdentityRefs`）は消さず、規則による解決は別の層として重ねる（roadmap の ERM-1 の「Preserve the original model output and layer the correction separately」）。
-- 抽出をやり直したとき、どの規則が判断を変えたかを review カードに 1 行で出す（roadmap の ERM-3 の「Re-running extraction must show which prior correction affected a decision」）。
-- 規則の取り消しで、適用済みの Domain Data は戻さない。依存する提案が stale になり、作者が review し直す。
+- 規則 revision、適用履歴、merge / split Proposal と commit は immutable lineage を残す。訂正を retire する場合も新しい前進 revision とし、過去の review history を書き換えない（roadmap ERM-3）。
+- 抽出を再実行した review には、影響した rule ID / revision と、適用した scope を示す。元の model output は別に保持する（roadmap ERM-1 / ERM-3）。
+- merge / split は必ず Proposal または明示的な authoring operation とし、Change Feed dependency の伝播だけでは実行しない（roadmap ERM-2）。
+- 現行 Codex typed mutation dispatcher agent_codex_mutate_internal（codex_writes.rs:1601-1663）には merge / split 操作がない。新しい canonical typed writer が必要。Codex ID を参照する複数領域を同じ atomic commit に束ねる案。
+- narrative_extraction_undo_commit（narrative_extraction/undo.rs:60-64）は commit journal の entities を preflight し、逆順に戻す（同:141-190）。従って複数 entity を含む narrative commit の Undo は可能。ただし、新しい merge / split writer がその lineage を正しく作ることは別の受入れ条件。
+- reference ID から全 affected rows を列挙する共通機構は見つからず、Codex 参照は domain tables に分散している（migrate.rs の scene_codex_mentions、foreshadow_codex_links、event_participants、map_node_positions 等）。全参照を特定できない場合、完全な undo を約束できない。適用前に網羅性を確立し、未知の参照があれば止める案。
+- split は source ID から複数 target ID へ lineage を記録するだけでは既存参照の振分けにならない。参照型ごとの選択を Proposal に含め、未割当て参照を orphan にしない。各参照の割当てを人が決めるかは未決。
 
 ## 8. 作者の操作の最小形
 
-> **2026-11-24 追記（DR-M3-29）**：構造抽出の review 画面を作者に出す判断をした（作者の指示。原文は contracts の M3 確認記録の追記 23）が、**出す時期は「後で」で、旗の既定は閉じたまま**（追記 24）。この節の「今は作者に見えない」は、今も事実である。出す前の直し（文言・空のタブ・根拠から場面へ・復元・適用の事前無効化）は入れた。出す時は、適用（Codex への取り込み）は、取り込みの設定が許す作品でだけ通り、既定の作品では閉じている（画面は理由を出して「適用」を使えなくする）。
+> 2026-11-24（DR-M3-29）と2026-11-25（DR-M3-32）の UI / flag 状況は以前の状態記録として保持する。2026-11-26時点の画面状態はこの草稿では再確認していない。
 
-【2026-11-25 訂正（DR-M3-32）：この旗の既定は、Work Layer の live 表示と同時に「開く」へ変える予定（`"false"`／`"0"` で閉じる。測定の後の P7。ユーザー回答 W13）。この節の「製品の作者には見えない」は、その PR が merge されるまでの記述として読む。】- **入口の問い（先に）**：下の「主な入口」の review 画面は、今は開発 build か、旗 `VITE_CODEX_STRUCTURE_EXTRACTION_REVIEW=true` を付けて build したときでしか開かない（この旗は Vite の build 時の値で、作者が実行時に設定できるものではない）。したがって製品の作者には見えない（`src/features/codex/codexStructureExtractionFlag.ts:1-18`。`CodexCandidatesReport.tsx:69`・:309・:490 の `structureReviewEnabled` が構造抽出のダイアログと入口のボタンを分ける）。つまり、規則の入口が「作者に見えない画面」にある。**規則を作る機能を作ることと、その画面を製品の作者に出すことは別の確認に分ける**（問いとして作者に伺う。上の「伺い方」。記録の問いの範囲外なので、同じ 1 回に添えるかは未確認）。画面を出す判断は、規則の確認とは独立に進められる。
-- 主な入口：Codex の review で表記の人物を選んだ直後に、1 行の問い「次からも『（その表記）』→（その人物）にする？［この場面だけ］［全体］［しない］」。既定は［しない］で、何も押さなければ規則は作られない。
-- Chronicle：未解決の参加者の表記を押すと人物の候補を出し、同じ 1 行の問いを出す（§5.3 の 2）。
-- 一覧と取り消し：Codex の Entry の詳細に「この人物に結び付く表記」を並べ、各行に［この場面だけ／全体］と［やめる］を置く。hidden の人物にも出す（作者の画面）。AI に隠す人物の印を添える（§9-2）。
-- 既存の `src/features/work-layer/CorrectionRulePreview.tsx` は UI のプレビューで、保存しないと画面に明記している（:63）。入口の候補だが、主な入口は review の場にする（推奨）。
-- 作者に規則の型名（`must-link-surface` など）を見せない。
+推奨する作者向け操作：
+- Codex review で表記を Entry に結ぶとき、作品全体かこの場面かを選ぶ。作品全体の規則がある表記に場面規則を作る場合、「作品全体の規則に対する、この場面の例外」と作成前に表示する。規則を作らない選択も残す。
+- 訂正を保存した直後、同じ表記の確認待ち提案だけに AI を使わず当て直し、対象件数と結果を表示する。適用済み Domain Data は変更しない。
+- cannot-link は2 Entry を同一 entity とする提案を止める操作として表示する。merge / split は別の Proposal を開き、変更前に影響一覧と未解決領域を見せる。
+- 一覧では規則の scope、Entry、状態、provenance、適用履歴を確認し、撤回は新 revision として行う。hidden の規則も作者には表示する。
+- 作者に内部型名を主 UI の文言として見せない。
 
 ## 9. schema と送信の変更
 
-- 新しい表（★2）：規則の版の表と、提案側の「当てた規則の版」の記録。保存範囲の拡大なので確認まで作らない。版の番号は §3 のとおり（今 46、merge の順で取り直す）。版を上げるとき同時に変わる箇所は、今回確かめた範囲で次のとおり（確かめていない箇所は載せない）。`src-tauri/crates/grimodex-core/src/lib.rs:3`（と :9・:10 の関連定数）、`src-tauri/crates/grimodex-core/src/workspace_schema.rs:798`、`SCHEMA_VERSION` を 46 に固定する試験（`src-tauri/crates/grimodex-db/tests/release_schema_migration.rs:179`、`narrative_change_feed.rs:407`、`workspace_migration_supervisor.rs:124`・:202）。そのほかの一覧（validator、generated schema、ほかの試験など）は報告から持ち込む前に確かめる（§12.2 の未確認）。
-- AI への送信（★3）：推奨は規則の中身を送らない。B を選ぶ場合も、`reason` の自由記述と場面の対応は送らない案を基本にする。
+SCHEMA_VERSION は現行46（src-tauri/crates/grimodex-core/src/lib.rs:3）。新しい規則 revision / identity lineage 表を足す場合は次の migration 番号を merge 順で決め、既存の version pin（workspace_schema.rs:798、release_schema_migration.rs:179 等）も合わせる。現時点での「47」は予約しない。
 
-### ★3 A が成り立つ 6 条件（設計の制約）
+表を加える際に必要な変更は次のとおり：project snapshot restore の table inventory と park 対象、change-feed-writers.json の feed writer、protected-writers.json と native protected writer registry、profile_egress_policy.rs の明示分類。上記の具体的な正本は project_snapshots.rs::SnapshotRestoreTable / AuxSpec / restore_links::park、policies/narrative/change-feed-writers.json、policies/narrative/protected-writers.json、profile_egress_policy.rs::PROFILE_EGRESS_TABLES。復元時の park 列と参照復元の意味を規則 revision / lineage に合わせて定義する。
 
-規則の中身を AI に送らない、は次の 6 つを守れば成り立つ（静的な読み。実行では確かめていない）。実装は、これらを設計の制約として守る。
-1. 規則は新しい表（★2 A）に置く。`codex_entries` の列にしない（Main の読みの allowlist `electron/shared/mastraRead/tables.ts` の `MAIN_READ_TABLES`〔今 16 表〕に `codex_entries` が入っており、その全列を読める扱いかは報告から持ち込みで、この枝では再確認していない）。
-2. 規則の表を Main の read core・standalone MCP・renderer の AI tool が読まない（allowlist・SQL・tool 定義に足さない）。
-3. 規則を AI の request（名簿・prompt・tool の結果・context）に足さない。結果は model の出力の後にローカルで当てる。
-4. 規則の結果を、AI が読む層（年表の参加者の保存、別名への具体化、言及の索引）へ流さない。流すなら、その経路の hidden の判定が入ってから（§9-2）。
-5. ログ・audit に表記と Entry id を出さない。`change_events` に何を入れるかは、Freshness の設計（§3）との兼ね合いで**未確認**（payload の形と、AI 向けに読む経路〔MCP・audit bundle〕の有無が未確認）。件数だけにする案は Freshness と衝突しうるので推奨しない。`reason` に作者が hidden の人物の名前を書きうる点も、実装の前に確かめる。
-6. 規則は model の出力の後に当てる。後段の抽出の AI request（関係・状態・Phase）は、実 Codex Entry の名前でなく不透明な Narrative Entity ID と観測の文だけを送るので、規則の結果は載らない（静的な読み、確からしさは medium）。
+推奨する最小保存単位：
+- correction rule の immutable revision と supersession / retirement lineage。
+- merge / split の operation revision と Entry ID 対応（§3.2）。
+- proposal revision が参照した rule revision と、直後の当て直しの結果。
+正確な表数・列・snapshot 形式は ADR 草稿で決める。profile egress は規則の中身を汎用読取・AI request に出さないよう closed 分類を推奨するが、作者 backup に含めるかは別途確認する。
 
-## 9-2. hidden を指す規則の扱い（2026-11-23 追加。いずれも推奨で、決定ではない）
+### ★3 A（規則の中身をAIに送らない）の設計条件
 
-ADR 013 の J2（013:282）は、Codex の hidden と年表の secret を「どの経路でも AI に渡さない」とする確認済みの目標で、例外は抽出の経路（作者視点。:115）と IME の辞書（ローカル）。ただし、年表の参加者名など :118-126 の漏れの一覧が残る間は、:128 が「主な内容の経路」の約束に限っている（直すまでの時限つきで、hidden を送らない向きで次の PR で直すのが既定）。規則が hidden の人物を指すときの扱いを、J2 を目標、:128 の限定と抽出の経路の例外を現状として、次のようにする。
+★3の2026-11-23回答は規則をAIに送らないこと。全経路で次を守る。
+1. 規則の値、reason、scope と Entry 対応は AI request / tool results / packed context に含めない。決定的な層が model output の後でローカル適用する。
+2. 新しい規則表を Main read allowlist、standalone MCP、renderer AI tools に公開しない。
+3. 検索・Related Scenes・Chat Context が規則で解決した Entry を文脈候補にする場合も、送信直前に ADR 013 の hidden 判定を通す。
+4. hidden の Entry は作者向け画面には表示できるが、hidden 状態を規則 revision に固定しない。phase / scene に応じ既存判定で再評価する（codexHiddenFromAi.ts::resolveCodexForAi / visibleCodexForAi）。
+5. reader-facing export に規則や hidden target の名前を新たに含めない。
+6. event / audit に規則の表記・Entry 対応を入れる必要性と AI 向け読み経路は【未確認】。Change Feed の freshness に必要な最小 ID と、AI egress 内容は別に分類する。**§10 の守り（隠した人物に関わる理由の文・件数・ログも出さない）を満たすための、実装の前の必須の確認。この経路を照合して形を決めるまで、規則・対応表の書き込みと、AI に渡る経路への適用は入れない。**
 
-1. **規則に hidden の状態を焼き付けない。使うときに、既存の入口で判定する。**hidden は Phase で場面ごとに変わる（`resolveCodexForAi`。`src/features/codex/context/codexHiddenFromAi.ts:59`、`listCodexIdsHiddenFromAi` :177、`visibleCodexForAi` :219）。規則の scope は場面を持つので、規則が指す人物が hidden かは規則を使う場面ごとに変わる。保存時に 1 回判定して印を持たせると、Phase が変わった後に食い違う。判定は cache しない（判定を再実装しない）。
-2. **規則の表を Main の read の allowlist に足さない。**`electron/shared/mastraRead/tables.ts` の `MAIN_READ_TABLES` に規則の表を入れると、core が読める表になり、Main から規則を読める窓になる。standalone MCP にも読ませない（MCP は `context_mode` の述語を各 SQL が個別に持つため、JOIN を足すと忘れた瞬間に漏れる。報告から持ち込んだ事実。この枝で再確認していない）。
-3. **v1 は、規則の結果を作者の画面に表示するだけにし、年表の参加者として保存しない案。**「表示だけ」は保存の範囲の話で、作者が年表の画面から規則を作る入口（§8）の有無とは別。年表の読み tool は hidden の Codex の名前を返す既知の非対称がある（`electron/shared/readDomain/core/chronicleTools.ts:45-50` が「Codex names are not filtered」と明記し、ADR 013 の漏れの一覧にも「年表の参加者名」がある）。規則で結んだ人物を出来事の参加者として保存すると、hidden の名前が年表の tool で出る。この非対称が直るまで（年表 lane の CSR/1 の N8 の merge の後。**N8 の本文はこの枝に無く未確認**）、保存へ進まない。
-4. **エクスポートでは、規則を読者向けの書き出しから除く。**キャラクターブックは hidden・suppress を除く（`src/features/export/NovelExportDialog.tsx:89-95`）。規則の一覧を読者向けに出すと hidden の人物の表記が出る。作者の完全な保存（zip・snapshot・trash の restore）に規則を入れるかは別の決定（入れるなら復元の側の範囲と揃える。復元の lane の決定待ち）。取り込みで規則を運ばない（§10）。
-5. **作者の画面には、hidden の人物を指す規則も出す。**ADR 013 D6（画面は作者に全部見せる。:91-97）に合う。hidden の人物には「AI に隠す」の印を添え、規則の中身が AI に行かないことを作者が読めるようにする。`get_ui_state` など、画面の状態を AI に渡す経路に規則や選択中の Entry を足さない。
-6. **規則を使う箇所（言及の索引・検索・chat の文脈など。§5.3 の 3・4）は、規則で解決した人物の id を、必ず既存の hidden の判定に通してから入力に入れる。**
-7. **確認文の約束の範囲：「規則の中身（呼び名と人物の対応）は AI に送りません」と書く。**「人物の名前を AI に送りません」とは書かない。J2 は「どの経路でも」を目標とするが、今は :118-126 の漏れが残り、:128 が「主な内容の経路」に限っている。さらに候補一覧の AI 判定の名簿が hidden を除かない疑い（★3 の範囲の注意）と、抽出の経路の例外（:115）がある。規則の確認文だけが、漏れを残したまま「人物の名前は送らない」という強い約束を新しく作ることになるため。
+## 10. 脅威モデル（2026-11-26 に作者が確認した版 v3 と、末尾の版 v4 の変更）
 
-## 10. 脅威モデルの下書き（★7、確認まで draft）
+確認の記録：contracts の M3 の確認記録（原文は handoff の `m3-user-answers-20261126b.md`）。以下の引用は、伺った問いの文面そのもの。
 
-1. 信頼する actor：作者（Human UI の `human-ui` caller）、native の typed writer。信頼しない actor：model の出力（`explicitIdentityRefs`・chat の tool 呼出しを含む）、本文の中の指示（prompt injection）、取り込みの package、renderer が申告する値、背景の保守・Reconciler、standalone MCP（v1 は MCP から規則を読み書きしない）。
-2. 範囲内の攻撃：AI や本文の指示が規則を作る・変える／規則が黙って判断を変える／hidden の人物を指す規則が chat・検索・年表の tool・読者向けの書き出しで漏れる（§9-2）／消えた Entry を指す規則が当たる／矛盾する規則で勝手に勝者が選ばれる／取り込みで規則が持ち込まれる。範囲外：同じ端末で DB に直接触れられる者、作者が意図して誤った規則を作ること。
-3. 必須の防御：書けるのは作者の UI からの呼び出しだけ（★6 A。**固定の方法は §3 の決めること**）、native で Entry の存在・同じ project・scope の形を検証し直す、版は immutable、競合と dangling は fail closed、規則を使う箇所は ADR 013 J2 の hidden の判定を通す（§9-2）、規則の中身は AI に送らない（★3 A）、提案に当てた規則の版を記録する、取り込みは v1 で規則を運ばない。
-4. 受入れへの影響：Gold・閾値・評価の規則は変えない。規則を使う評価は別の arm として登録する。規則の変更は既存の提案を stale にするので、review の件数が一時的に増えうる。
+**信頼する相手**（回答：この内容で確認（推奨））
+
+> 【訂正を覚える機能の脅威モデル 1/4】訂正の規則を作る・変える、項目を統合・分割できるのは、作者の画面の操作だけにします。本体側で「作者の画面から来た」と確かめられる仕組みができるまで、書き込みは開けません。AI の出力（chat の道具を含む）、本文や取り込むファイル内の指示、画面が申告する値、背景の保守、外部の MCP クライアントは信頼せず、規則の作成や統合を実行できません（AI は提案を出すだけ）。確かめる仕組みが新しい経路になる場合は、改めて伺います。
+
+**守る対象と、守らないもの**（回答：この内容で確認（推奨））
+
+> 【脅威モデル 2/4】守る：AI や本文の指示で知らないうちに規則や統合が行われること、「AI に隠す」の人物の情報が出ること、矛盾する規則で勝手に勝者が決まること、消えた項目や別の作品の規則が当たること、取り込みで規則が持ち込まれること、統合・分割で参照が壊れて戻せなくなること。守らない：同じパソコンでファイルを直接書き換えられる人と、作者自身が誤った規則や統合を作ること（取り消せるようにします）。
+
+**必ず入れる守り**（回答：この内容で確認（推奨））
+
+> 【脅威モデル 3/4】(1) 前回ご確認のとおり、「AI に隠す」人物を指す訂正の中身は AI・検索・読者向けの書き出しに出しません（作者の画面にだけ出し、年表の参加者としても保存しない）。今回は統合・分割の結果、理由の文、件数、ログにも広げ、使う時点の場面の状態で判定します。(2) 規則の中身は AI に送らず、版を残して書き換えません。(3) 食い違いは勝手に選ばず確認待ちに出します（場面の訂正を優先する場合を除く）。(4) 統合・分割は影響を見せてまとめて行い、取り消せます。取り消しや当て直しは、後の他の変更を戻さず、適用済みや承認した提案に触りません。
+
+**隠した人物を含む統合**（回答：その場で選ぶ）
+
+> 【統合】「AI に隠す」の人物と、隠していない人物を 1 つにまとめるとき、まとめた後の項目をどうしますか？
+
+> - 選択肢「AI に隠す側にする（推奨）」：漏れない安全な扱いです。隠していなかった人物も、統合の後は AI から見えなくなります。統合の前にそのことを表示します。
+> - 選択肢「その場で選ぶ」：統合の前に「隠す」「見せる」を選ぶ画面を出します。見せるを選ぶと、隠していた人物の情報も AI に見えるようになります。
+
+【起案者の読み】作者がその場で「見せる」を選んだ項目は、それ以後は「AI に隠す」の人物ではないとして扱う（守りの (1) は、隠している項目に掛かる）。
+
+**受け入れへの影響**（伺った文面への回答は「いいけど別にそこまでガチガチでなくても良い」。続けて問い直した結果：守りの試験だけ必須（推奨））
+
+> 【脅威モデル 4/4】上の守りを試験で確かめるまで公開しません。評価の基準は変えず、訂正を使う評価は別の条件として記録します。検索や chat の挙動が変わるので、公開前の評価の取り直しの対象に入れます。AI への開示の方針にもともとある漏れは、この作業では広げません（直すのは別の作業です）。
+
+> 「そこまでガチガチでなくても良い」の反映です。公開の前に必須にするのは、どこまでにしますか？（どれを選んでも、評価の基準の値は変えません。公開全体の評価の取り決めは別です。）
+
+> - 選択肢「守りの試験だけ必須（推奨）」：隠した人物が出ない、作者の操作だけが書ける、などの試験は必須。訂正を使う評価の別記録や取り直しは、M3 としては必須にしません。
+> - 選択肢「試験も最低限」：必須は「隠した人物が AI や書き出しに出ない」と「知らないうちに書き換わらない」の試験だけにし、他は後で足してもよいことにします。
+> - 選択肢「元の案のまま」：すべての守りの試験、別の評価記録、評価の取り直しを必須にします。
+
+したがって、公開の前に必須なのは守りの試験。問い 4 の文面のうち、訂正を使う評価の別記録と評価の取り直しは、M3 としては必須にしない。評価の基準の値は変えない。公開全体の評価の取り決めは別（統合者の記録では、検索・関連シーン・chat への適用は最後の凍結と正式 run の差分の一覧に入る）。
+
+**新しい保存**（回答：足す（推奨））
+
+> 【保存】作品のファイルに次の記録を足します（ファイルの構造の版が 1 つ上がります）：訂正の規則の版の履歴、統合・分割の履歴と項目の対応表、提案がどの訂正を使ったかと当て直しの結果。作者のバックアップと復元にも含めます。よろしいですか？
+
+### 2026-11-26 の変更（版 v4）
+
+問いの要旨：訂正の書き込みは本体側で「作者の画面の操作」と確かめられるまで開けないと決めたが、chat の AI の道具も画面と同じ場所で動くので、どの窓から来たかを見るだけでは区別できない。どう確かめるか（選択肢は確認ダイアログ・専用の確認の窓・先に調べる）。原文は handoff の `m3-user-answers-20261126c.md`。
+
+回答（選択肢の外の自由な記述）：手間がかかるなら、脅威モデルとして、どこから来たかは確認しなくてよい。
+
+- 外すもの：問い 1/4 の「本体側で確かめられる仕組みができるまで書き込みを開けない」と「確かめる仕組みが新しい経路になる場合は改めて伺う」。呼び出し元を確かめる仕組みは作らない。
+- この回答は「手間がかかるなら」という条件つき。手間と見て省くのは起案者の判断で、問いでは確認ダイアログを作る量が少なめと説明していた。確認ダイアログを足してほしい場合は、足せる。
+- 残るもの（確認済みの守りから）：訂正・統合・分割の命令を chat の AI の道具と外部の MCP に載せない。根拠は ★6 の回答（chat の AI からは作れない）、版 v3 の問い 2/4（知らないうちに規則や統合が行われることを守る）、問い 1/4 の「AI は提案を出すだけ」。今回の回答はこれらを撤回していない、というのが起案者の読み。
+- 残るもの【起案者の読み】：背景の保守と取り込みは規則を作らない。native 側で引数を確かめる守り（消えた項目・別の作品の規則を当てない、hidden の判定、版の確認）。
+- 限界：画面と同じ場所で動く別のコードがこの命令を呼んだ場合は、作者の操作と区別できない。
+- 受け入れの守りの試験のうち「作者の操作だけが書ける」は、「AI の道具の一覧と MCP の公開する命令に、訂正の命令が無い」ことの試験に読み替える【起案者の読み】。既存の Codex の書き込みには agent 用の命令と main が付ける呼び手の区分があると下調べで報告されている（未照合）。PR 1 の設計の前に照合し、native 側で AI の道具・背景の保守・取り込みの呼び手を拒む試験まで足せるかを決める。
 
 ## 11. 受入れ条件の案（roadmap の Exit criteria との対応）
 
-| Exit criteria（roadmap の Epic P0-A の「Exit criteria」節） | v1（案） |
+| roadmap Epic P0-A Exit criteria | この草稿で求める受入れ |
 | --- | --- |
-| 訂正した結び付けが、次の抽出で作者に聞かずに再利用される | 満たす見込み（案。Codex の抽出は旗の裏〔§5.1〕で、今の製品 build では作者の操作で動かないので、旗を開いた build での話。Chronicle の表示）。場面の規則は別の場面に当たらないことも試験する |
-| cannot-link が同じ誤った merge の提案を防ぐ | 後回し（★4 B か ERM-2） |
-| 矛盾する規則が fail closed し、Structure Health に出る | fail closed と review カードの表示は満たす。Structure Health は P0-B 待ち |
-| Merge／Split の影響の preview と取り消し | 後回し（ERM-2） |
+| 訂正した結び付けが、次の抽出で作者に聞かずに再利用される | 同一 scope の次の抽出と取込みで再利用し、別 scope には漏れない。model output と適用 rule revision を両方確認できる |
+| cannot-link が同じ誤った merge の提案を防ぐ | 同じ Entry pair / equivalent scope の再実行で merge / same-entity Proposal を出さず、scope 外では一律抑止しない |
+| 矛盾する規則が fail closed し、Structure Health に出る | winner を推測せず unresolved とし、rule revision・対象・scope・理由を Structure Health に出す |
+| Merge / Split の影響 preview と取り消しが dependent data を orphan しない | roadmap の全影響群について対象と件数を出し、未解決参照は隠さず apply を止める。single atomic typed-writer commit を Undo し、参照・lineage・dependent data を復元する |
 
-v1 の追加の条件（案）：規則の版の変更で依存する提案が stale になる／model の出力が規則と別に残る／AI が規則を書けない（**試験の方法は §3 の決めること。allowedCallers の否定では今は表現できない**）／規則を AI の request に含めない（★3 A の場合）／hidden の人物を指す規則が、読者向けの書き出し・年表の参加者の保存・AI の道具の結果に出ない（§9-2）。
+現行に位置付き mention index と共通 Codex-ID reverse lookup がないため、Mentions / editor highlights まで完全な preview ができるまでは4行目の達成としない。Codex ID だけでは split 後の参照先を一意に選べないケースは、人の選択と履歴が残ること。評価閾値・Gold の変更はこの草稿では決めない。
 
 ## 12. 未確認の点と限界
 
-### 12.1 確かめ方（2026-11-23 の改訂）
+### 12.1 2026-11-26 に照合した事実
 
-- **今回 `b7f8fa336` の内容で読み直した行**：`existingEntityMatcher.ts`（:143-180、:225-270）、`runEntityResolutionTask.ts`（:46-50、:180-196）、`codexStructureExtractionApi.ts`（:1625-1645、:1735-1745）、`entityClustering.ts`（:236-250）、`codexEntityHypothesis.ts`（:77-90）、`evidence/types.ts`（:11-16）、`codexCandidates.ts`（:25-30）、`codexStructureExtractionFlag.ts`、`CodexCandidatesReport.tsx`（:60-75、:146-149）、`CodexEntityProposalReview.tsx`（:6、:518）、`proposalPlanner.ts`（:139-145、:185-186）、`ChronicleEvidencePane.tsx`（:76-92）、`CorrectionRulePreview.tsx:63`、`rustMatcher.ts`（:64-70）、`policies/narrative/` の `narrative-ir-contract.json`（:33-51）・`semantic-core-authorities.json`（:15-23）・`mutation-authority-routes.json`（:20-28）・`narrative-dependency-role-registry.json`（:74-78、:215-226）・`change-feed-writers.json`（variant 全件の集計）、`validate-semantic-core-boundary.mjs`（:1240-1268）、`dependencyRole.ts`、`narrative_dependency.rs`（:48・:138）、`grimodex-core` の `lib.rs`（:1-12）・`workspace_schema.rs:798`、ADR 005 の :9・:850・:867・:1032-1033・:1196-1197、ADR 006 の :53-65・:139-143、ADR 010 :139、ADR 013（Status・:21・:93・:115-128・:282）、`mastraRead/tables.ts`（`MAIN_READ_TABLES` 16 表）、`chronicleTools.ts:40-52`、`NovelExportDialog.tsx:89-95`、`codexHiddenFromAi.ts`（:59・:177・:219）、`candidateJudgment.ts:90-96`、roadmap の Epic P0-A 節（ERM-0〜ERM-3・Exit criteria）。**追加で読み直した（2026-11-23、レビューの指摘の確認）**：`codexStructureExtractionFlag.ts` は 18 行、`CodexStructureExtractDialog.tsx:199`、`codexStructureExtractionApi.ts:1514`、`CodexCandidatesReport.tsx:309`、`ir/observations/entityIdentity.ts:44-47`、`ir/observations/eventOccurrence.ts:33-35`、`codexEntityHypothesis.ts:79-84`、`grimodex-core/src/lib.rs:9-10`、`grimodex-db/tests/` の 3 file の 46 固定の 4 か所、`narrative_ir.rs:2224`、`narrative-dependency-role-registry.schema.json:476`、`existingEntityMatcher.ts` の `2caf67a6` との行のずれ、ADR 013 :113-130・:280-284。
-- **`2caf67a6` から diff が 0 件のため、起案時の行を持ち越したもの**：ADR 005・006・009・010 の本文（`git diff 2caf67a6 HEAD` で確認。上のうち読み直した行以外の :行は、この持ち越し）。roadmap は HEAD どうしの比較では差分 0 件だが、この PR が roadmap に追記し（基点 `b7f8fa336` の行から 11 行ずれる）、行番号は PR の状態で誤りになるので、節の名前で参照した。`policies/narrative/` では `narrative-ir-contract.json` と `change-feed-writers.json` に差分があるが、引いた行の内容は読み直して合っている。
-- ADR の空き番号：local・remote・tag の全 ref の `docs/adr/` に 015 以上が 0 件（`git ls-tree`。2026-11-23）。打ち手 1〜4 の merge：`git log` に #894・#899・#903・#906 を確認。
+- roadmap の対象は docs/plans/narrative-semantic-core-roadmap.md の Epic P0-A / ERM-0〜3 / Exit criteria。
+- merge / split 専用の Codex writer はない。codex_writes.rs::agent_codex_mutate_internal の dispatch（1601-1663）は relation / phase / detail / tag / type の操作を列挙する。
+- Plot Thread の schema は plot_threads と plot_thread_scene_links に thread / scene ID を持つが Codex ID を持たない（migrate.rs:2355-2408）。直接の Codex reference は確認できない。
+- scene_codex_mentions は scene_id / codex_entry_id / source / role を持ち、本文内の位置を持たない（migrate.rs:1598-1606）。BodyMentionIndexState は scene revision と matcher hash の走査状態で、位置別 mention index ではない（src/features/codex/bodyMentionIndexState.ts::recordBodyMentionScans）。
+- Codex ID から全 affected references を共通 API で列挙する仕組みは確認できていない。参照は scene_codex_mentions、foreshadow_codex_links、event_participants、map_node_positions などに分散する（migrate.rs:1332-1403、1586-1606、2521-2526）。これは確認した現行構成の記述で、別の未読経路があれば更新する。
+- narrative_extraction_undo_commit は commit journal の entities を preflight し逆順に戻すため、複数 entity を含む commit を扱える（narrative_extraction/undo.rs::narrative_extraction_undo_commit、mutate_commit:141-190）。
+- schema は46（grimodex-core/src/lib.rs:3）。この checkout の docs/adr は014までで、次番号の候補は015。
+- 表の変更が snapshot restore / park、Change Feed、protected writer、profile egress の各 registry に届く根拠は §3・§9 記載の実装入口。
 
-### 12.2 未確認
+### 12.2 作者に確認が要る点・未確認
 
-- 2026-11-10 の「規則の ADR も起こす」の選択の原文（repo の docs・git log に見つからない。由来の行）。
-- 他のセッションの未保存分が ADR 015 を予約していないか／HSR/1 が schema の版を上げるか（この枝に本文が無い）／CSR/1 の N8 の内容と merge の時期。
-- 現行の抽出が既存の 2 Entry の同一視を提案するか。
-- `sourceRef` が場面そのものを指すか（`NarrativeSourceView["ref"]` は string。場面の ref との対応は読み切っていない）。
-- `manual-wrapper`・`typed-domain-api` の中身／規則の writer 側で呼び出し元が作者の UI 由来であることをどう検証できるか（§3 の決めること）／`protected_writers.rs` の中身。
-- `codexMatcher`・`rustMatcher` が場面を持たないこと（構造からの推測）／別名がエディタの強調・検索で作品全体に効くこと（推測）。
-- `change_events` の payload の形と、それを AI 向けに読む経路（MCP・audit bundle）の有無（§9 の条件 5）。
-- AI の道具・standalone MCP が規則の表を読まないこと（§9-2 の 2 の MCP の述語は報告から持ち込み、この枝で再確認していない）。
-- 旗が閉じた製品 build で、打ち手 4（`relationalTerms.ts`、候補一覧の `CodexCandidatesReport.tsx` からも使われる）と打ち手 3（候補一覧の却下の覚え）がどこまで効くか（§6.1。構造抽出の側が旗の裏であることだけを確かめた）。
-- `electron/`・Rust の別経路に、`matchExistingEntity`・`runEntityResolutionTask`・`clusterEntityMentions` の呼び出しが無いこと（`src` の grep だけ）。
-- 報告から持ち込み、この枝で確かめていない事実：候補一覧の AI 判定が hidden を除かないことの実行での確認（静的な読み、medium）、版を上げるときに同時に変わる箇所の完全な一覧（validator・generated schema・試験の行）、Rust の台帳（D2a）の pin 試験で新しい表の分類を決める必要があること、`profile_egress_policy` での新しい表の分類（PUB-G の領分）。
-- 評価データの数値（repo の外。117 Scene の 2 作品で人物の表記 132 種／168 種など）。Codex が 0 件のため、規則で解ける割合は測れていない。
+- ★4：5 種すべて作る（追記 32 の指示の範囲からの起案者の読み。作者の回答ではない）。【2026-11-26 追記：作者の回答で確定した。】
+- Split で複数 target に分かれる既存参照を、参照型ごとに作者が割り当てるか、別の制約を設けるか。
+- Impact preview が Phase / State / Chronicle の実体変更に進む場合、M2-D2〜D4 identity をどの PR で確定するか（見込み）。
+- 「公開前」の境界が、作者の apply / commit、読者向け export、または外部公開のどれを指すか。
+- profile egress の closed 分類。規則・lineage 表を作者の backup と復元に含めることは 2026-11-26 に確認した（§10 の新しい保存）。
+- scene scope を observation / proposal の sourceRef から scene ID に確実に対応づける契約。現行型は sourceRef を文字列で保持するだけである（evidence/types.ts:11-16、source/sourceView.ts）。
+- 同一表記 proposal の安全な再計画 read/write 経路と、部分失敗時の結果表現。
+- Import と Semantic Search の各 canonical entry point、Related Scenes と Chat Context の packed-context 境界、隠しEntryの既存判定が全対象 call path に届くこと。
+- writer で作者UI由来 caller をどう検証するか。新 authority / route / policy 変更が要るなら委任外。【2026-11-26 追記：呼び出し元を確かめる仕組みは作らないと回答（§10 の末尾）。policy の変更が要る場合の確認は変わらない。】
+- text mention index をどう実現して impact を完全化するか。現在の scene_codex_mentions は位置を持たず、Plot Thread に直接 Codex link はない。
+- author-correction producer registry、snapshot restore の park mapping、profile egress table class の列の全変更位置と生成物は【未確認】。実装 PR 前に policy validator / generated schema を追う。
+- ADR 015 を他の同時作業が予約していないか（未保存の別セッションは見えない）。
 
 ### 12.3 限界
 
-範囲（第 3 章以降）は Order Oracle 待ち／同じ場面の同じ表記の 2 人は表せない／否定の規則は v1 に無い／言及の索引・検索・chat は v1 の外／規則の結果を年表の参加者として保存しない（§9-2）。
+同じ場面の同じ表記を複数人物に同時に結ぶ場合の扱い、曖昧な split の参照割当て、位置付き言及索引が整う前の完全な影響列挙は、この草稿で確定していない。規則を適用できない範囲を「影響なし」と見なさず、fail closed とする案。
 
 ## 13. 2026-11-23 の改訂の記録
 
@@ -360,3 +412,27 @@ M3 の前倒し（上の決定①〜⑤）に合わせた改訂。構造と節�
 未確認の点：§12.2 のとおり。特に、HSR/1 が schema の版を上げるか、`sourceRef` が場面を指すか、writer 側での呼び出し元の検証方法、`change_events` の payload、他セッションの ADR 番号の予約、候補一覧の AI 判定が hidden を除かないことの実行での確認。
 
 この草稿に判断表（どの数字で ERM を作る／作らないか）は書かない。それは事前登録側（`docs/plans/nir1-fusion-records/identity-review-load-2026-11/preregistration-v1-draft.md`）の話で、測る前に固定する。
+
+
+## 14. PR 分割と依存順（案）
+
+1. **PR 0 — ADR 015 と受入れ契約**：この草稿を作者確認の後にADR化し、ERM-0〜3とExit criteria、競合・scope・hidden・Undoの境界を記録する。ADR番号は作成時に再採番する。
+2. **PR 1 — schema / rule / lineage 基盤**：immutable rule revision、merge / split ID lineage、typed native read/write、Change Feed、restore park、protected writer、profile egress を一つの版上げとして揃える。
+3. **PR 2 — Merge / Split Proposal と影響表示・Undo**：PR 1 の lineage を使い、全参照領域の enumeration、atomic typed writer、multi-entity Undo を実装する。split の未割当参照を扱えるまで apply を開かない。
+4. **PR 3 — 抽出・取込みと即時当て直し**：PR 1 の規則 read/write を使い、抽出 / import の決定箇所、確認待ち proposal への非AI当て直し、件数応答を実装する。
+5. **PR 4 — Search / Related Scenes / Chat Context**：PR 1 の規則と lineage を使い、各 retrieval path で適用する。provider 送信前に ADR 013 hidden を確認し、規則の中身を送らない。
+6. **PR 5 — Structure Health と受入れ閉鎖**：conflict / dangling / unindexed reference を診断し、§11 の四条件と roadmap の Exit criteria を閉じる。
+
+PR 2・PR 3・PR 4 は PR 1 の後に独立して始められる。PR 5 は各検出面が揃った後。M2-D2〜D4 が必要になる箇所は、適用前に契約依存として順序を確定する。
+
+## 15. 2026-11-26 改訂の記録
+
+- M3 を全部完了させる指示（追記 32）を受け、roadmap Epic P0-A の ERM-0〜ERM-3 と Exit criteria 全件を本稿の対象にした（範囲は起案者の読み）。2026-11-23時点の「作るかは測定後」という記録は経緯として§13に残し、現行スコープの根拠にはしない。
+- ★5：場面 scope が作品全体 scope より優先し、作成時に例外と表示する。★8：同じ surface の確認待ち proposal に直後・非AIで当て直し、件数を表示する。read/write は新しい契約になると記した。
+- ★4：ERM-0 の5種すべてを対象に含めるのは起案者の読みで、ユーザー決定ではないと明記した。
+- M4 担当回答を反映：M2-D1 identity は同一 Codex ID のみ。merge / split の ID 対応は ERM が保持する。影響が Phase / State / Chronicle の ID に及べば M2-D2〜D4 が要る見込みとした。
+- Merge / Split writer、逆引き参照、Plot Thread の直接 Codex ref、位置付き mention index、複数 entity の narrative Undo を現行コードで照合し、根拠を§5・§7・§12に記した。
+- SCHEMA_VERSION 46 と ADR 015 候補を確認した。新表に必要な restore park / Change Feed / protected writer / profile egress の登録先を記した。
+- ★1・2・3・6・7 の2026-11-23の回答経緯と§13の記録は保持した。§10には指定の1行だけを先頭に追加し、脅威モデル本文と★7の記述は変更していない。
+- 2026-11-26 の追加：作者の回答 2 件（呼び出し元の確認はしない、規則は 5 種すべて）を反映した。§10 の引用（版 v3 の問いの原文）は書き換えず、末尾に版 v4 の変更を足した。
+- 今回変更した file は本草稿だけ。コード、schema、policy、他の docs は変更していない。

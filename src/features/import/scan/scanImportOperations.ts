@@ -9,8 +9,10 @@ import {
 import {
   createEvent,
   linkScenesToEvent,
+  listEvents,
   setEventParticipants,
 } from "@/features/chronicle/api";
+import { provisionalBaseDay } from "@/../electron/shared/readDomain/features/chronicle/chronicleProvisionalDate";
 import { createNode, listNodes } from "@/features/tree/api";
 import {
   createCanonicalWriteContext,
@@ -279,6 +281,18 @@ async function importEvents(
     (left, right) =>
       left.order - right.order || left.id.localeCompare(right.id),
   );
+  if (ordered.length === 0) return result(0);
+  const existingEvents = await listEvents(projectId);
+  const existingScenes = (await listNodes(projectId)).filter(
+    (node) => node.nodeType === "scene" && !node.archivedAt,
+  );
+  const nextDay = provisionalBaseDay(
+    existingEvents,
+    existingScenes.map((scene) => ({
+      startTime: scene.chronicleStartTime,
+      startGranularity: scene.chronicleStartGranularity ?? "none",
+    })),
+  );
   for (let index = 0; index < ordered.length; index++) {
     const event = ordered[index]!;
     const eventRow = await createEvent(
@@ -289,6 +303,9 @@ async function importEvents(
         note: event.summary ?? null,
         ordinal: eventOrdinal(index),
         primaryCodexId: event.entityIds[0] ?? null,
+        startTime: nextDay + index,
+        startGranularity: "day",
+        precision: "unknown",
       },
       { origin: "import" },
     );
