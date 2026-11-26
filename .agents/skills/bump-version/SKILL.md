@@ -87,20 +87,30 @@ electron-builder、`app.getVersion()`、v2 release workflow の tag gate は、�
    - `/ship-branch` のrelease path（completeなhosted Fullと直後のverify、`approved_merge_base`による直前のbase照合、mergeability、レビュー、HEAD固定、squashのfirst-parent照合）を満たす。通常のPR用のQuick経路は使わない。
 9. **merge済みrelease goalのFull、注釈付きtag、Draft Release**
    - tag／Draft Releaseが依頼範囲に含まれ、CIが許可され、mergeが完了した場合だけ、merge後の `origin/master` を fetch してrelease commitを確認し、release commitそのものをcleanなcheckout／worktreeの現在HEADにする。
-   - その条件を満たす場合、`origin/master`とHEADがrelease commitを指す状態で、最初のstageからFullを実行し直して直後にverifyする。squash前のbranch HEADに対するFull receiptは、merge後のrelease commitの証跡として再利用しない。
+   - その条件を満たす場合、`origin/master`とHEADがrelease commitを指す状態で、release commitに対するGitHub-hostedのFullを最初から実行し、`full-aggregate`の直後のverifyまで通す。squash前のbranch HEADに対するFull receiptは、merge後のrelease commitの証跡として再利用しない。
    - local／commit-only／PR-only、またはCI明示除外の依頼ではこのStep 9のFull／verify／tag／Draft Releaseを開始せず、候補commitを保持してrelease readinessを主張しない。
-   - 上記のrelease／CI／merge条件を満たす場合だけ、次の固定値でrelease Fullと直後のverifyを実行する。
+   - 上記のrelease／CI／merge条件を満たす場合だけ、release Fullと直後のverifyをhostedの`canonical-ci.yml`で実行する。ローカルの`pnpm ci:local:full`はGDX-TRACE-001によりhosted job以外で拒否され、release の証跡にならないので使わない。
+   - `release_base`は`/ship-branch`の§8手順1と同じ規則で決める（直前にcompleteなFullを通したmasterのcommit。分からなければrelease commitのfirst parent）。release commit自身のcompleteなFullが既にあればdispatchしないので、`release_base`と`release_head`は同じにならない。
+   - §8手順2でmasterのFullの状況をread-onlyで確かめる。release Fullとして扱えるのは、`headSha`が`release_head`と一致するrunだけである。
+     - `headSha`が`release_head`のcompleteなFull、または実行中・queuedのFullがあれば、新しくdispatchせず、そのrunを完了まで追う。
+     - 別のheadのFullは、成功していてもrelease Fullに数えない。別のheadのFullが実行中・queuedなら、終わるのを待ってからこの項をやり直す。
+     - `headSha`が`release_head`のFullが無いか、失敗・cancelled・timed outで終わっているだけなら、§2.2のresource-isolation preflightを記録した後、次の固定値でdispatchする。
 
      ```bash
-     release_base="$(git rev-parse 'origin/master^{commit}')"
+     git fetch origin master
+     release_base="$(git rev-parse '<§8手順1で決めたcommit>^{commit}')"
      release_head="$(git rev-parse 'HEAD^{commit}')"
-     pnpm ci:local:full -- --base "$release_base" --head "$release_head"
-     pnpm ci:local:verify -- full --base "$release_base" --head "$release_head"
+     test "$release_head" = "$(git rev-parse 'origin/master^{commit}')" &&
+       gh workflow run canonical-ci.yml --ref master -f profile=full -f candidate_base="$release_base" -f candidate_head="$release_head"
      ```
 
-   - `--from`によるpartial runと`--dry-run`はrelease認証に使わない。必須toolchain、依存、
-     host capabilityの不足、candidate不一致、base移動があればtagを作らず停止し、release commitを
-     固定し直して`--from`なしのFullを最初からやり直す。
+   - `test`が失敗した場合（masterがrelease commitより先に進んだ場合）は、dispatchもtagもせずに停止して報告する。`--ref master`のrunは`candidate_head`がdispatch時点のmasterの先頭と一致しないと`Validate canonical selection`で止まるため、release commitそのもののFullは取れない。後続のheadにtagを付け替えたり、別のbranchから回したりしない。
+   - dispatchしたrunを`gh run list --workflow canonical-ci.yml --branch master --event workflow_dispatch --limit 5 --json databaseId,headSha,status,createdAt`で特定してrun idを記録し、`headSha`が`release_head`と一致することを確かめる。追うrunにも同じ照合をかける。
+   - completeかどうかは`/ship-branch`の§8手順4の基準で判定する。全`full-<part>` jobと、同じtupleで`pnpm ci:local:full -- --aggregate`と`pnpm ci:local:verify -- full`を実行する`full-aggregate`が、最後のattemptで成功したrunだけを、completeなrelease Full receiptとする。
+   - 完了を待ってから次へ進む。報告には、release Fullとしたrunのid、`headSha`、最後のattemptと結論を書く。途中で失敗したrunがあれば、そのidも書く。
+   - `--from`によるpartial runと`--dry-run`はrelease認証に使わない。失敗、cancelled、timed out、candidate不一致、base移動のいずれかがあれば、tagを作らずに止める。
+   - やり直すときは、全jobを再実行するか、release commitを固定し直してdispatchし、最初から回す。失敗jobだけの再実行（`--failed`）は使わない。`full-aggregate`が前のattemptのpartを読めないためである。
+   - release commitより後にmasterが進み、`Validate canonical selection`で止まったrunは、release Fullに数えない。
    - ゴールに tag／Draft Release 作成が含まれる場合、`origin/master` の release commit に `v<新バージョン>` を付ける。
    - `git tag -a v<新バージョン> <release-commit> -m "Release v<新バージョン>"`
    - lightweight tag は使わない。
