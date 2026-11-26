@@ -22,8 +22,14 @@ feature-private な要約や Freshness の store の削除は個別に伺う。
 - **DR-M2R-4（この版で新しい経路を足すか）**：検索結果の印（案 A）は、新しい契約が要るのに役に立つ根拠が無いので見送る。Related Scenes の Graph の経路（案 C）は現状のまま。Chat の候補の並べ替え（案 B）は、ユーザーの回答「案 B も検討する」（contracts の追記 15）を受けて起案の §3.4 で検討した。起案者の勧めは B1（選び終えた後の並べ替えだけ、旗を閉じて入れて測る）。B1〜B3 はどれも AI への送信の変更と新しい読み口の契約にあたるので、**形と送信をユーザーに伺うまで実装しない**。
 - **DR-M2R-5（公開版の fixture）**：v2.0.10 の `migrate()` は `codex_relations`・`change_events`・`undo_journal` を開くたびに作る（tag の `migrate.rs:1135`・`:1495`・`:2037`）。しかし Gate A2 の fixture は seed（見本データ用の部分集合）から作るので、この 3 表の行を覆っていない。3 表は M2 が別の product PR（試験だけ）で覆う（統合者と合意）。seed に無い残りの 26 表は、この版では覆わず、公開の前に扱いを決める（未決）。（最初は「seed に無いので足す行は無い」と書いたが、M4 の指摘で v2.0.10 の migration を確かめて改めた。）
 
+- **DR-M2R-6（B1 の入力と並べ替えの位置）**：ユーザーの回答「B1 を旗の裏で」（contracts の追記 16）を受ける。`buildSystemPrompt` は同期で、L4 もその中で選ぶ（`contextBuilder.ts:2307`、`:1868-1879`）ので、読み口は「選び終えた id」でなく、builder の前の候補の id（今の並びの先頭から最大 64 件）を受ける。返すのは入力の部分集合だけで、入力の順を保つ（renderer が既に知っている id 以外を返さない）。並べ替えは最後の予算の補正（`:2111-2134`。毎回 `candidateL4Items` から選び直し、その後に L4 を削る処理は無い）の後に、同じ kind の群の中・同じ stability の区分の中だけで、承認済みを先にする安定な並べ替えとして行い、もう一度 materialize する。選ぶ処理には印を使わない。不変条件「承認済みの集合の有無によらず、選ばれる id の集合が一致する」を、scene と scene でない文脈の両方で、いちばん外の入口から試験する。
+- **DR-M2R-7（「承認済みで今も有効」の定義と読み方）**：Codex の項目 `X` が印を得るのは、`X` を Entity に持つ typed ER の revision のうち少なくとも 1 つが、(a) 既存の A2 の判定で current かつ最新の Decision が人（`actor_kind = 'human'`）の `approved`（`nir1_entity_relation.rs:2796` の判定を再利用）で、(b) その revision の依存の辺に記録した token（`read_set_json`）が、今の token（`resolve_typed_source_token`、`:1296`。hidden や消えた項目は解決しない）と一致するとき。読み方は `narrative_dependency_edges` の index `(project_id, source_object_identity)`（`migrate.rs:3878`）で id ごとに新しい順に最大 16 本まで引く。16 本を超える分は見ず、その中に当たりが無ければ印を付けない（付けない側に倒す）。schema は変えない。`MAX_PACKING_ITEMS`（512）による project 全体の列挙は、長い作品で常に上限を超えうるので使わない。
+- **DR-M2R-8（旗と失敗時）**：renderer の旗 `CHAT_APPROVED_CODEX_RANK_ENABLED = false as const` を置く。旗が閉じている間は読み口を呼ばない。読み口が失敗・使えないを返したら、並べ替えずに今の挙動のままにする。builder は承認済みの集合を引数で受け、旗に依らず試験と評価から注入できる形にする。
+- **DR-M2R-9（PR の分け方と測定）**：B1a は Rust の reader・N-API・IPC の契約・`src/lib` の wrapper だけで、呼び手なし。B1b は旗・2 つの context の source・builder の並べ替え。`contextBuilder.ts` は `evals/impact-map.yaml` の `localized-prompts`（suite `prompt-contract`）に当たるので、B1b は AI の挙動の資産の変更として impact gate を通す。Chat の L4 の順序の効果を typed ER つきで測る既存の評価は無い（evals の中で typed ER を使うのは NIR-1 の Packing と Graph だけ）。旗を開ける前に、小さな評価を新しく作り、その結果でユーザーに伺う。
+
 ## 信頼境界
 
-- 送信：変えない。Chat の Codex の文脈は、今の `codexVisibilityPolicy` の判定のまま。
+- 送信：旗が閉じている間は変えない。旗を開けると、AI に届く Codex の項目の集合は変わらず、prompt の中の順序だけが変わる（DR-M2R-6）。可否の判定は今の `codexVisibilityPolicy` のまま。
+- 読み口：入力の id の部分集合だけを返し、新しい情報を renderer に出さない。上限は入力 64 件・id ごとに辺 16 本。main で引数を再検証する。
 - 保存：変えない。消すものは無い。
 - 公開：Graph の経路は閉じたまま。
