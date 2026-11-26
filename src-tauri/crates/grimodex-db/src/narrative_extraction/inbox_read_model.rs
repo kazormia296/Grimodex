@@ -551,8 +551,35 @@ fn freshness_summary_counts(
     Ok(counts)
 }
 
+/// The header calls this often, so it stays a single pass: the exclusion is
+/// only evaluated for rows that already match the stale predicate. It decodes
+/// every row's freshness and build action as fail-closed as
+/// [`freshness_summary_counts`] does.
 fn stale_proposal_candidate_count(conn: &Connection, project_id: &str) -> anyhow::Result<u64> {
-    Ok(freshness_summary_counts(conn, project_id)?.stale_total())
+    let sql = format!(
+        "SELECT COALESCE(SUM(CASE WHEN {STALE_PROPOSAL_CONSUMER_PREDICATE}
+                                      AND NOT ({EXCLUDED_PROPOSAL_REVISION_PREDICATE})
+                                 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN f.evidence_freshness NOT IN
+                                          ('fresh', 'stale', 'source-missing', 'anchor-mismatch', 'read-set-drift', 'unknown')
+                                 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN f.build_action NOT IN
+                                          ('none', 'revalidate-exact', 'reanchor-candidate', 'resolve-only', 'recompile-only', 'rebuild-required', 'refresh-available', 'manual')
+                                 THEN 1 ELSE 0 END), 0)
+           FROM narrative_consumer_freshness f
+          WHERE f.project_id = ?1"
+    );
+    let (count, invalid_freshness, invalid_action): (i64, i64, i64) =
+        conn.query_row(&sql, params![project_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+    if invalid_freshness > 0 {
+        anyhow::bail!("NEX_EVIDENCE_FRESHNESS_INVALID: unknown evidence freshness");
+    }
+    if invalid_action > 0 {
+        anyhow::bail!("NEX_BUILD_ACTION_INVALID: unknown build action");
+    }
+    Ok(u64::try_from(count)?)
 }
 
 fn hidden_consumers(
@@ -1527,6 +1554,15 @@ mod tests {
                 "2026-08-15T00:00:00.000Z",
             );
             seed_proposal_revision_for_test(conn, "project-2", "revision-other-project", None)?;
+            // project-2's own stale rows must not reach project-1's numbers.
+            let other_epoch = create_epoch_in_tx(conn, "project-2", "initial", None)?;
+            seed_stale_proposal_revision_for_test(
+                conn,
+                "project-2",
+                &other_epoch,
+                "revision-project-2-only",
+                None,
+            )?;
 
             let now = "2026-08-15T01:00:00.000Z";
             let inbox = build_maintenance_inbox(conn, "project-1", now)?;
