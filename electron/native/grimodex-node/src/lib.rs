@@ -13606,6 +13606,42 @@ impl Backend {
         .await
     }
 
+    /// Filter caller-supplied Codex IDs through current, human-approved typed
+    /// Entity/Relation Revisions in the workspace pinned by Main.
+    #[napi]
+    pub async fn nir1_entity_relation_approved_codex_filter(
+        &self,
+        payload: serde_json::Value,
+        caller_identity: Option<String>,
+    ) -> Result<String> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Request {
+            expected_workspace_path: String,
+            project_id: String,
+            codex_entry_ids: Vec<String>,
+        }
+
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let guard = admit_publication_entry(&state, caller_identity)?;
+            let request: Request = from_wire("payload", payload)?;
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
+            let response = workspace.authority.db().with_read_transaction(|conn| {
+                narrative_extraction::read_nir1_entity_relation_approved_codex_filter(
+                    conn,
+                    &request.project_id,
+                    &request.codex_entry_ids,
+                )
+            })?;
+            let wire = serde_json::to_string(&response).map_err(anyhow::Error::from)?;
+            finish_publication_entry(&state, &guard)?;
+            Ok(wire)
+        })
+        .await
+    }
+
     /// Read the project-scoped typed change review without changing stored state.
     #[napi]
     pub async fn nir1_change_review_read(

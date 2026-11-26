@@ -323,6 +323,8 @@ const DENIED_COMMANDS = new Map<string, D2aRoute>([
   // (`mastraAgentTurnGate.ts`); this is the restricted profile's own refusal,
   // for the day the gate is opened.
   ["mastra_agent_turn_start", "old-external-ai"],
+  // Keep the approved-ID reader closed until its Main route is reviewed (DR-M4PF-11).
+  ["nir1_entity_relation_approved_codex_filter", "plaintext-publication"],
 ]);
 
 const ALLOWED_STOP_COMMANDS = new Set([

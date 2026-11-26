@@ -558,6 +558,7 @@ describe("caller timeout policy（electron 分岐）", () => {
     "fts_search",
     "nir1_evidence_qualify",
     "nir1_entity_relation_revision_read",
+    "nir1_entity_relation_approved_codex_filter",
     "nir1_entity_relation_revision_read_current",
     "nir1_entity_relation_revision_restore",
     "nir1_change_review_read",

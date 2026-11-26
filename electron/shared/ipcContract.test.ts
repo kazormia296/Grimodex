@@ -7315,6 +7315,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_scope_project_default_read",
       "narrative_scope_project_default_update",
       "nir1_change_review_read",
+      "nir1_entity_relation_approved_codex_filter",
       "nir1_entity_relation_revision_create",
       "nir1_entity_relation_revision_prepare",
       "nir1_entity_relation_revision_read",
@@ -12843,6 +12844,107 @@ describe("NIR-1 two-result command boundary", () => {
         shell: {},
       },
     );
+  });
+
+  describe("nir1_entity_relation_approved_codex_filter", () => {
+    const command = "nir1_entity_relation_approved_codex_filter";
+    const request = {
+      expectedWorkspacePath: "/workspace/project-1",
+      projectId: "project-1",
+      codexEntryIds: ["codex-b", "codex-a"],
+    };
+    const setup = () => {
+      const nir1EntityRelationApprovedCodexFilter = vi.fn().mockResolvedValue(
+        JSON.stringify({
+          status: "available",
+          approvedCodexEntryIds: ["codex-b"],
+        }),
+      );
+      return {
+        nir1EntityRelationApprovedCodexFilter,
+        deps: {
+          backend: {
+            nir1EntityRelationApprovedCodexFilter,
+          } as unknown as NapiBackendLike,
+          shell: {},
+        },
+      };
+    };
+
+    it("maps the workspace-bound request and parses the approved ID subset", async () => {
+      const { nir1EntityRelationApprovedCodexFilter, deps } = setup();
+      expect(await dispatchInvoke(command, request, deps)).toEqual({
+        ok: true,
+        value: { status: "available", approvedCodexEntryIds: ["codex-b"] },
+      });
+      expect(
+        nir1EntityRelationApprovedCodexFilter,
+      ).toHaveBeenCalledExactlyOnceWith(request);
+    });
+
+    it("accepts 64 IDs and rejects empty, oversized, duplicate, or malformed IDs", async () => {
+      const { nir1EntityRelationApprovedCodexFilter, deps } = setup();
+      const ids = Array.from({ length: 64 }, (_, index) => `codex-${index}`);
+      expect(
+        (
+          await dispatchInvoke(
+            command,
+            { ...request, codexEntryIds: ids },
+            deps,
+          )
+        ).ok,
+      ).toBe(true);
+      for (const codexEntryIds of [
+        [],
+        Array.from({ length: 65 }, (_, index) => `codex-${index}`),
+        ["codex-a", "codex-a"],
+        [""],
+        ["  "],
+        [" codex-a"],
+        ["\u0085codex-a"],
+        ["c".repeat(513)],
+        [null],
+        [7],
+        "codex-a",
+      ]) {
+        expect(
+          (await dispatchInvoke(command, { ...request, codexEntryIds }, deps))
+            .ok,
+        ).toBe(false);
+      }
+      expect(
+        nir1EntityRelationApprovedCodexFilter,
+      ).toHaveBeenCalledExactlyOnceWith({ ...request, codexEntryIds: ids });
+    });
+
+    it("matches Rust whitespace and UTF-16 length boundaries", async () => {
+      const { nir1EntityRelationApprovedCodexFilter, deps } = setup();
+      const id = "a".repeat(512);
+      const boundaryRequest = {
+        ...request,
+        codexEntryIds: ["codex-b", id],
+      };
+      expect((await dispatchInvoke(command, boundaryRequest, deps)).ok).toBe(
+        true,
+      );
+      expect(
+        nir1EntityRelationApprovedCodexFilter,
+      ).toHaveBeenCalledExactlyOnceWith(boundaryRequest);
+      for (const args of [
+        { ...request, projectId: "\u0085p" },
+        { ...request, expectedWorkspacePath: "\u0085/workspace" },
+      ]) {
+        expect((await dispatchInvoke(command, args, deps)).ok).toBe(false);
+      }
+    });
+
+    it("reports an absent Native backend", async () => {
+      const result = await dispatchInvoke(command, request, {
+        backend: {} as unknown as NapiBackendLike,
+        shell: {},
+      });
+      expect(result.ok).toBe(false);
+    });
   });
 
   describe("related_scenes_graph_continue", () => {

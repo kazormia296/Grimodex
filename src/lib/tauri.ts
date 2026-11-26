@@ -247,6 +247,7 @@ const READ_ONLY_COMMAND_TIMEOUTS = new Map<string, number>([
   ["nir1_evidence_qualify", IPC_TIMEOUT_MS],
   ["nir1_pack_context", IPC_TIMEOUT_MS],
   ["nir1_entity_relation_revision_read", IPC_TIMEOUT_MS],
+  ["nir1_entity_relation_approved_codex_filter", IPC_TIMEOUT_MS],
   ["nir1_entity_relation_revision_read_current", IPC_TIMEOUT_MS],
   ["nir1_entity_relation_revision_restore", IPC_TIMEOUT_MS],
   ["nir1_change_review_read", IPC_TIMEOUT_MS],

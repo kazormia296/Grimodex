@@ -889,6 +889,11 @@ export interface NapiBackendLike {
     payload: unknown,
     callerIdentity?: string,
   ): Promise<string>;
+  /** Bounded Codex-ID reader for current, human-approved typed Revisions. */
+  nir1EntityRelationApprovedCodexFilter?(
+    payload: unknown,
+    callerIdentity?: string,
+  ): Promise<string>;
   /** Read-only typed change review; unavailable results retain their reason. */
   nir1ChangeReviewRead?(
     payload: unknown,
@@ -7447,6 +7452,57 @@ function requireNir1EntityRelationRevisionReadRequest(
   };
 }
 
+const NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_MAX_IDS = 64;
+const NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_MAX_ID_LENGTH = 512;
+
+function requireNir1EntityRelationApprovedCodexFilterRequest(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "nir1_entity_relation_approved_codex_filter";
+  requireExactKeys(
+    args,
+    ["expectedWorkspacePath", "projectId", "codexEntryIds"],
+    command,
+  );
+  const expectedWorkspacePath = requireNonEmptyString(
+    args,
+    "expectedWorkspacePath",
+    command,
+  );
+  const projectId = requireNonEmptyString(args, "projectId", command);
+  const hasSurroundingWhitespace = (value: string) =>
+    /^[\s\u0085]|[\s\u0085]$/u.test(value);
+  if (
+    hasSurroundingWhitespace(expectedWorkspacePath) ||
+    hasSurroundingWhitespace(projectId)
+  ) {
+    throw new Error(
+      `IPC_INVALID_REQUEST: ${command} requires exact workspace and project IDs`,
+    );
+  }
+  const codexEntryIds = args.codexEntryIds;
+  const idOk = (id: string) =>
+    id.length > 0 &&
+    !hasSurroundingWhitespace(id) &&
+    id.length <= NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_MAX_ID_LENGTH;
+  if (
+    !Array.isArray(codexEntryIds) ||
+    codexEntryIds.length === 0 ||
+    codexEntryIds.length > NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_MAX_IDS ||
+    !codexEntryIds.every((id) => typeof id === "string" && idOk(id)) ||
+    new Set(codexEntryIds).size !== codexEntryIds.length
+  ) {
+    throw new Error(
+      `IPC_INVALID_REQUEST: ${command} expects 1 to ${NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_MAX_IDS} distinct Codex IDs`,
+    );
+  }
+  return {
+    expectedWorkspacePath,
+    projectId,
+    codexEntryIds: [...codexEntryIds],
+  };
+}
+
 function requireNir1EntityRelationRevisionPrepareRequest(
   args: CommandArgs,
 ): readonly [CommandArgs, CommandArgs] {
@@ -10490,6 +10546,20 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
             "nir1EntityRelationRevisionRead",
           ),
           requireNir1EntityRelationRevisionReadRequest(a),
+          callerIdentityWire(a),
+        ),
+      ),
+  },
+  nir1_entity_relation_approved_codex_filter: {
+    run: async (b, a) =>
+      parseWire(
+        await callPublicationEntry1(
+          requireNapiMethod(
+            b,
+            b.nir1EntityRelationApprovedCodexFilter,
+            "nir1EntityRelationApprovedCodexFilter",
+          ),
+          requireNir1EntityRelationApprovedCodexFilterRequest(a),
           callerIdentityWire(a),
         ),
       ),
