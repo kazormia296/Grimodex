@@ -119,7 +119,10 @@
   - 比べるのは版でなく Domain の履歴で、D1 の「前に承認した版との違い」とは別の種類の画面になる。
 - 抽出の run をまたぐ同一性（§2.2）は、どちらの案にも入らない。
 
-### 2.5 案 D2-1 の設計（起案。実装の前に下の点を確かめる）
+### 2.5 案 D2-1 の設計（**取り下げ**。記録として残す）
+
+**取り下げた（2026-11-26 20:17、contracts の M4 の記録 追記 18）。** 決定済みの SRA/1（`nir1-chronicle-scene-review-apply-proposal/1`、2026-11-22 確認済み、未実装）の E1・E3 では、承認するとその場で年表に入る。入った提案は手直しできず、場面の節のカード（S3）に手直しの欄も無い。そのため SRA/1 の後にこの欄が出るのは、取り込みに失敗して承認済みのまま残った提案だけになる。利用者の回答は「場面の節の形に合わせて考え直す」で、考え直した案は §2.6。
+実装の枝 `claude/m4-d2-1-chronicle-approved-diff` はローカルに残し、push していない。製品 PR は出さない。下の設計と点検の結果は、§2.6 の材料として残す。
 
 材料は workflow `wf_e3e586c7-139`（調べ 4 本と点検 1 本）。
 - **新しい IPC は足さない。** 年表のレビューの読み `narrative_extraction_get_run_review_bundle` の提案の行に、任意の項目を 1 つ足す（名前は仮に `approvedRevision`）。
@@ -143,7 +146,7 @@
 
 実装の前に確かめること：
 - 承認した提案を人が手直しすると、Native が受け、親の承認の決定が残ること。今は推定なので、手書きの最小 schema でなく実際の migrate の schema で、最初の試験として確かめる。拒まれるなら D2-1 は成り立たない。
-- S4 の枝（`claude/cp4-s4-final`）が固定している 61 file と、触る file が重ならないこと。
+- ~~S4 の枝の 61 file との重なり~~：重ならない（統合者が S4 の枝 6754614ce の `scripts/quality/nir1-graph/observation-prep.mjs` で確認）。ただし `cp4-harness.ts:78-87` が `chronicleExtractionApi` の `decideChronicleProposal`・`recordChronicleProposalDecision`・`reviseChronicleProposal`・`startChronicleExtraction`、`useChronicleExtractionStore`、`loadChronicleExtractionScenes` を静的に import する。**これらの名前と引数の形は変えず、足すだけにする。**
 - まとめて承認（bulk approve）の決定の actor。承認の判定を actor で絞るかを決める前に確かめる。
 - bundle の行を丸ごと AI・MCP・書き出し・ログに渡す読み手が無いこと（全数を grep）。
 - 応答の拡張が own-data-read の台帳（K3/2、draftRef）の改訂に当たるか。
@@ -167,6 +170,52 @@
   - 対象は Rust だけでなく、#1135 の renderer と #1129 の IPC の形も含む。
 
 AI：年表の抽出は製品の既定で AI を使う（`chronicleExtractionApi.ts`）。この起案は**送信を足さない・変えない**。
+
+### 2.6 案 D2-3：取り込んだ後の出来事の変化（起案。実装の前に伺う）
+
+SRA/1 の後は承認と取り込みが 1 つになる。そこで、取り込んだ出来事が**取り込んだ時からどう変わったか**を見せる。
+年表の担当によると、役に立つ場面は 2 つある。
+- 取り込みの取り消しは、取り込んだ後に出来事が直されていると `NEX_COMMIT_EVENT_EDITED` で拒まれる（#1151 の残る制限）。「なぜ取り消せないか」を見せる場所として使える。
+- SRD/1 の承認し直し（RA）の前に、外れた解釈の版と今の出来事の違いが見えれば、意図して外したのか事故で外れたのかを作者が見分けやすい（RD1 の目的と同じ向き）。
+どちらも、年表の担当の画面（RA7）には置かない予定。
+
+確かめた事実（`wf_770f3d00-d74`、基点 `2db49f806`、反証つき）：
+- **比べる基準は取り込んだ版で、後から変わらない。**
+  - 取り込みの application が指す版は、trigger で UPDATE も DELETE もできない（`migrate.rs:3449-3457,3480-3488`）。application 行と決定も同じ。
+  - application がある project は削除できない（`domain_writes.rs:2118-2130`）。スナップショットの復元も版を変えない。
+- **取り込みは、題と補足をそのまま写す。**
+  - 版の `title`・`note` は、そのまま `events.title`・`events.note` に入る（`compiler.ts:113-117`、`agent_writes.rs:7832-7860`）。digest の照合で同一性も確かめている。
+  - Native が取り込みの時に変えるのは、日時（CED/1 の補い）・kind・secret・開示の場面だけ。
+  - したがって題と補足に差があれば、取り込んだ後の変更と言える。日時・参加者・場面の紐づけは、取り込みの時に補いや正規化が入るので比べない。
+  - 同じ値に戻した変更（A→B→A）は「変わっていない」になる。
+  - 比べるのは `application_kind='normal'` の行だけで、取り消しの補償の行は除く。
+- **「誰が変えたか」は、一部しか言えない。**
+  - 出来事の変更は、どの経路でも Change Feed（`narrative_change_transactions`）に 1 行ずつ残る。`origin` は human／ai-apply／undo／redo／restore／import。
+  - アプリ内の AI の道具と MCP は、どちらも `ai-apply` になる。見分けるには `undo_journal.surface` を辿る（未確認の点が残る）。
+  - **スナップショットの復元は、出来事ごとの記録を書かない**（project に印を 1 件だけ）。復元で変わった場合は「誰か」を言えない。
+  - Feed の `changed_paths` は `"/"` などで粗く、どの欄が変わったかは分からない。欄の差は、版の値と今の値を比べて作る。
+  - `narrative_field_authority` は最後に書いた者ではなく、人が一度書くと AI が書けなくなる印。「誰が変えたか」には使えない。
+- **出来事が消えた場合**は、SRD/1 の却下の決定（`removedVia`）が提案の側に残る。
+- **取り消しの拒否の判定**は、出来事の全体の snapshot（version を含む）と、取り込みの journal の after snapshot の全体一致で行う。
+  - ただし journal の `after_json` は、undo・redo のたびに書き換わる（`undo.rs:256,913`）。差の基準には使わず、版の値を使う。
+- **新しい読みが要る。**
+  - 画面の汎用 SQL は版の payload を読めない（`execute.rs:40-55`、`D2A_EGRESS_DENIED`）。
+  - 出来事ごとに Feed を読む処理も無い。
+  - したがって Native の型付きの読みと、新しい IPC が要る。**新しい契約**で、利用者に伺い、`/add-electron-command` を利用者に実行していただく。
+  - D2a の区分（own-data-read に足すなら新しい draftRef）も、その時に決める。
+
+起案者の読み（案の形。未確定）：
+- 読みは「取り込んだ出来事 1 件」を単位にする。返すのは、取り込んだ版の題・補足、今の題・補足、取り込んだ後の変更の回数と origin ごとの内訳、復元を挟んだかどうか。本文・根拠は返さない。
+- 置き場所の候補は 2 つ。
+  - 年表の画面の出来事の詳細。「AI の提案から取り込み、その後に直された」ことを見せる。
+  - SRA/1 の場面の節のカード。承認し直しの前の見分けに使う。
+  - どちらにするかは、SRA/1 の段の進み具合と、年表の担当との分担で決める。
+- 時期は SRA/1 の後。SRA/1 で承認と取り込みの形が固まる前に作ると、作り直しになる。
+
+未確認：
+- アプリ内の AI の道具と MCP の区別が、`undo_journal.surface` で製品の経路で付くか。
+- undo・redo を挟んだ時の version と token の変化。
+- 復元の後に通常の編集をした時の、Feed の連続性の検査の挙動。
 
 ## 3. D3：Phase／State／State Transition
 
@@ -238,7 +287,8 @@ AI：年表の抽出は製品の既定で AI を使う（`chronicleExtractionApi
 ## 7. 伺う対象（実装の前に）
 
 - ~~D2 の比べる元~~：案 D2-1 に決まった（2026-11-26 19:44、追記 14）。
-- 案 D2-1 の画面の文言と見せ方（前後の値を出すか、出す期間。§2.5）。
+- ~~案 D2-1 の画面の文言と見せ方~~：決まった（追記 17）が、案 D2-1 は取り下げた（追記 18）。
+- 案 D2-3（§2.6）を進めるか。進めるなら、新しい読みの IPC（**新しい契約**）、置き場所、時期（SRA/1 の後）。
 - 案 D2-2 で、90 日を越えて前後の値を見せること。**保存の拡大。**
 - 抽出の run をまたいで年表の同じ出来事を表す仕組み（例：`probable-duplicate` を作者が確かめて既存の `events.id` に結ぶ）。**新しい契約。**
 - 年表の同一性の宣言を `narrative-object-identity-declarations.json` に足すこと。key を依存の辺に保存するなら、source の文法の変更も含む。**新しい契約面。**
