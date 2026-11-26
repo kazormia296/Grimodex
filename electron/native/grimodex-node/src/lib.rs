@@ -17139,11 +17139,14 @@ impl Backend {
     /// 未登録 ID は将来の同 ID 登録だけに効く bounded tombstone となり false を返す。
     #[napi]
     pub async fn abort_chat_stream(&self, stream_id: String) -> Result<bool> {
-        self.state
-            .chat_streams
-            .abort(&stream_id)
-            .await
-            .map_err(native_ai_error_to_napi)
+        // One execution ID can own either a chat stream or a non-stream agent send.
+        let (agent_aborted, chat_aborted) = tokio::join!(
+            self.state.agent_sends.abort(&stream_id),
+            self.state.chat_streams.abort(&stream_id),
+        );
+        let agent_aborted = agent_aborted.map_err(native_ai_error_to_napi)?;
+        let chat_aborted = chat_aborted.map_err(native_ai_error_to_napi)?;
+        Ok(agent_aborted || chat_aborted)
     }
 
     /// インライン AI のストリーミング送信。`inline-ai:stream-*` へ emit し、
@@ -17280,68 +17283,94 @@ impl Backend {
         api_key: String,
     ) -> Result<String> {
         let req: AgentRequest = from_wire("args", args).map_err(app_err_to_napi)?;
-        let dispatch = begin_profile_egress_dispatch(&self.state, req.caller_identity.as_ref())?;
-        let audit_context = req.audit_context.clone();
-        let audit_workspace =
-            pin_native_ai_audit_workspace(&self.state, &audit_context).map_err(app_err_to_napi)?;
-        let settings: grimodex_ai::AiSettings =
-            from_wire("settings", settings).map_err(app_err_to_napi)?;
-        let settings_for_call = grimodex_ai::apply_provider_override(
-            settings,
-            req.model.as_deref(),
-            req.provider,
-            req.endpoint_id.as_deref(),
-        );
-        grimodex_ai::validate_expected_ollama_endpoint(
-            &settings_for_call.provider,
-            &settings_for_call.ollama_endpoint,
-            req.expected_ollama_endpoint.as_deref(),
-        )
-        .map_err(native_ai_error_to_napi)?;
-        let variant = req.api_variant.as_deref();
-        let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
-        let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
-        let resolved_variant =
-            grimodex_ai::resolve_api_variant(variant, &settings_for_call, &settings_for_call.model);
-        let mut params = grimodex_ai::build_chat_params(
-            &settings_for_call,
-            &api_key,
-            extra_body,
-            retry_429,
-            grimodex_ai::AiNovelistMode::Chat,
-            resolved_variant,
-            req.thinking,
-            req.effort,
-            req.reasoning_enabled,
-            req.reasoning_effort,
-            req.system_cache_segments,
-            req.system_volatile_tail,
-            req.web_search,
-        );
-        params.request_max_output_tokens = req.request_max_output_tokens;
-        if let Some(resolved_tool_protocol) = req.resolved_tool_protocol {
-            params.resolved_tool_protocol = resolved_tool_protocol;
-        }
-        attach_native_ai_http_observer(
-            &mut params,
-            &settings_for_call,
-            &audit_workspace,
-            audit_context,
-        );
-        dispatch
-            .ensure_open()
-            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
-        let result = dispatch
-            .until_cancelled(grimodex_ai::send_chat_with_tools(
-                &params,
-                &req.messages,
-                &req.tools,
-            ))
-            .await
-            .map_err(|error| Error::from_reason(format!("{error:#}")))?
+        let execution_id = req.audit_context.execution_id.clone();
+        let cancellation = self
+            .state
+            .agent_sends
+            .register(&execution_id)
             .map_err(native_ai_error_to_napi)?;
-        serde_json::to_string(&result)
-            .map_err(|e| Error::from_reason(format!("failed to serialize ChatResponse: {e}")))
+        let outcome: Result<String> = async {
+            let dispatch =
+                begin_profile_egress_dispatch(&self.state, req.caller_identity.as_ref())?;
+            let audit_context = req.audit_context.clone();
+            let audit_workspace = pin_native_ai_audit_workspace(&self.state, &audit_context)
+                .map_err(app_err_to_napi)?;
+            let settings: grimodex_ai::AiSettings =
+                from_wire("settings", settings).map_err(app_err_to_napi)?;
+            let settings_for_call = grimodex_ai::apply_provider_override(
+                settings,
+                req.model.as_deref(),
+                req.provider,
+                req.endpoint_id.as_deref(),
+            );
+            grimodex_ai::validate_expected_ollama_endpoint(
+                &settings_for_call.provider,
+                &settings_for_call.ollama_endpoint,
+                req.expected_ollama_endpoint.as_deref(),
+            )
+            .map_err(native_ai_error_to_napi)?;
+            let variant = req.api_variant.as_deref();
+            let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
+            let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
+            let resolved_variant = grimodex_ai::resolve_api_variant(
+                variant,
+                &settings_for_call,
+                &settings_for_call.model,
+            );
+            let mut params = grimodex_ai::build_chat_params(
+                &settings_for_call,
+                &api_key,
+                extra_body,
+                retry_429,
+                grimodex_ai::AiNovelistMode::Chat,
+                resolved_variant,
+                req.thinking,
+                req.effort,
+                req.reasoning_enabled,
+                req.reasoning_effort,
+                req.system_cache_segments,
+                req.system_volatile_tail,
+                req.web_search,
+            );
+            params.request_max_output_tokens = req.request_max_output_tokens;
+            if let Some(resolved_tool_protocol) = req.resolved_tool_protocol {
+                params.resolved_tool_protocol = resolved_tool_protocol;
+            }
+            attach_native_ai_http_observer(
+                &mut params,
+                &settings_for_call,
+                &audit_workspace,
+                audit_context,
+            );
+            dispatch
+                .ensure_open()
+                .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+            let result = tokio::select! {
+                biased;
+                () = cancellation.wait_abort_requested() => {
+                    // 停止の障壁が同時に働いていれば、利用者の停止に隠さず拒否を返す。
+                    dispatch
+                        .ensure_open()
+                        .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+                    return Err(Error::from_reason("AI_REQUEST_STOPPED_BY_USER".to_string()));
+                }
+                result = dispatch.until_cancelled(grimodex_ai::send_chat_with_tools(
+                    &params,
+                    &req.messages,
+                    &req.tools,
+                )) => {
+                    result.map_err(|error| Error::from_reason(format!("{error:#}")))?
+                        .map_err(native_ai_error_to_napi)?
+                }
+            };
+            serde_json::to_string(&result)
+                .map_err(|e| Error::from_reason(format!("failed to serialize ChatResponse: {e}")))
+        }
+        .await;
+        self.state
+            .agent_sends
+            .complete(&execution_id, &cancellation);
+        outcome
     }
 
     /// provider のモデル一覧を取得する。`settings` はmainが1回読んだsnapshot、

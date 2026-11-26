@@ -118,6 +118,7 @@ describe("product journey AI backend", () => {
                 content: prompt,
               },
             ],
+            auditContext: { executionId: "agent-execution-1" },
           },
           {},
           "",
@@ -244,7 +245,10 @@ describe("product journey AI backend", () => {
       });
       let settled = false;
       const response = wrapped.sendAgentMessage!(
-        { messages: [{ role: "user", content: PRODUCT_JOURNEY_AGENT_MARKER }] },
+        {
+          messages: [{ role: "user", content: PRODUCT_JOURNEY_AGENT_MARKER }],
+          auditContext: { executionId: "agent-authority-1" },
+        },
         {},
         "",
       ).then((wire) => {
@@ -266,6 +270,83 @@ describe("product journey AI backend", () => {
     const { backend } = backendStub();
     expect(wrapBackendForProductJourneyAi(backend, false)).toBe(backend);
     expect(wrapBackendForProductJourneyAi(null, true)).toBeNull();
+  });
+
+  it("aborts an active Agent send and settles its owner", async () => {
+    vi.useFakeTimers();
+    try {
+      const { backend } = backendStub();
+      const wrapped = wrapBackendForProductJourneyAi(backend, true)!;
+      const executionId = "agent-abort-active";
+      const response = wrapped.sendAgentMessage!(
+        {
+          messages: [{ role: "user", content: "AGENT-PROJECT-SWITCH-PROMPT" }],
+          auditContext: { executionId },
+        },
+        {},
+        "",
+      );
+      const rejection = expect(response).rejects.toThrow(
+        "AI_REQUEST_STOPPED_BY_USER",
+      );
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(wrapped.abortChatStream(executionId)).resolves.toBe(true);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("settles an Agent switch held by its execution-id gate", async () => {
+    const gateDir = await mkdtemp(path.join(os.tmpdir(), "agent-gate-"));
+    vi.stubEnv(PRODUCT_JOURNEY_STREAM_GATE_DIR_ENV, gateDir);
+    try {
+      const { backend } = backendStub();
+      const wrapped = wrapBackendForProductJourneyAi(backend, true)!;
+      const executionId = "agent-switch-gated";
+      const response = wrapped.sendAgentMessage!(
+        {
+          messages: [{ role: "user", content: "AGENT-PROJECT-SWITCH-PROMPT" }],
+          auditContext: { executionId },
+        },
+        {},
+        "",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      await expect(wrapped.abortChatStream(executionId)).resolves.toBe(true);
+      await expect(response).rejects.toThrow("AI_REQUEST_STOPPED_BY_USER");
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(gateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an Agent send immediately when its execution id was aborted first", async () => {
+    vi.useFakeTimers();
+    try {
+      const { backend } = backendStub();
+      const wrapped = wrapBackendForProductJourneyAi(backend, true)!;
+      const executionId = "agent-abort-before-register";
+
+      await expect(wrapped.abortChatStream(executionId)).resolves.toBe(false);
+      await expect(
+        wrapped.sendAgentMessage!(
+          {
+            messages: [
+              { role: "user", content: "AGENT-PROJECT-SWITCH-PROMPT" },
+            ],
+            auditContext: { executionId },
+          },
+          {},
+          "",
+        ),
+      ).rejects.toThrow("AI_REQUEST_STOPPED_BY_USER");
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("consumes an abort-before-register tombstone without emitting chunks", async () => {
@@ -361,6 +442,41 @@ describe("product journey AI backend", () => {
         await new Promise((resolve) => setTimeout(resolve, 100));
         await expect(wrapped.abortChatStream("gated-1")).resolves.toBe(true);
         await stream;
+      } finally {
+        await rm(gateDir, { recursive: true, force: true });
+      }
+    });
+
+    it("holds lifecycle-switch streams by execution id until abort", async () => {
+      const gateDir = await mkdtemp(path.join(os.tmpdir(), "stream-gate-"));
+      vi.stubEnv(PRODUCT_JOURNEY_STREAM_GATE_DIR_ENV, gateDir);
+      try {
+        const { backend } = backendStub();
+        const wrapped = wrapBackendForProductJourneyAi(backend, true)!;
+        wrapped.onEvent(() => {});
+        let settled = false;
+        const executionId = "project-switch-gated";
+        const stream = wrapped
+          .sendChatMessageStream(
+            {
+              messages: [
+                { role: "user", content: "PROJECT-CHAT-AUTHORITY-JOURNEY-1" },
+              ],
+              streamId: executionId,
+              auditContext: { executionId },
+            },
+            {},
+            "",
+          )
+          .then(() => {
+            settled = true;
+          });
+
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(settled).toBe(false);
+        await expect(wrapped.abortChatStream(executionId)).resolves.toBe(true);
+        await stream;
+        expect(settled).toBe(true);
       } finally {
         await rm(gateDir, { recursive: true, force: true });
       }

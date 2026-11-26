@@ -13,6 +13,7 @@ import {
   initializeWorkspaceProject,
   invalidateWorkspaceProjectLoads,
 } from "@/application/project/workspaceProjectCommands";
+import { confirmStopActiveTurn } from "@/application/lifecycle/chatStopConfirm";
 import {
   getCurrentImeWorkspaceIdentity,
   setCurrentImeWorkspaceIdentity,
@@ -102,6 +103,12 @@ export function createWorkspaceOpenHandler(
     let quiescenceLease: QuiescenceLease | null = null;
     let nativeOpenRequested = false;
     try {
+      // 生成中の応答があれば、静止の lease の前に中断を確認する（断れば開かない）。
+      const stopDecision = confirmStopActiveTurn("switch");
+      if (stopDecision !== true && !(await stopDecision)) {
+        trace.fail();
+        return "blocked";
+      }
       quiescenceLease = await acquireQuiescenceLeaseAfterTimelapseGenesis(
         "workspace-open",
         {

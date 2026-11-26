@@ -46,6 +46,7 @@ import type { AiAuditTransportContext } from "@/features/ai-audit/transportConte
 import type { AiAuditJsonObject } from "@/features/ai-audit/types";
 import {
   abortChatStream,
+  runStoppableAgentSend,
   loadAiAuditRuntime,
   loadSingleShotTransport,
   sendChatMessageStream,
@@ -190,6 +191,7 @@ export async function sendAgentMessage(
   resolvedToolProtocol?: TurnToolProtocol | null,
   /** Ollama endpoint authority snapshot; backend compares but never trusts it as a URL. */
   expectedOllamaEndpoint?: string | null,
+  signal?: AbortSignal,
 ): Promise<AgentLLMResponse> {
   const auditRuntime = await loadAiAuditRuntime();
   const chatMessageId = auditContext.chatMessageId;
@@ -223,15 +225,9 @@ export async function sendAgentMessage(
     audit,
     auditRuntime.beforeIpcDispatchDetails("send_agent_message"),
   );
-  let response: AgentLLMResponse;
-  try {
-    response = await invoke<AgentLLMResponse>("send_agent_message", args);
-  } catch (error) {
-    await auditRuntime.failAiAuditExecution(audit, {
-      error: auditRuntime.auditErrorSnapshot(error),
-    });
-    throw error;
-  }
+  const response = await runStoppableAgentSend(signal, audit, () =>
+    invoke<AgentLLMResponse>("send_agent_message", args),
+  );
   await auditRuntime.completeAiAuditExecution(audit, {
     response: response as unknown as AiAuditJsonObject,
     usage: {
