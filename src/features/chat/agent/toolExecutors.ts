@@ -256,13 +256,9 @@ async function searchEvents(
   params: Record<string, unknown>,
   context?: ChatToolRunContext,
 ): Promise<Omit<ToolResult, "toolCallId">> {
-  // scene pin・scope のどちらも無い呼出しだけ、IR gate が閉じていれば read core へ。
-  if (
-    !CHAT_AGENT_IR_ENABLED &&
-    !context?.scope &&
-    context?.currentSceneId === undefined
-  )
-    return chronicleSearchExecutor(params);
+  // No IR scope: preserve the shared core path, while pinning its Chronicle ports to the turn scene.
+  if (!CHAT_AGENT_IR_ENABLED && !context?.scope)
+    return chronicleSearchExecutor(params, context?.currentSceneId);
   const candidates = await chronicleCandidates(
     params,
     context?.scope,

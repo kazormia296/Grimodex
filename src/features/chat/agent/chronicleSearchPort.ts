@@ -9,7 +9,10 @@ import {
   CoreProjectRequiredError,
   type CoreChronicleSearchContext,
 } from "@/../electron/shared/mastraRead/ports";
-import { LEGACY_CHRONICLE_READ_CONTEXT } from "./chronicleReadContext";
+import {
+  createLegacyChronicleReadContext,
+  LEGACY_CHRONICLE_READ_CONTEXT,
+} from "./chronicleReadContext";
 import type { ToolResult } from "./agentTypes";
 
 /**
@@ -74,9 +77,19 @@ const CHRONICLE_SEARCH_EXECUTORS = createChronicleSearchExecutors(
  */
 export async function chronicleSearchExecutor(
   params: Record<string, unknown>,
+  currentSceneId?: string | null,
 ): Promise<ToolReturn> {
   try {
-    return await CHRONICLE_SEARCH_EXECUTORS.search_events(params);
+    let run = CHRONICLE_SEARCH_EXECUTORS.search_events;
+    if (currentSceneId !== undefined) {
+      const pinned = createLegacyChronicleReadContext(currentSceneId);
+      run = createChronicleSearchExecutors({
+        ...LEGACY_CHRONICLE_SEARCH_CONTEXT,
+        getTreeState: pinned.getTreeState,
+        chronicle: pinned.chronicle,
+      }).search_events;
+    }
+    return await run(params);
   } catch (e) {
     if (e instanceof CoreProjectRequiredError) {
       return {
