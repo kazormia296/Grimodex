@@ -2,7 +2,7 @@
 
 状態：**起案。実装の根拠にしない。**
 - 第 2 版の事実は 2026-11-26 の origin/master（`a977e8b74`）を静的に読んだもので、実行していない。実データでも確かめていない。
-- 読んだのは read-only の別の agent で、結論ごとに反証役をつけた（workflow `wf_144cbbff-ba9`・`wf_2c0abf68-15b`・`wf_071adc20-04b`）。D2 の結論を支える引用は、起案者が `git show` で確かめた。
+- 読んだのは read-only の別の agent で、結論ごとに反証役をつけた（workflow `wf_144cbbff-ba9`・`wf_2c0abf68-15b`・`wf_071adc20-04b`）。起案者が自分で `git show` で確かめたのは §2.1 の版の形・取り込み・抽出ごとの id・source の文法・Change Feed・ADR 015 の引用だけで、§2.4 以降の引用は agent の報告による。
 - 第 1 版（2026-11-25、基点 `dd014db91`）の §5 の 4 点に答え、その後に入った CED/1・SRD/1・CSR/1・M3・ADR 015 を反映した。
 - 本文は「確かめた事実」「起案者の読み」「未確認」を分けて書く。
 
@@ -104,7 +104,7 @@
   - 経路：年表の画面、AI のチャットの tool、MCP のどれも `agent_event_update`／`agent_event_delete` に入る。参加者は `agent_event_set_participants`。
   - `undo_journal`：前後の値を丸ごと持つ。**90 日で消える**（`prune_old_logs_for_workspace_maintenance`）。
   - `change_events`：変えた項目の名前だけ持つ。消えない（hash chain）。
-  - `narrative_change_events`（Change Feed、objectKey `chronicle-event`）：前後の version と digest、変えた path を持つ。値は持たない。消す経路は見つからなかった。
+  - `narrative_change_events`（Change Feed、objectKey `chronicle-event`）：前後の version と digest、変えた path を持つ。値は持たない。消す経路は見つからなかった。ただし表は未公開の schema で作られたもので、残るのは表ができた後の分だけ。
   - 取り込みの時に日時を補う処理（metadata patch）は、`undo_journal` でなく `narrative_commit_journals` に日時の前後を残す。
 
 起案者の読み：比べる元は 2 つの候補がある。どれを採るかは利用者に伺う（§7）。
@@ -118,6 +118,20 @@
   - 90 日を越えて前後の値を見せるなら、Feed に値を持つ**保存の拡大**になる。
   - 比べるのは版でなく Domain の履歴で、D1 の「前に承認した版との違い」とは別の種類の画面になる。
 - 抽出の run をまたぐ同一性（§2.2）は、どちらの案にも入らない。
+
+選択肢の前提の点検（`wf_2778772d-c1c`、反証つき）：
+- **製品の年表の抽出の run は V2 の envelope で作られる。** V2 を作る旗は定数 true で（`extractionCoordinator.ts:129`、`chronicleV2Production.ts:37`）、dialog は AI の実行になる。V1 が残るのは、AI を使わない実行、V2 にする前の古い run、receipt が空の例外の場合だけ。→ 案 D2-1 の親子は製品で作られる。
+- **取り込み（apply）は、製品の既定では閉じている。**
+  - prepare（`commit.rs:204`）と apply（`commit.rs:995`）の両方で `require_narrative_apply_allowed` が働く。runtime の mode が `manual-apply` か `automatic` でないと `NARRATIVE_REVIEW_ONLY` で拒む。
+  - 既定の mode は `review-only`（`narrative_runtime_policy.rs:100,282`）。
+  - mode を変える IPC `narrative_runtime_policy_set` は契約にあるが、renderer の呼び手は無い（定数 `narrativeRuntimePolicy.ts:28` だけ）。
+  - したがって製品では、抽出で取り込んだ出来事はできない。承認済みで取り込んでいない状態がふつうになる。
+- **Change Feed を object key で読む読み手は無い。** Rust・N-API・IPC・renderer のどこにも無く、公開の読みは project 単位の `get_changes_since` だけ。→ 案 D2-2 には新しい IPC が要る。
+- 案 D2-2 の「取り込んだ時点」の起点は、上の門のため製品には無い。手で作った出来事の編集・削除は Feed に残る。
+
+未確認：
+- Native が承認済みの親の手直しを受けること（検査に承認を拒む分岐が見当たらない、という推定）。
+- RA で承認し直した後に、提案の status が approved に戻るか。
 
 - 第 1 版の (1)「比べる側が宣言を読む形にする」は、D2 に同一性の宣言を足す前提が立つ場合だけの段にする。
   - 対象は Rust だけでなく、#1135 の renderer と #1129 の IPC の形も含む。
@@ -141,6 +155,12 @@ AI：年表の抽出は製品の既定で AI を使う（`chronicleExtractionApi
 - Rust の側に Phase の型の検証を新しく置くのは**新しい契約**になりうる（§7）。
 - 削除された Phase の宣言の扱い（孤児）を決める必要がある。
 
+選択肢の前提の点検（`wf_2778772d-c1c`、反証つき）：
+- **Codex の構造抽出の Phase の提案は、製品では 1 件も作られない。** 提案の元は `phaseSeeds`／`existingPhases` だけで、製品の唯一の呼び手（dialog）はどちらも渡さない。`useAi:false` なので空になる。`phaseSeeds` を渡すのは試験だけ。
+- review 画面の旗（`codexStructureExtractionFlag.ts`）は既定で開いている。閉じているのは取り込み（上の D2 と同じ runtime の門）。
+- 取り込んだ後の Phase の編集は Change Feed（`codex-phase`）に残る。`undo_journal` には Phase 単体の編集は入らない。
+- → D3 の変更レビューは、Phase の提案を製品で作る経路が先に要る。
+
 ## 4. D4：Plot Thread／Foreshadow
 
 確かめた事実：
@@ -154,13 +174,16 @@ AI：年表の抽出は製品の既定で AI を使う（`chronicleExtractionApi
 - AI の仮説を既存の行にどう束ねるかは、別の規則が要る。
 - 新しい pipeline への移し替えは送る中身が変わり得るので、**新しい送信**として伺う（§7）。D2 の後に起案し直す。
 
+未確認：MCP や Rust から直接、D4 の narrative の提案が作られる経路があるか（TS の planner に呼び手が無いことまで確かめた）。
+
 ## 5. 互換 adapter と公開済みの保存物（第 1 版 §5 の 4 への答え）
 
 確かめた事実：
 - 公開版は v2.0.10（schema 2）だけ。`narrative_*` の表（提案・版・Decision・Artifact・依存宣言・index）は、どれも未公開。
 - 公開済みで同一性の対象になるのは、`events`・`codex_entry_phases`・`plot_threads`・`foreshadows` の行。どれも TEXT の主キー id を持つ。
-  - ほかに `change_events` と `undo_journal`。entity の id と前後の値を持つ。
+  - ほかに `change_events` と `undo_journal`（v2.0.10 の `grimodex-db/src/migrate.rs:1495,2037`。`scripts/schema-seed-ja.sql` には無い）。前後の値を持つのは `undo_journal` だけで、`change_events` は変えた項目の名前だけ（§2.4）。
 - Gate A2 の公開版 fixture（`release_schema_fixture.rs`）が覆うのは `events` だけ。Phase・Plot・Foreshadow の行は無い。
+  - M2-D1 の残りの担当の確認：fixture は `scripts/schema-seed-ja.sql` から作られ、seed は公開版の schema の全部を覆っていない。`codex_relations`（v2.0.10 の `migrate.rs:1135`）・`change_events`・`undo_journal` の行も覆っていない。表の有無の根拠は seed でなく v2.0.10 の `migrate.rs` で取る。
 
 起案者の読み：
 - D1 §2.4 の「データの移行は不要」は、roster に既存の source identity があることが根拠だった。D2〜D4 は**根拠が違う**。key を公開済みの行 id から読む側で計算し、保存しないことが根拠になる。この条件の下で次のとおり。
