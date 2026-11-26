@@ -31,6 +31,13 @@ vi.mock("./structureHealthModel", async (importOriginal) => {
   };
 });
 
+// The scene list has its own tests; here only its mount condition matters.
+vi.mock("./StaleProposalScenesList", () => ({
+  StaleProposalScenesList: ({ projectId }: { projectId: string }) => (
+    <div data-testid="structure-health-scenes-stub">{projectId}</div>
+  ),
+}));
+
 import { StructureHealthPanel } from "./StructureHealthPanel";
 
 function proposal(
@@ -111,6 +118,21 @@ describe("StructureHealthPanel", () => {
     expect(
       screen.getByTestId("structure-health-partial-note"),
     ).toBeInTheDocument();
+  });
+
+  it("lists scenes for the loaded project only when something is out of date", async () => {
+    inboxMock.mockResolvedValue([proposal("fresh")]);
+    const fresh = render(<StructureHealthPanel onClose={() => {}} />);
+    await screen.findByTestId("structure-health-counts");
+    expect(screen.queryByTestId("structure-health-scenes-stub")).toBeNull();
+    fresh.unmount();
+
+    inboxMock.mockResolvedValue([proposal("source-missing")]);
+    render(<StructureHealthPanel onClose={() => {}} />);
+    const stub = await screen.findByTestId("structure-health-scenes-stub");
+    expect(stub).toHaveTextContent("project-1");
+    // The list updates on demand; it must not be announced by the live region.
+    expect(stub.closest("[aria-live]")).toBeNull();
   });
 
   it("says there is nothing to check (never 'all clear') when the inbox is empty", async () => {

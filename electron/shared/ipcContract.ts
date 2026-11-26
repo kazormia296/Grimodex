@@ -1252,6 +1252,7 @@ export interface NapiBackendLike {
   narrativeMaintenanceAttentionClear?(payload: unknown): Promise<string>;
   narrativeMaintenanceInboxList?(payload: unknown): Promise<string>;
   narrativeMaintenanceStaleProposalCount?(payload: unknown): Promise<string>;
+  narrativeMaintenanceStaleProposalScenes?(payload: unknown): Promise<string>;
   // Gate C2 Run Kind Policy: the five named operations replacing the old
   // two-value rebuildNarrativeDependencyIndex(mode: verify|repair)
   verifyNarrativeDependencyGraph?(payload: unknown): Promise<string>;
@@ -1909,6 +1910,47 @@ function requireNarrativeMaintenanceStaleProposalCountPayload(
   }
   requireNonEmptyString(payload, "projectId", command);
   return payload;
+}
+
+function requireNarrativeMaintenanceStaleProposalScenesPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "narrative_maintenance_stale_proposal_scenes";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId", "cursor", "limit"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  const validated: CommandArgs = {
+    projectId: requireNonEmptyString(payload, "projectId", command),
+  };
+  if (payload.cursor !== undefined) {
+    const cursor = requireNonEmptyString(payload, "cursor", command);
+    if (
+      cursor.trim().length === 0 ||
+      cursor.trim() !== cursor ||
+      new TextEncoder().encode(cursor).byteLength > SCENE_PROPOSALS_ID_MAX_BYTES
+    ) {
+      throw new Error(
+        `invalid args \`cursor\` for command \`${command}\`: expected a non-empty exact string of at most ${SCENE_PROPOSALS_ID_MAX_BYTES} bytes`,
+      );
+    }
+    validated.cursor = cursor;
+  }
+  if (payload.limit !== undefined) {
+    const limit = requireSafeInteger(payload, "limit", command);
+    if (limit < 1) {
+      throw new Error(
+        `invalid args \`limit\` for command \`${command}\`: expected a positive integer`,
+      );
+    }
+    validated.limit = limit;
+  }
+  return validated;
 }
 
 // Gate C2 Run Kind Policy: the five named operations replacing the old
@@ -11848,6 +11890,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b.narrativeMaintenanceStaleProposalCount,
           "narrativeMaintenanceStaleProposalCount",
         )(requireNarrativeMaintenanceStaleProposalCountPayload(a)),
+      ),
+  },
+  narrative_maintenance_stale_proposal_scenes: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeMaintenanceStaleProposalScenes,
+          "narrativeMaintenanceStaleProposalScenes",
+        )(requireNarrativeMaintenanceStaleProposalScenesPayload(a)),
       ),
   },
   // Gate C2 Run Kind Policy: the five named operations replacing the old

@@ -214,7 +214,7 @@ const OWN_DATA_READ_COMMANDS = [
   "list_scene_lens_for_project",
   "list_annotations_for_scene",
   "list_annotations_for_project",
-  // Extraction review and maintenance inbox (9)
+  // Extraction review and maintenance inbox (10)
   "narrative_extraction_get_run",
   "narrative_extraction_get_run_review_bundle",
   "narrative_extraction_list_resumable_runs",
@@ -224,6 +224,7 @@ const OWN_DATA_READ_COMMANDS = [
   "narrative_extraction_list_scene_proposals",
   "narrative_maintenance_inbox_list",
   "narrative_maintenance_stale_proposal_count",
+  "narrative_maintenance_stale_proposal_scenes",
 ] as const satisfies readonly (keyof typeof NAPI_COMMANDS)[];
 
 /**

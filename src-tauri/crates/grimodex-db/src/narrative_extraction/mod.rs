@@ -374,7 +374,8 @@ pub(crate) use c2zc_canonical_cutover::{
     mint_c2zc_scan_publish_project_birth_epoch_in_tx,
 };
 pub use inbox_read_model::{
-    build_maintenance_inbox, count_stale_proposals, InboxEntry, InboxEntryKind,
+    build_maintenance_inbox, count_stale_proposals, stale_proposal_scenes, InboxEntry,
+    InboxEntryKind, StaleProposalSceneCount, StaleProposalScenesPage,
 };
 #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
 pub use incremental_freshness::publish_race_for_test as incremental_freshness_publish_race_for_test;
@@ -526,13 +527,14 @@ pub use models::{
     HumanFieldLockPayload, IsRunResumableForReviewPayload, IsRunResumableForReviewResult,
     ListChronicleTaskResumeCandidatesPayload, ListResumableRunsPayload, NarrativeAdapterIdentity,
     NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
-    NarrativeMaintenanceInboxListPayload, PrepareCommitPayload, ProposalSeed,
-    RebuildNarrativeDerivedStatePayload, ReconciliationEnvelopeInheritance,
-    RepairNarrativeDependencyDeclarationsPayload, ResolveCodexCatalogRevisionPayload,
-    ResolveCodexCatalogRevisionResult, RetryNarrativeLegacyBackfillPayload,
-    ReviseAndDecidePayload, RunRefPayload, SaveProposalSetPayload, TrustedHumanDerivationScope,
-    TrustedRevealBasis, TrustedScopeBoundary, TrustedScopeInterval, TrustedUnresolvedConstraint,
-    UndoCommitPayload, VerifyNarrativeDependencyGraphPayload,
+    NarrativeMaintenanceInboxListPayload, NarrativeMaintenanceStaleProposalScenesPayload,
+    PrepareCommitPayload, ProposalSeed, RebuildNarrativeDerivedStatePayload,
+    ReconciliationEnvelopeInheritance, RepairNarrativeDependencyDeclarationsPayload,
+    ResolveCodexCatalogRevisionPayload, ResolveCodexCatalogRevisionResult,
+    RetryNarrativeLegacyBackfillPayload, ReviseAndDecidePayload, RunRefPayload,
+    SaveProposalSetPayload, TrustedHumanDerivationScope, TrustedRevealBasis, TrustedScopeBoundary,
+    TrustedScopeInterval, TrustedUnresolvedConstraint, UndoCommitPayload,
+    VerifyNarrativeDependencyGraphPayload,
 };
 pub use repository::ensure_test_schema;
 pub use scope_authority_runtime::{
