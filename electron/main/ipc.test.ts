@@ -258,6 +258,37 @@ describe("registerIpcRouter fail-soft logging", () => {
     );
   });
 
+  it("binds entity_tags_set to human-direct or import-apply only", () => {
+    const tagsPayload = (origin: string) => ({
+      payload: {
+        projectId: "p1",
+        requestId: `tags-${origin}`,
+        sessionId: "renderer-session",
+        eventUid: `tags-${origin}:event`,
+        origin,
+        originalTransactionId: null,
+        undoJournalId: null,
+        entityKind: "codex",
+        entityId: "entry-1",
+        tagIds: [],
+        updatedAt: null,
+      },
+    });
+    const routeOf = (origin: string) =>
+      (
+        bindRendererAuthorityForIpc("entity_tags_set", tagsPayload(origin))
+          .payload as { authorityRoute?: string }
+      ).authorityRoute;
+
+    expect(routeOf("human")).toBe("human-direct");
+    // The Codex import sets the imported entry's tags in its import session.
+    expect(routeOf("import")).toBe("import-apply");
+    // No other route is opened for the tag writer.
+    expect(routeOf("ai-apply")).toBe("");
+    expect(routeOf("restore")).toBe("");
+    expect(routeOf("migration")).toBe("");
+  });
+
   it("binds strict renderer authority from the main-owned command policy", () => {
     const bound = bindRendererAuthorityForIpc("tree_node_create", {
       payload: {
