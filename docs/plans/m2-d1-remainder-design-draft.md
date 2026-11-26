@@ -56,9 +56,14 @@ typed ER を読む retrieval は、Graph の index だけ。`nir1_entity_relatio
 
 ### 1.4 公開版との互換
 
-公開版 v2.0.10 の DB は `codex_relations` を持ちうる（v2.0.10 のタグの `src-tauri/crates/grimodex-db/src/migrate.rs:1135` に `CREATE TABLE IF NOT EXISTS codex_relations`）。
-Gate A2 の公開版 fixture（`grimodex-db/tests/support/release_schema_fixture.rs`）は seed の `scripts/schema-seed-ja.sql` から作る（`:15`）。この seed には `codex_relations` の table が無く（`CREATE TABLE` が 0 件）、fixture は `codex_entries` の行だけを持つ。
-したがって、公開版の workspace にある Codex の Relation の行は、今の fixture では覆われていない。
+- 公開版 v2.0.10（tag `v2.0.10`、`SCHEMA_VERSION = 2`）の `migrate()` は、開くたびに次の 3 表を無条件に作る（tag の `src-tauri/crates/grimodex-db/src/migrate.rs`）。
+  - `codex_relations`：`:1135` で作り、`:1154` の `migrate_codex_relations_source_map_edge_id` が FK を外して作り直す（最終形は `:3001-3026`）。
+  - `change_events`：`:1495` で作り、`:1535` で `event_uid` の列を足す。
+  - `undo_journal`：`:1604` から呼ぶ `migrate_ai_write_infrastructure` の `:2037`。
+- Gate A2 の公開版 fixture（`grimodex-db/tests/support/release_schema_fixture.rs`）は、seed の `scripts/schema-seed-ja.sql`（`:15`）と `ai_audit_events` の DDL から作る。
+  この seed は見本データ用の schema の部分集合で（#235 の parity gate は「seed ⊆ migrate」だけを確かめる）、v2.0.10 の物理 schema の全部ではない。
+- v2.0.10 の `migrate()` が作り seed に無い表は 29 ある（試験のコードを除いて数えた）。作者のデータを持つ表（`codex_relations`・`change_events`・`undo_journal`・`state_snapshots`・`prose_staging`・`prompt_templates`・`post_effect_*` など）と、作り直せる索引（`*_chunks`・`*_fts_en` など）が混ざる。
+- 今の fixture にこれらが無いと、今の `migrate()` は新しい形の空の表を作るだけになる。公開版の古い形の表と作者の行を、今の作り直し（例：今の `migrate.rs:10079` の `codex_relations_new`）が通すかは、通しの試験で確かめられていない。
 
 ## 2. 移行の証跡
 
@@ -100,13 +105,41 @@ D2〜D4 と、後で M2-D1 の保存物を消すことになった場合に適�
 | B   | Chat の Codex の候補を、承認済みの Relation で並べ替える | AI に届く項目が変わりうる（AI への新しい送信に当たりうる） | 見送り。委任の外。ADR 005 は Context／Retrieval の移行を parity の後の cleanup に置く |
 | C   | Related Scenes の Graph の経路                           | なし（既にある）                                           | 現状のまま。PUB-G で開く                                                              |
 
-見直す時期：PUB-G の後か、CP-4 の評価で Graph の経路が役に立つと示されたとき。そのとき A・B を、Graph の経路の実測と比べて改めて決める。B を進めるならユーザーに伺う。
+見直す時期：PUB-G の後か、CP-4 の評価で Graph の経路が役に立つと示されたとき。そのとき A を、Graph の経路の実測と比べて改めて決める。
+
+**2026-11-26 のユーザーの回答**（contracts の追記 15）：「案 B も検討する」。B の検討は §3.4。A の見送りと C の現状維持は変えない。
+
+### 3.4 案 B の検討（Chat の Codex の候補を承認済みの typed ER で並べ替える）
+
+**今の Chat の候補の選び方**（read-only の調査、基点 `ada7d3527`）
+
+- 候補は Codex の名前・別名の一致、明示の mention、pin、場面の semantic link、`always` から集め、Codex の id の順に並べる。score は無い（`sceneContextSource.ts:680-735`、`:846-850`、`nonSceneContextSource.ts:701-724`）。
+- 件数の上限は無く、token の予算で決まる。場面の L4 は使える量の 20%（`contextBuilder.ts:398-445`）。予算を超えると、同じ優先度の中で配列の先頭から削る（`budgetSelector.ts:42-88`）。L4 の優先度は `always`・pin・関係・通常の mention の順（`contextBuilder.ts:726-755`）。
+- 関係の展開は、変更できる `codex_relations` を 1 段・両方向・最大 12 件たどる。展開した項目は本文なしで、名前と関係だけを送る（`relationExpansion.ts:7-91`、`contextBuilder.ts:1421-1446`）。
+- 承認済みの typed ER の id の集合を project 全体で返す読み口は無い。既存の `nir1_entity_relation_revision_read` は revision の id を指定して revision 全体を返す review 用で、件数の上限も無い（`ipcContract.ts:888-901`、`:7415-7445`）。
+
+**形の候補**
+
+| 形  | 中身                                                                                         | AI に届くもの                                         | 要るもの                                                                                               |
+| --- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| B1  | 予算で選び終えた後に、選ばれた L4 の項目だけを「承認済みの版に含まれる項目が先」に並べ替える | 項目の集合は変わらない。prompt の中の順序だけが変わる | 承認済みの Codex の id の集合を返す、上限つきの新しい読み口（IPC・N-API・Rust reader。**新しい契約**） |
+| B2  | 予算で選ぶ前に並べ替え、承認済みの項目が予算の境目で残りやすくする                           | 予算を超えたときだけ、届く項目の集合が変わる          | B1 と同じ読み口                                                                                        |
+| B3  | 関係の展開の出発点や辺に、承認済みの Relation を使う                                         | 本文なしの項目の集合が変わる                          | B1 と同じ読み口                                                                                        |
+
+**未決の論点**
+
+- 「承認済み」の定義：typed revision は場面と選択ごとに別々に作られ、承認済みが複数並ぶ。どの revision を数えるか、承認の後に Codex の項目が変わった場合（Freshness の `stale`／`source-missing`）を除くかを決める必要がある。
+- 役に立つかどうか：typed ER の Entity／Relation は既存の Codex の項目の写しで（Codex に無い項目は拒否される）、新しく足すのは「作者がある場面の抽出で確かめた」という印だけ。今の候補の選び方にこの印が効くかは、測るまで分からない。
+- 送信：B1 でも prompt の順序が変わり、B2・B3 は届く項目が変わる。どれも AI への送信の変更にあたるので、実装の前に形と送信をユーザーに伺う。
+
+**起案者の勧め**：B1 を最初の形にし、旗を閉じたまま入れて、既存の評価で順序の効果を測ってから開けるかを決める。新しい読み口は bounded lookup の契約（`policies/quality/iron-laws.md` の immutable identity・bounded lookup）に合わせる。
 
 ### 3.3 公開版との互換の証跡（DR-M2R-5）
 
-公開版の workspace は `codex_relations` の行を持ちうるのに、Gate A2 の fixture は覆っていない（§1.4）。これは互換の証跡の穴で、**未解決**とする。
-M2-D1 の同一性（`codex-relation:{edge_id}`）は Relation の id を使うので、公開版の Relation の行が今の版で読めることの証跡は要る。
-直し方（seed を v2.0.10 の migration の結果に合わせて作り直すか、fixture で v2.0.10 の migration を通すか）は、Gate A2 の fixture の持ち主と決める。この版では決めない。
+公開版の workspace は §1.4 の 3 表の行を持ちうるのに、Gate A2 の fixture は覆っていない。M2〜M4 の同一性（`codex-relation:{edge_id}`）は Relation の id を使うので、公開版の Relation の行が今の版で読めることの証跡は要る。
+
+- **3 表**：M2 が別の product PR（枝 `claude/m2-a2-release-fixture`、試験だけ）で、fixture に v2.0.10 の最終形の DDL と作者の行を足し、移行の後に残ることを確かめる（統合者と 2026-11-26 に合意。fixture の持ち主は不在で、最後の変更は #564）。
+- **残りの 26 表**：この版では覆わない。手写しでなく、tag の crate を実際に動かして `sqlite_master` を取る形が筋。重い作業なので、やるか・誰がやるかは公開の前に決める（**未決**）。
 
 ## 4. 7 項目の状態（M2-D1）
 
@@ -117,7 +150,7 @@ M2-D1 の同一性（`codex-relation:{edge_id}`）は Relation の id を使う�
 | Producer-time Dependency declaration | registry の `nir1-reviewed-entity-relation-v1`（既存）と、版を作る prepare の時に書く proposal-revision の辺（`nir1_entity_relation.rs:1095`、呼び出し `:1949`）。#1108 の同一性の宣言（同 §2.3）は依存の宣言とは別 | registry、`nir1_entity_relation.rs`                     |
 | Review and Projection state mapping  | bundle 単位の Decision を継承                                                                                                                                                                                       | 同 §2.5                                                 |
 | Structure Health rules               | コードの追加なし                                                                                                                                                                                                    | 同 §2.6                                                 |
-| Retrieval participation              | Graph の index だけ（閉じている）。新しい経路はこの版で足さない                                                                                                                                                     | §3                                                      |
+| Retrieval participation              | Graph の index だけ（閉じている）。案 A は見送り、案 B は検討中で、形と送信を伺うまで実装しない                                                                                                                     | §3                                                      |
 | Migration evidence                   | 消す候補 0 件。証跡の規則を定めた                                                                                                                                                                                   | §2                                                      |
 
 どの項目にも「完了」の印は付けない。M2-D1 の受入れは、呼び手と旗を開けるときに改めて行う。

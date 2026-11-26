@@ -19,8 +19,8 @@ feature-private な要約や Freshness の store の削除は個別に伺う。
 - **DR-M2R-1（M2-D1 で消すもの）**：消す候補は 0 件。Codex の要約（`codex_entries.summary`）は作者が書く正本で、共通の層から導出できない。FTS・embedding・言及の索引は共通の Freshness と対象が違い、重複でない。`staleBind` は共有の台帳から作る表示の状態。feature を横断する旧い dependency の store（`narrative_projection_dependencies`）は、Codex 専用でなく片付けが Gate C2 の cutover の範囲なので、M2-D1 の候補に数えない。「移行の証跡」は M2-D1 では「対象なし」とし、完了の印は付けない。
 - **DR-M2R-2（消す前の証跡の規則、全 wave 共通）**：(1) データの種類ごとに中身を集合か digest で比べる（件数だけでは足りない）。(2) 古い store を読む製品の経路が 0 件になったことを、静的な走査と試験で示す。(3) 公開版の workspace と保存済みの Artifact が収束するまで互換 adapter を残す。公開版の fixture に行を足すことは「互換 adapter」の証跡として分けて書く。(4) 消すこと自体はユーザーに伺う。D2〜D4 の起案（M4）はこの規則を参照する。
 - **DR-M2R-3（Retrieval への参加の今の形）**：承認済みの typed ER は、NIR-1 の Graph の index（#596）を通じて Related Scenes の Graph の経路にだけ参加する。#1108 より前からあり、同一性の宣言には依らない。経路は `NIR1_GRAPH_UI_ENABLED`／`PRODUCT_GRAPH_PUBLISHED` で閉じ、PUB-G で開く。M2-D1 の実装とは数えない。
-- **DR-M2R-4（この版で新しい経路を足さない）**：検索結果の印（案 A）は、新しい契約が要るのに役に立つ根拠が無いので見送る。Chat の候補の並べ替え（案 B）は、AI に届く項目が変わりうるので委任の外で、ADR 005 も Context／Retrieval の移行を parity の後の cleanup に置く。見直しは PUB-G の後か、CP-4 の評価で Graph の経路が役に立つと示されたとき。B を進めるならユーザーに伺う。
-- **DR-M2R-5（公開版の fixture）**：v2.0.10 の DB は `codex_relations` を持ちうる（v2.0.10 のタグの `migrate.rs:1135`）が、Gate A2 の fixture は seed（`scripts/schema-seed-ja.sql`、`codex_relations` が無い）から作るので、公開版の Relation の行を覆っていない。互換の証跡の穴として未解決にする。直し方は Gate A2 の fixture の持ち主と決め、この版では決めない。（最初は「seed に無いので足す行は無い」と書いたが、M4 の指摘で v2.0.10 の migration を確かめて改めた。）
+- **DR-M2R-4（この版で新しい経路を足すか）**：検索結果の印（案 A）は、新しい契約が要るのに役に立つ根拠が無いので見送る。Related Scenes の Graph の経路（案 C）は現状のまま。Chat の候補の並べ替え（案 B）は、ユーザーの回答「案 B も検討する」（contracts の追記 15）を受けて起案の §3.4 で検討した。起案者の勧めは B1（選び終えた後の並べ替えだけ、旗を閉じて入れて測る）。B1〜B3 はどれも AI への送信の変更と新しい読み口の契約にあたるので、**形と送信をユーザーに伺うまで実装しない**。
+- **DR-M2R-5（公開版の fixture）**：v2.0.10 の `migrate()` は `codex_relations`・`change_events`・`undo_journal` を開くたびに作る（tag の `migrate.rs:1135`・`:1495`・`:2037`）。しかし Gate A2 の fixture は seed（見本データ用の部分集合）から作るので、この 3 表の行を覆っていない。3 表は M2 が別の product PR（試験だけ）で覆う（統合者と合意）。seed に無い残りの 26 表は、この版では覆わず、公開の前に扱いを決める（未決）。（最初は「seed に無いので足す行は無い」と書いたが、M4 の指摘で v2.0.10 の migration を確かめて改めた。）
 
 ## 信頼境界
 
