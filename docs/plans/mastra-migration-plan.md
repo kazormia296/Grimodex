@@ -411,6 +411,10 @@
   - write 後処理（store の再読込、undo、timelapse、index の予約）の書き手と永続先。main に移る分は renderer への完了 event。
   - `chatMessageId` と、master の #940 の予約行との整合。
   - `requiresUserConfirmation`（挙動を変えない）。
+  - **SessionTasks（Release B）からの接続**（[SessionTasks の判断記録](session-tasks-decisions-2026-11.md)。設計のときに扱う。この段の範囲を決めるものではない）：
+    - 承認した範囲での連続実行は ADR 008 の `mutate / task-scope`（Task Grant）で表す。Mastra の承認（`requireApproval`／`beforeApproval`）を「止めて、人が押したら再開する」部品として使う案は候補。`resumeData` とモデル入力の `approved` を根拠にせず、capability は上のとおり main が発行・消費する。mutate・destructive の capability は承認の確定後にだけ発行する（ADR 008 §4）。採る前に mock で確かめ、W12 と DR-MP5-7 の改訂を利用者に確認する（DR-ST-4）。
+    - 親の turn の tool 回数の上限（`maxToolCalls`。wire の検証の上限 25 を含む）の撤廃は、この段の後に置く（停止が効く経路から。Mastra の経路は 4c-2 の後。`limit_tokens` や文脈で止まったときの扱いを決めてから。DR-ST-5）。
+    - 確認待ちを会話の外に保存する場合の継ぎ目（DR-MP5-11 と W12 の「再起動の後に復元しない」を変える点。保存の範囲の拡大で、利用者の確認が要る。DR-ST-7）。
 - 層：main、renderer。
 - 条件：
   - **負の試験**：capability 無し、再利用、別 project、別 digest が拒否される。
@@ -487,7 +491,8 @@
   - 既存 session の OM の seed（`observedMessageIds` に既存 id を入れる。S-M5）。
   - renderer が DB の行を再読込する経路。A/B 採用、`is_starred`、`thinking_blocks`、tokens／duration／model の写像。
   - semantic の二重 embedding（`chat_message_chunks` と `mastra_memory_vectors`）の併存か統合。
-  - 圧縮しても消えない「目的欄」（会話ごとの目的と条件。[MP-4 の判断](mastra-mp4-decisions.md) DR-MP4-57 の 3。内容は SessionTasks の結論で変わりうる）。
+  - ~~圧縮しても消えない「目的欄」（会話ごとの目的と条件。[MP-4 の判断](mastra-mp4-decisions.md) DR-MP4-57 の 3。内容は SessionTasks の結論で変わりうる）。~~ 2026-11-26 に取り下げ（利用者の回答。[SessionTasks の判断記録](session-tasks-decisions-2026-11.md) の DR-ST-9）。
+  - **SessionTasks（Release B）からの接続**（[SessionTasks の判断記録](session-tasks-decisions-2026-11.md) の DR-ST-7。設計のときに扱う）：続行のときに読んだ内容を引き継ぐ形（続行を出す条件は wire の P14 の Q4 と renderer）。SessionTasks の Task は Native の独立した表に置き、Mastra の thread metadata には置かない（ADR 007 §2・§4）。作者が書く目的欄は作らない（DR-ST-9）。前の回の tool の結果を全部残す形は、比較実験で質が下がったので、そのままは採らない（DR-ST-1）。
 - 層：renderer、main。
 - 条件：
   - gate M 閉で、既存の journey が全部緑。
