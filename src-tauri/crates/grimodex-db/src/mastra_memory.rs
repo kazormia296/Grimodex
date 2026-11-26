@@ -5,13 +5,14 @@ use std::fmt;
 
 use anyhow::Result;
 use chrono::{DateTime, SecondsFormat, Utc};
-use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
+use rusqlite::types::Value as SqlValue;
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
-use crate::Database;
 use crate::chat_typed_writes::{self, DeleteMessagesByIdsRequest, DeleteSessionRequest};
+use crate::Database;
 
 const NIR1_LOCAL_PREFIX: &str = "nir1-local-";
 const MAX_ID_CHARS: usize = 256;
@@ -112,6 +113,16 @@ fn json_object(value: &Value) -> Result<String> {
         return refuse(MemoryRefusal::InvalidRequest);
     }
     Ok(serde_json::to_string(value)?)
+}
+
+fn deserialize_optional_patch<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 fn resource_project(conn: &Connection, resource_id: &str) -> Result<String> {
@@ -1065,6 +1076,512 @@ pub fn message_delete(db: &Database, request: MessageDeleteRequest) -> Result<Va
     Ok(serde_json::to_value(result)?)
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(
+    tag = "operation",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ResourceReadCommand {
+    Get { project_id: String },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(
+    tag = "operation",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ResourceWriteCommand {
+    Save {
+        id: String,
+        project_id: String,
+        working_memory: Option<String>,
+        metadata: Option<Value>,
+    },
+    Update {
+        id: String,
+        #[serde(default, deserialize_with = "deserialize_optional_patch")]
+        working_memory: Option<Option<String>>,
+        metadata: Option<Value>,
+    },
+    MergeWorkingMemory {
+        project_id: String,
+        patch: Value,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(
+    tag = "operation",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ObservationalMemoryReadCommand {
+    Get {
+        thread_id: Option<String>,
+        resource_id: String,
+    },
+    History {
+        thread_id: Option<String>,
+        resource_id: String,
+        limit: Option<usize>,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(
+    tag = "operation",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ObservationalMemoryWriteCommand {
+    Save {
+        record: Value,
+    },
+    Update {
+        id: String,
+        fields: Map<String, Value>,
+    },
+    Clear {
+        thread_id: Option<String>,
+        resource_id: String,
+    },
+}
+
+pub fn resource_read(db: &Database, request: ResourceReadCommand) -> Result<Value> {
+    let ResourceReadCommand::Get { project_id } = request;
+    require_id(&project_id)?;
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT json_object('id',id,'projectId',project_id,'workingMemory',working_memory,'metadata',json(metadata_json)) FROM mastra_resources WHERE project_id=?1",
+            params![project_id], |row| row.get::<_, String>(0),
+        ).optional()?.map(|json| serde_json::from_str(&json)).transpose()?.unwrap_or(Value::Null))
+    })
+}
+
+pub fn resource_write(db: &Database, request: ResourceWriteCommand) -> Result<Value> {
+    match request {
+        ResourceWriteCommand::Save {
+            id,
+            project_id,
+            working_memory,
+            metadata,
+        } => {
+            require_id(&id)?;
+            require_id(&project_id)?;
+            let metadata = json_object(&metadata.unwrap_or_else(|| json!({})))?;
+            with_immediate_transaction(db, |conn| {
+                conn.execute(
+                    "INSERT INTO mastra_resources(id,project_id,working_memory,metadata_json) VALUES (?1,?2,?3,?4) ON CONFLICT(project_id) DO UPDATE SET id=excluded.id,working_memory=excluded.working_memory,metadata_json=excluded.metadata_json,updated_at=datetime('now') WHERE (id,working_memory,metadata_json) IS NOT (excluded.id,excluded.working_memory,excluded.metadata_json)",
+                    params![id, project_id, working_memory, metadata],
+                )?;
+                Ok(
+                    json!({"id":id,"projectId":project_id,"workingMemory":working_memory,"metadata":serde_json::from_str::<Value>(&metadata)?}),
+                )
+            })
+        }
+        ResourceWriteCommand::Update {
+            id,
+            working_memory,
+            metadata,
+        } => {
+            require_id(&id)?;
+            let metadata = metadata.map(|value| json_object(&value)).transpose()?;
+            with_immediate_transaction(db, |conn| {
+                let project_id: String = conn
+                    .query_row(
+                        "SELECT project_id FROM mastra_resources WHERE id=?1",
+                        params![id],
+                        |row| row.get(0),
+                    )
+                    .optional()?
+                    .ok_or_else(|| anyhow::Error::new(MemoryRefusal::NotFound))?;
+                let (set_working, next_working) = match working_memory {
+                    Some(value) => (true, value),
+                    None => (false, None),
+                };
+                let changed = conn.execute("UPDATE mastra_resources SET working_memory=CASE WHEN ?2 THEN ?3 ELSE working_memory END, metadata_json=COALESCE(?4,metadata_json), updated_at=datetime('now') WHERE id=?1 AND ( (?2 AND working_memory IS NOT ?3) OR (?4 IS NOT NULL AND metadata_json IS NOT ?4) )", params![id, set_working, next_working, metadata])?;
+                let _ = changed;
+                resource_json_by_id(conn, &id).map(|mut value| {
+                    if let Some(obj) = value.as_object_mut() {
+                        obj.insert("projectId".into(), json!(project_id));
+                    }
+                    value
+                })
+            })
+        }
+        ResourceWriteCommand::MergeWorkingMemory { project_id, patch } => {
+            require_id(&project_id)?;
+            if !patch.is_object() {
+                return refuse(MemoryRefusal::InvalidRequest);
+            }
+            with_immediate_transaction(db, |conn| {
+                let current: Option<String> = conn
+                    .query_row(
+                        "SELECT working_memory FROM mastra_resources WHERE project_id=?1",
+                        params![project_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?
+                    .flatten();
+                let mut merged = match current {
+                    Some(raw) => serde_json::from_str::<Value>(&raw)
+                        .map_err(|_| anyhow::Error::new(MemoryRefusal::InvalidRequest))?,
+                    None => Value::Object(Map::new()),
+                };
+                if !merged.is_object() {
+                    return refuse(MemoryRefusal::InvalidRequest);
+                }
+                for (key, value) in patch.as_object().into_iter().flatten() {
+                    merged[key] = value.clone();
+                }
+                let serialized = serde_json::to_string(&merged)?;
+                conn.execute("UPDATE mastra_resources SET working_memory=?2,updated_at=datetime('now') WHERE project_id=?1 AND working_memory IS NOT ?2", params![project_id, serialized])?;
+                resource_json_by_project(conn, &project_id)
+            })
+        }
+    }
+}
+
+fn resource_json_by_id(conn: &Connection, id: &str) -> Result<Value> {
+    let raw: String = conn.query_row("SELECT json_object('id',id,'workingMemory',working_memory,'metadata',json(metadata_json)) FROM mastra_resources WHERE id=?1", params![id], |row| row.get(0)).optional()?.ok_or_else(|| anyhow::Error::new(MemoryRefusal::NotFound))?;
+    Ok(serde_json::from_str(&raw)?)
+}
+
+fn resource_json_by_project(conn: &Connection, project_id: &str) -> Result<Value> {
+    let raw: String = conn.query_row("SELECT json_object('id',id,'projectId',project_id,'workingMemory',working_memory,'metadata',json(metadata_json)) FROM mastra_resources WHERE project_id=?1", params![project_id], |row| row.get(0)).optional()?.ok_or_else(|| anyhow::Error::new(MemoryRefusal::NotFound))?;
+    Ok(serde_json::from_str(&raw)?)
+}
+
+fn observational_scope(
+    conn: &Connection,
+    thread_id: Option<&str>,
+    resource_id: &str,
+) -> Result<(String, Option<String>, Option<String>)> {
+    let project_id = resource_project(conn, resource_id)?;
+    if let Some(thread_id) = thread_id {
+        let thread_project = session_project(conn, thread_id)?
+            .ok_or_else(|| anyhow::Error::new(MemoryRefusal::ScopeMismatch))?;
+        if thread_project != project_id {
+            return refuse(MemoryRefusal::ScopeMismatch);
+        }
+        Ok(("thread".into(), Some(thread_id.into()), None))
+    } else {
+        Ok(("resource".into(), None, Some(project_id)))
+    }
+}
+
+const OM_COLUMNS: &[(&str, &str)] = &[
+    ("id", "id"),
+    ("scope", "scope"),
+    ("threadId", "thread_id"),
+    ("projectId", "project_id"),
+    ("resourceId", "resource_id"),
+    ("createdAt", "created_at"),
+    ("updatedAt", "updated_at"),
+    ("lastObservedAt", "last_observed_at"),
+    ("originType", "origin_type"),
+    ("generationCount", "generation_count"),
+    ("supersededBy", "superseded_by"),
+    ("activeObservations", "active_observations"),
+    (
+        "bufferedObservationChunks",
+        "buffered_observation_chunks_json",
+    ),
+    ("bufferedObservations", "buffered_observations"),
+    ("bufferedObservationTokens", "buffered_observation_tokens"),
+    ("bufferedMessageIds", "buffered_message_ids_json"),
+    ("bufferedReflection", "buffered_reflection"),
+    ("bufferedReflectionTokens", "buffered_reflection_tokens"),
+    (
+        "bufferedReflectionInputTokens",
+        "buffered_reflection_input_tokens",
+    ),
+    (
+        "reflectedObservationLineCount",
+        "reflected_observation_line_count",
+    ),
+    ("observedMessageIds", "observed_message_ids_json"),
+    ("observedTimezone", "observed_timezone"),
+    ("totalTokensObserved", "total_tokens_observed"),
+    ("observationTokenCount", "observation_token_count"),
+    ("pendingMessageTokens", "pending_message_tokens"),
+    ("isReflecting", "is_reflecting"),
+    ("isObserving", "is_observing"),
+    ("isBufferingObservation", "is_buffering_observation"),
+    ("isBufferingReflection", "is_buffering_reflection"),
+    ("lastBufferedAtTokens", "last_buffered_at_tokens"),
+    ("lastBufferedAtTime", "last_buffered_at_time"),
+    ("config", "config_json"),
+    ("metadata", "metadata_json"),
+];
+
+pub fn observational_memory_read(
+    db: &Database,
+    request: ObservationalMemoryReadCommand,
+) -> Result<Value> {
+    db.with_conn(|conn| {
+        let (thread_id, resource_id, limit, history) = match request {
+            ObservationalMemoryReadCommand::Get { thread_id, resource_id } => (thread_id, resource_id, 1usize, false),
+            ObservationalMemoryReadCommand::History { thread_id, resource_id, limit } => (thread_id, resource_id, limit.unwrap_or(100).min(1000), true),
+        };
+        let (scope, thread, project) = observational_scope(conn, thread_id.as_deref(), &resource_id)?;
+        let where_sql = if scope == "thread" { "scope='thread' AND thread_id=?1 AND resource_id=?2" } else { "scope='resource' AND project_id=?1 AND resource_id=?2" };
+        let limit = i64::try_from(limit).map_err(|_| anyhow::Error::new(MemoryRefusal::InvalidRequest))?;
+        let sql = format!("SELECT {} FROM mastra_observational_memory WHERE {where_sql} ORDER BY updated_at DESC,id DESC LIMIT ?3", om_json_select());
+        let rows = conn.prepare(&sql)?.query_map(params![thread.or(project), resource_id, limit], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let values = rows.into_iter().map(|raw| serde_json::from_str(&raw)).collect::<std::result::Result<Vec<Value>,_>>()?;
+        Ok(if history { json!(values) } else { values.into_iter().next().unwrap_or(Value::Null) })
+    })
+}
+
+fn om_json_select() -> String {
+    let props = OM_COLUMNS
+        .iter()
+        .map(|(json, column)| {
+            format!(
+                "'{json}',{}",
+                if json.ends_with("Chunks")
+                    || json.ends_with("Ids")
+                    || *json == "config"
+                    || *json == "metadata"
+                {
+                    format!("json({column})")
+                } else {
+                    (*column).to_string()
+                }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("json_object({props})")
+}
+
+pub fn observational_memory_write(
+    db: &Database,
+    request: ObservationalMemoryWriteCommand,
+) -> Result<Value> {
+    match request {
+        ObservationalMemoryWriteCommand::Save { record } => {
+            if !record.is_object() {
+                return refuse(MemoryRefusal::InvalidRequest);
+            }
+            let id = record
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::Error::new(MemoryRefusal::InvalidRequest))?;
+            let resource_id = record
+                .get("resourceId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::Error::new(MemoryRefusal::InvalidRequest))?;
+            require_id(id)?;
+            require_id(resource_id)?;
+            let thread_id = record.get("threadId").and_then(Value::as_str);
+            for key in ["config", "metadata"] {
+                if let Some(value) = record.get(key).filter(|v| !v.is_null()) {
+                    json_object(value)?;
+                }
+            }
+            let serialized = serde_json::to_string(&record)?;
+            with_immediate_transaction(db, |conn| {
+                let (scope, thread, project) = observational_scope(conn, thread_id, resource_id)?;
+                let existing = conn
+                    .query_row(
+                        "SELECT scope,thread_id,project_id,resource_id FROM mastra_observational_memory WHERE id=?1",
+                        params![id],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, String>(3)?)),
+                    )
+                    .optional()?;
+                if let Some((old_scope, old_thread, old_project, old_resource)) = existing {
+                    if old_scope != scope
+                        || old_thread != thread
+                        || old_project != project
+                        || old_resource != resource_id
+                    {
+                        return refuse(MemoryRefusal::ScopeMismatch);
+                    }
+                }
+                let insert_cols = OM_COLUMNS
+                    .iter()
+                    .map(|(_, column)| *column)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let select_values = OM_COLUMNS
+                    .iter()
+                    .map(|(key, column)| {
+                        let json_path = format!("$.{key}");
+                        let extracted = format!("json_extract(?1,'{json_path}')");
+                        match *column {
+                            "scope" => "?2".into(),
+                            "thread_id" => "?3".into(),
+                            "project_id" => "?4".into(),
+                            "resource_id" => "?5".into(),
+                            "config_json" => format!("COALESCE({extracted},'{{}}')"),
+                            "generation_count"
+                            | "total_tokens_observed"
+                            | "observation_token_count"
+                            | "pending_message_tokens"
+                            | "is_reflecting"
+                            | "is_observing"
+                            | "is_buffering_observation"
+                            | "is_buffering_reflection"
+                            | "last_buffered_at_tokens" => format!("COALESCE({extracted},0)"),
+                            "created_at" | "updated_at" => {
+                                format!("COALESCE({extracted},datetime('now'))")
+                            }
+                            _ => extracted,
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let mutable = OM_COLUMNS
+                    .iter()
+                    .filter(|(_, col)| {
+                        !matches!(
+                            *col,
+                            "id" | "scope"
+                                | "thread_id"
+                                | "project_id"
+                                | "resource_id"
+                                | "created_at"
+                        )
+                    })
+                    .map(|(_, col)| *col)
+                    .collect::<Vec<_>>();
+                let update = mutable
+                    .iter()
+                    .map(|col| format!("{col}=excluded.{col}"))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let changed = mutable
+                    .iter()
+                    .map(|col| format!("{col} IS NOT excluded.{col}"))
+                    .collect::<Vec<_>>()
+                    .join(" OR ");
+                let sql = format!("INSERT INTO mastra_observational_memory({insert_cols}) SELECT {select_values} WHERE true ON CONFLICT(id) DO UPDATE SET {update} WHERE {changed}");
+                conn.execute(
+                    &sql,
+                    params![serialized, scope, thread, project, resource_id],
+                )?;
+                let raw: String = conn.query_row(
+                    &format!(
+                        "SELECT {} FROM mastra_observational_memory WHERE id=?1",
+                        om_json_select(),
+                    ),
+                    params![id],
+                    |row| row.get(0),
+                )?;
+                Ok(serde_json::from_str(&raw)?)
+            })
+        }
+        ObservationalMemoryWriteCommand::Update { id, fields } => {
+            require_id(&id)?;
+            with_immediate_transaction(db, |conn| {
+                let raw: String = conn
+                    .query_row(
+                        &format!(
+                            "SELECT {} FROM mastra_observational_memory WHERE id=?1",
+                            om_json_select()
+                        ),
+                        params![id],
+                        |row| row.get(0),
+                    )
+                    .optional()?
+                    .ok_or_else(|| anyhow::Error::new(MemoryRefusal::NotFound))?;
+                let current: Value = serde_json::from_str(&raw)?;
+                observational_scope(
+                    conn,
+                    current.get("threadId").and_then(Value::as_str),
+                    current["resourceId"].as_str().unwrap_or_default(),
+                )?;
+                let mut assignments = Vec::new();
+                let mut values = Vec::new();
+                for (key, value) in fields {
+                    let (_, column) = OM_COLUMNS
+                        .iter()
+                        .find(|(name, _)| *name == key)
+                        .ok_or_else(|| anyhow::Error::new(MemoryRefusal::InvalidRequest))?;
+                    if matches!(
+                        *column,
+                        "id" | "scope" | "thread_id" | "project_id" | "resource_id" | "created_at"
+                    ) {
+                        return refuse(MemoryRefusal::InvalidRequest);
+                    }
+                    if matches!(*column, "metadata_json" | "config_json") && !value.is_null() {
+                        json_object(&value)?;
+                    }
+                    assignments.push(format!("{column}=?"));
+                    values.push(
+                        if matches!(
+                            *column,
+                            "buffered_observation_chunks_json"
+                                | "buffered_message_ids_json"
+                                | "observed_message_ids_json"
+                                | "config_json"
+                                | "metadata_json"
+                        ) && !value.is_null()
+                        {
+                            SqlValue::Text(serde_json::to_string(&value)?)
+                        } else {
+                            match value {
+                                Value::Null => SqlValue::Null,
+                                Value::Bool(v) => SqlValue::Integer(i64::from(v)),
+                                Value::Number(v) => v
+                                    .as_i64()
+                                    .map(SqlValue::Integer)
+                                    .or_else(|| v.as_f64().map(SqlValue::Real))
+                                    .unwrap_or(SqlValue::Null),
+                                Value::String(v) => SqlValue::Text(v),
+                                other => SqlValue::Text(serde_json::to_string(&other)?),
+                            }
+                        },
+                    );
+                }
+                if !assignments.is_empty() {
+                    let where_id = values.len() + 1;
+                    values.push(SqlValue::Text(id.clone()));
+                    let sql = format!(
+                        "UPDATE mastra_observational_memory SET {} WHERE id=?{where_id}",
+                        assignments.join(",")
+                    );
+                    conn.execute(&sql, params_from_iter(values))?;
+                }
+                let raw: String = conn.query_row(
+                    &format!(
+                        "SELECT {} FROM mastra_observational_memory WHERE id=?1",
+                        om_json_select()
+                    ),
+                    params![id],
+                    |row| row.get(0),
+                )?;
+                Ok(serde_json::from_str(&raw)?)
+            })
+        }
+        ObservationalMemoryWriteCommand::Clear {
+            thread_id,
+            resource_id,
+        } => with_immediate_transaction(db, |conn| {
+            let (scope, thread, project) =
+                observational_scope(conn, thread_id.as_deref(), &resource_id)?;
+            let where_sql = if scope == "thread" {
+                "scope='thread' AND thread_id=?1 AND resource_id=?2"
+            } else {
+                "scope='resource' AND project_id=?1 AND resource_id=?2"
+            };
+            conn.execute(
+                &format!("DELETE FROM mastra_observational_memory WHERE {where_sql}"),
+                params![thread.or(project), resource_id],
+            )?;
+            Ok(Value::Null)
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1078,7 +1595,8 @@ mod tests {
             "PRAGMA foreign_keys = ON;
              CREATE TABLE projects (id TEXT PRIMARY KEY);
              CREATE TABLE mastra_resources (
-                 id TEXT PRIMARY KEY, project_id TEXT NOT NULL UNIQUE
+                 id TEXT PRIMARY KEY, project_id TEXT NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
+                 working_memory TEXT, metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT ''
              );
              CREATE TABLE chat_sessions (
                  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL DEFAULT '',
@@ -1098,13 +1616,29 @@ mod tests {
                  message_id TEXT PRIMARY KEY REFERENCES chat_messages(id) ON DELETE CASCADE,
                  parts_json TEXT NOT NULL
              );
+             CREATE TABLE mastra_observational_memory (
+                 id TEXT PRIMARY KEY, scope TEXT NOT NULL, thread_id TEXT REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                 project_id TEXT REFERENCES projects(id) ON DELETE CASCADE, resource_id TEXT NOT NULL,
+                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_observed_at TEXT,
+                 origin_type TEXT NOT NULL, generation_count INTEGER NOT NULL, superseded_by TEXT,
+                 active_observations TEXT NOT NULL, buffered_observation_chunks_json TEXT, buffered_observations TEXT,
+                 buffered_observation_tokens INTEGER, buffered_message_ids_json TEXT, buffered_reflection TEXT,
+                 buffered_reflection_tokens INTEGER, buffered_reflection_input_tokens INTEGER,
+                 reflected_observation_line_count INTEGER, observed_message_ids_json TEXT, observed_timezone TEXT,
+                 total_tokens_observed INTEGER NOT NULL DEFAULT 0, observation_token_count INTEGER NOT NULL DEFAULT 0,
+                 pending_message_tokens INTEGER NOT NULL DEFAULT 0, is_reflecting INTEGER NOT NULL DEFAULT 0,
+                 is_observing INTEGER NOT NULL DEFAULT 0, is_buffering_observation INTEGER NOT NULL DEFAULT 0,
+                 is_buffering_reflection INTEGER NOT NULL DEFAULT 0, last_buffered_at_tokens INTEGER NOT NULL DEFAULT 0,
+                 last_buffered_at_time TEXT, config_json TEXT NOT NULL DEFAULT '{}', metadata_json TEXT,
+                 CHECK((scope='thread' AND thread_id IS NOT NULL AND project_id IS NULL) OR (scope='resource' AND thread_id IS NULL AND project_id IS NOT NULL))
+             );
              CREATE TABLE nir1_generation_message_versions (message_id TEXT);
              CREATE TABLE nir1_chat_input_captures (
                  message_id TEXT, chat_session_id TEXT, state TEXT
              );
              CREATE TABLE nir1_generation_attempts (session_id TEXT, terminal_json TEXT);
              INSERT INTO projects VALUES ('p1'), ('p2');
-             INSERT INTO mastra_resources VALUES ('r1','p1'), ('r2','p2');
+             INSERT INTO mastra_resources(id,project_id) VALUES ('r1','p1'), ('r2','p2');
              INSERT INTO chat_sessions (id,project_id,created_at,updated_at) VALUES
                  ('s1','p1', '2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z'),
                  ('s2','p1', '2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z'),
@@ -1124,6 +1658,193 @@ mod tests {
             content: json!({"format": 2, "content": content, "parts": [{"type":"text", "text":content}]}),
             is_injected: false,
         }
+    }
+
+    fn om_record(id: &str, resource_id: &str, thread_id: Option<&str>) -> Value {
+        json!({
+            "id": id, "resourceId": resource_id, "threadId": thread_id,
+            "createdAt": CREATED, "updatedAt": CREATED, "originType": "initial",
+            "generationCount": 0, "activeObservations": "memory", "config": {}, "metadata": {}
+        })
+    }
+
+    #[test]
+    fn resource_upsert_metadata_validation_and_working_memory_merge() {
+        let clear: ResourceWriteCommand =
+            serde_json::from_value(json!({"operation":"update","id":"r1","workingMemory":null}))
+                .unwrap();
+        assert!(matches!(
+            clear,
+            ResourceWriteCommand::Update {
+                working_memory: Some(None),
+                ..
+            }
+        ));
+        let db = db();
+        resource_write(
+            &db,
+            ResourceWriteCommand::Save {
+                id: "r1".into(),
+                project_id: "p1".into(),
+                working_memory: None,
+                metadata: Some(json!({"a":1})),
+            },
+        )
+        .unwrap();
+        resource_write(
+            &db,
+            ResourceWriteCommand::MergeWorkingMemory {
+                project_id: "p1".into(),
+                patch: json!({"name":"Ada"}),
+            },
+        )
+        .unwrap();
+        resource_write(
+            &db,
+            ResourceWriteCommand::MergeWorkingMemory {
+                project_id: "p1".into(),
+                patch: json!({"role":"writer"}),
+            },
+        )
+        .unwrap();
+        let row = resource_read(
+            &db,
+            ResourceReadCommand::Get {
+                project_id: "p1".into(),
+            },
+        )
+        .unwrap();
+        let working_memory: Value =
+            serde_json::from_str(row["workingMemory"].as_str().unwrap()).unwrap();
+        assert_eq!(working_memory["name"], "Ada");
+        assert_eq!(working_memory["role"], "writer");
+        assert_eq!(row["metadata"]["a"], 1);
+        let error = resource_write(
+            &db,
+            ResourceWriteCommand::Save {
+                id: "r1".into(),
+                project_id: "p1".into(),
+                working_memory: None,
+                metadata: Some(json!("invalid")),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<MemoryRefusal>(),
+            Some(MemoryRefusal::InvalidRequest)
+        ));
+    }
+
+    #[test]
+    fn observational_memory_upsert_is_scoped_and_rejects_local_sessions() {
+        let db = db();
+        let first = om_record("om1", "r1", Some("s1"));
+        observational_memory_write(&db, ObservationalMemoryWriteCommand::Save { record: first })
+            .unwrap();
+        let mut replacement = om_record("om2", "r1", Some("s1"));
+        replacement["activeObservations"] = json!("updated");
+        let saved = observational_memory_write(
+            &db,
+            ObservationalMemoryWriteCommand::Save {
+                record: replacement,
+            },
+        )
+        .unwrap();
+        assert_eq!(saved["id"], "om2");
+        assert_eq!(saved["activeObservations"], "updated");
+        assert_eq!(
+            observational_memory_read(
+                &db,
+                ObservationalMemoryReadCommand::Get {
+                    thread_id: Some("s1".into()),
+                    resource_id: "r1".into()
+                }
+            )
+            .unwrap()["id"],
+            "om2"
+        );
+        assert_eq!(
+            observational_memory_read(
+                &db,
+                ObservationalMemoryReadCommand::History {
+                    thread_id: Some("s1".into()),
+                    resource_id: "r1".into(),
+                    limit: None
+                }
+            )
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+            2
+        );
+        let err = observational_memory_write(
+            &db,
+            ObservationalMemoryWriteCommand::Save {
+                record: om_record("private", "r1", Some("nir1-local-private")),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<MemoryRefusal>(),
+            Some(MemoryRefusal::ScopeMismatch)
+        ));
+        let err = observational_memory_write(
+            &db,
+            ObservationalMemoryWriteCommand::Save {
+                record: om_record("wrong", "r2", Some("s1")),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<MemoryRefusal>(),
+            Some(MemoryRefusal::ScopeMismatch)
+        ));
+    }
+
+    #[test]
+    fn observational_memory_project_and_session_deletes_cascade() {
+        let db = db();
+        for (id, thread) in [("thread-om", Some("s1")), ("resource-om", None)] {
+            observational_memory_write(
+                &db,
+                ObservationalMemoryWriteCommand::Save {
+                    record: om_record(id, "r1", thread),
+                },
+            )
+            .unwrap();
+        }
+        db.with_conn(|conn| {
+            conn.execute("DELETE FROM chat_sessions WHERE id='s1'", [])?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            observational_memory_read(
+                &db,
+                ObservationalMemoryReadCommand::Get {
+                    thread_id: None,
+                    resource_id: "r1".into()
+                }
+            )
+            .unwrap()["id"],
+            "resource-om"
+        );
+        db.with_conn(|conn| {
+            conn.execute("DELETE FROM projects WHERE id='p1'", [])?;
+            Ok(())
+        })
+        .unwrap();
+        let count: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT count(*) FROM mastra_observational_memory WHERE resource_id='r1'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[test]
@@ -1330,18 +2051,16 @@ mod tests {
             .map(|message| message["id"].as_str().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(ids, vec!["a", "z"]);
-        assert!(
-            message_read(
-                &db,
-                MessageReadCommand::ById {
-                    message_ids: vec!["private".into()]
-                }
-            )
-            .unwrap()["messages"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
+        assert!(message_read(
+            &db,
+            MessageReadCommand::ById {
+                message_ids: vec!["private".into()]
+            }
+        )
+        .unwrap()["messages"]
+            .as_array()
+            .unwrap()
+            .is_empty());
         let collision = message_write(
             &db,
             MessageWriteCommand::Save {
@@ -1394,11 +2113,9 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .starts_with("CHAT_WRITE_REFUSED:generation-pending")
-        );
+        assert!(error
+            .to_string()
+            .starts_with("CHAT_WRITE_REFUSED:generation-pending"));
         let remaining: i64 = db
             .with_conn(|conn| {
                 Ok(conn.query_row("SELECT count(*) FROM chat_messages", [], |row| row.get(0))?)
