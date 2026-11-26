@@ -33,6 +33,7 @@ import { isAgentForeshadowSecretInputSupported } from "../shared/agentForeshadow
 import {
   hasMastraAgentTurnForbiddenKey,
   isMastraAgentTurnCommand,
+  MASTRA_AGENT_TURN_ANSWER_COMMAND,
   mastraAgentTurnRefusalValue,
 } from "../shared/mastraAgentTurnWire.js";
 import type {
@@ -161,6 +162,9 @@ const RENDERER_CHRONICLE_COMMANDS = new Set([
 ]);
 
 const HUMAN_ONLY_CANONICAL_WRITER_COMMANDS = new Set([
+  // entity_tags_set stays in this set so that an origin without a route is
+  // still blanked (bound) below; authorityRouteForRendererCommand gives it
+  // import-apply as well, before the human-only branch.
   "entity_tags_set",
   "project_create",
   "project_patch",
@@ -1942,6 +1946,16 @@ function authorityRouteForRendererCommand(
     return authorityRouteForUnambiguousOrigin(payload.origin, ["import-apply"]);
   }
 
+  // The Codex import sets an imported entry's tags in the same import session
+  // as the entry itself (importApi.ts), so the tag writer takes import-apply
+  // as well as human-direct, like the other typed writers the import uses.
+  if (cmd === "entity_tags_set") {
+    return authorityRouteForUnambiguousOrigin(payload.origin, [
+      "human-direct",
+      "import-apply",
+    ]);
+  }
+
   if (HUMAN_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd)) {
     return payload.origin === "human" ? "human-direct" : undefined;
   }
@@ -2336,7 +2350,8 @@ export function registerIpcRouter(
         // Main's (the identity below replaces `callerIdentity`, so it is read
         // here, before that).
         const mastraForgedKey =
-          isMastraAgentTurnCommand(cmd) &&
+          (isMastraAgentTurnCommand(cmd) ||
+            cmd === MASTRA_AGENT_TURN_ANSWER_COMMAND) &&
           hasMastraAgentTurnForbiddenKey(rendererSafeArgs);
         const callerIdentity = profileEgress?.issueCallerIdentity(
           event.sender.id,
@@ -2426,6 +2441,9 @@ export function registerIpcRouter(
             };
           }
         }
+        if (cmd === MASTRA_AGENT_TURN_ANSWER_COMMAND && mastraForgedKey) {
+          return { ok: true, value: { status: "refused", reason: "invalid" } };
+        }
         const dispatch = async (args = dispatchArgs): Promise<Envelope> => {
           // D-10 (DR-DA2-18): an admitted stream is recorded until its invoke
           // settles, so stage 2 can send it a typed terminal.
@@ -2437,7 +2455,8 @@ export function registerIpcRouter(
               shell: {
                 ...buildShellCommandHandlers(win),
                 ...injectedHandlers,
-                ...(isMastraAgentTurnCommand(cmd)
+                ...(isMastraAgentTurnCommand(cmd) ||
+                cmd === MASTRA_AGENT_TURN_ANSWER_COMMAND
                   ? mastraAgentTurn.handlersFor({
                       sender: event.sender,
                       win,

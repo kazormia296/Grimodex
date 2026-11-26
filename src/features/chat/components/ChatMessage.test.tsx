@@ -36,11 +36,22 @@ vi.mock("./ChatMessageActions", () => ({
   ChatMessageActions: ({
     onInsert,
     onRegenerate,
+    onDelete,
   }: {
     onInsert?: () => void;
     onRegenerate?: (messageId: string) => void;
+    onDelete?: (messageId: string) => void;
   }) => (
     <>
+      {onDelete ? (
+        <button
+          type="button"
+          data-testid="delete-btn"
+          onClick={() => onDelete("m1")}
+        >
+          delete
+        </button>
+      ) : null}
       {onInsert ? (
         <button type="button" data-testid="insert-btn" onClick={onInsert}>
           insert
@@ -371,5 +382,41 @@ describe("ChatMessage regenerate action", () => {
       renderRetry();
       expect(screen.queryByTestId("agent-retry-m1")).toBeNull();
     });
+  });
+});
+
+describe("ChatMessage — 出力の打ち切りの注記", () => {
+  it.each([
+    ["本文あり", "途中まで。"],
+    ["本文なし（thinking だけで切れた応答）", ""],
+  ])("打ち切りの印があれば注記を出す: %s", (_label, content) => {
+    renderMsg({
+      content,
+      metadata: JSON.stringify({ output_truncated: true }),
+    });
+    expect(screen.getByTestId("output-truncated-m1").textContent).toContain(
+      "chat.outputTruncated",
+    );
+  });
+
+  it("本文が空の打ち切り行にも削除を出し、挿入は出さない", () => {
+    render(
+      <ChatMessage
+        msg={fakeMsg({
+          content: "",
+          metadata: JSON.stringify({ output_truncated: true }),
+        })}
+        isStreaming={false}
+        onInsert={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("delete-btn")).toBeTruthy();
+    expect(screen.queryByTestId("insert-btn")).toBeNull();
+  });
+
+  it("印が無ければ出さない", () => {
+    renderMsg({ metadata: JSON.stringify({ tool_calls: [] }) });
+    expect(screen.queryByTestId("output-truncated-m1")).toBeNull();
   });
 });

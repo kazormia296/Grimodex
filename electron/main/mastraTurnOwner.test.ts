@@ -1858,7 +1858,10 @@ describe("M4 read bindings (T-b)", () => {
       } as unknown as NapiBackendLike,
       identity: { senderId: 7, workspaceId: WORKSPACE } as never,
       hooks: {},
-      request: startRequest(TURN_A, { tools: ["get_scene"] }),
+      request: {
+        ...startRequest(TURN_A, { tools: ["get_scene"] }),
+        tools: ["get_scene"],
+      },
       projectId: PROJECT_ID,
       currentSceneId: "scene-1",
       tokenizer: createPerCodePointTokenizer(),

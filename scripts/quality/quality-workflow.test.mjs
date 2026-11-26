@@ -2598,10 +2598,24 @@ test("agent operation contracts keep candidate evidence and bounded identity che
     "the Full requirement must be scoped to the release path",
   );
   assert.match(bump, /release commit後.*cleanなHEAD.*Quick.*verify/is);
+  // The release Full is the hosted canonical-ci.yml Full; a local Full is
+  // refused outside a hosted job and is never release evidence (GDX-TRACE-001).
   assert.match(
     bump,
-    /release_base.*release_head.*ci:local:full.*ci:local:verify/is,
+    /release_base.*release_head.*gh workflow run canonical-ci\.yml --ref master -f profile=full -f candidate_base="\$release_base" -f candidate_head="\$release_head"/is,
   );
+  assert.match(
+    bump,
+    /同じtupleで`pnpm ci:local:full -- --aggregate`と`pnpm ci:local:verify -- full`を実行する`full-aggregate`が、最後のattemptで成功したrunだけを、completeなrelease Full receiptとする/,
+  );
+  assert.match(bump, /release Fullとして扱えるのは、`headSha`が`release_head`と一致するrunだけ/);
+  assert.match(bump, /別のheadのFullは、成功していてもrelease Fullに数えない/);
+  assert.match(bump, /masterがrelease commitより先に進んだ場合.*dispatchもtagもせずに停止して報告する/s);
+  assert.doesNotMatch(
+    bump,
+    /^\s*pnpm ci:local:(?:full|verify) -- (?:full )?--base "\$release_base"/m,
+  );
+  assert.match(bump, /失敗jobだけの再実行（`--failed`）は使わない/);
   assert.match(
     bump,
     /tag／Draft Releaseが依頼範囲に含まれ.*CIが許可され.*mergeが完了した場合だけ.*Full/is,

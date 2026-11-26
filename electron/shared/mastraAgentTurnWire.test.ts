@@ -10,10 +10,19 @@ import {
   type AgentAdapterOwnedKey,
 } from "../main/mastra/agentWire.js";
 import { M4_READ_TOOL_NAMES } from "./agentReadToolDefinitions.js";
+import { MASTRA_UI_TOOL_NAMES } from "./mastraUiToolDefinitions.js";
 import {
   hasMastraAgentTurnForbiddenKey,
   isMastraAgentTurnCommand,
   MASTRA_AGENT_TURN_CANCEL_COMMAND,
+  MASTRA_AGENT_TURN_ANSWER_COMMAND,
+  MASTRA_AGENT_TURN_ANSWER_CONTENT_UTF16_MAX,
+  MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS,
+  MASTRA_AGENT_TURN_QUESTION_ARRAY_MAX,
+  MASTRA_AGENT_TURN_QUESTION_OPTIONS_MAX,
+  MASTRA_AGENT_TURN_QUESTION_TEXT_UTF16_MAX,
+  MASTRA_AGENT_TURN_TOOLS_MAX,
+  MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT_MS,
   MASTRA_AGENT_TURN_CONTROL_MESSAGE_UTF16_MAX,
   MASTRA_AGENT_TURN_FALLBACK_SYSTEM_UTF16_MAX,
   MASTRA_AGENT_TURN_FULLY_INJECTED_IDS_MAX,
@@ -41,13 +50,17 @@ import {
   parseMastraAgentTurnLoopResult,
   mastraAgentTurnRefusalValue,
   parseMastraAgentTurnCancelRequest,
+  parseMastraAgentTurnAnswerRequest,
+  parseMastraAgentTurnAnswerResult,
   parseMastraAgentTurnCancelResult,
   parseMastraAgentTurnProgressPayload,
+  parseMastraAgentTurnQuestionPayload,
   parseMastraAgentTurnStartRequest,
   parseMastraAgentTurnStartResult,
 } from "./mastraAgentTurnWire.js";
 
 const TURN_ID = "8f14e45f-ceea-467e-a5d4-1b9c6d0e2f3a";
+const REQUEST_ID = "0f14e45f-ceea-467e-a5d4-1b9c6d0e2f3a";
 
 const PROGRESS_USAGE = {
   contextTokens: 6,
@@ -120,6 +133,32 @@ function start(overrides: Record<string, unknown> = {}) {
     fullyInjectedIds: [],
     loop: loop(),
     tools: [],
+    ...overrides,
+  };
+}
+
+function question(overrides: Record<string, unknown> = {}) {
+  return {
+    turnId: TURN_ID,
+    requestId: REQUEST_ID,
+    toolCallId: "call-1",
+    toolName: "get_ui_state",
+    args: {},
+    deadlineAt: Date.now() + 5_000,
+    ...overrides,
+  };
+}
+
+function questionResult(overrides: Record<string, unknown> = {}) {
+  return {
+    requestId: REQUEST_ID,
+    result: {
+      toolCallId: "call-1",
+      name: "get_ui_state",
+      content: { panels: [] },
+      summary: "Current UI state",
+      tokensUsed: 3,
+    },
     ...overrides,
   };
 }
@@ -1030,16 +1069,18 @@ describe("parseMastraAgentTurnStartRequest", () => {
     }
   });
 
-  it("allows only distinct M4 tool names", () => {
+  it("allows only distinct M4 or MP-5 UI tool names", () => {
     expect(issueOf(start({ tools: [...M4_READ_TOOL_NAMES] }))).toBeNull();
+    expect(issueOf(start({ tools: [...MASTRA_UI_TOOL_NAMES] }))).toBeNull();
+    expect(MASTRA_AGENT_TURN_TOOLS_MAX).toBe(28);
     expect(issueOf(start({ tools: ["get_scene"] }))).toBeNull();
-    expect(issueOf(start({ tools: ["not_an_m4_tool"] }))).toBe("tools");
+    expect(issueOf(start({ tools: ["not_a_tool"] }))).toBe("tools");
     expect(issueOf(start({ tools: ["get_scene", "get_scene"] }))).toBe("tools");
     expect(issueOf(start({ tools: null }))).toBe("tools");
     expect(issueOf(start({ tools: {} }))).toBe("tools");
     expect(issueOf(start({ tools: undefined }))).toBe("tools");
     expect(
-      issueOf(start({ tools: [...M4_READ_TOOL_NAMES, "get_scene"] })),
+      issueOf(start({ tools: [...MASTRA_UI_TOOL_NAMES, "ask_user"] })),
     ).toBe("tools");
     // An array with an extra enumerable property is not wire data.
     const tools = Object.assign(["get_scene"], { extra: "search_codex" });
@@ -1201,6 +1242,203 @@ describe("parseMastraAgentTurnCancelRequest", () => {
       ok: false,
       issue: "not-object",
     });
+  });
+});
+
+describe("MP-5 UI question and answer wire", () => {
+  it("accepts the seven closed tool names with their exact argument schemas", () => {
+    const args: Record<string, unknown> = {
+      ask_user: { questions: [{ question: "Pick", kind: "text" }] },
+      run_app_command: { command: "focusScenes" },
+      apply_layout_preset: { preset: "builtin:plan" },
+      propose_setting_change: { key: "editor.fontSize", value: "16" },
+      get_ui_state: {},
+      get_app_help_index: { query: "layout", kind: "topic" },
+      get_app_help: { id: "topic:layout.presets" },
+    };
+    for (const toolName of MASTRA_UI_TOOL_NAMES) {
+      const parsed = parseMastraAgentTurnQuestionPayload(
+        question({ toolName, args: args[toolName] }),
+      );
+      expect(parsed.ok, toolName).toBe(true);
+    }
+  });
+
+  it("rejects unknown names, extra fields, wrong types and out-of-bound values", () => {
+    expect(
+      parseMastraAgentTurnQuestionPayload(
+        question({ toolName: "propose_scene_body" }),
+      ),
+    ).toEqual({ ok: false, issue: "tool-name" });
+    expect(
+      parseMastraAgentTurnQuestionPayload(question({ approved: true })),
+    ).toEqual({ ok: false, issue: "unknown-key" });
+    expect(
+      parseMastraAgentTurnQuestionPayload(
+        question({
+          args: { command: "focusScenes", extra: true },
+          toolName: "run_app_command",
+        }),
+      ),
+    ).toEqual({ ok: false, issue: "args" });
+    expect(
+      parseMastraAgentTurnQuestionPayload(
+        question({ args: { query: 7 }, toolName: "get_app_help_index" }),
+      ),
+    ).toEqual({ ok: false, issue: "args" });
+    expect(
+      parseMastraAgentTurnQuestionPayload(
+        question({
+          args: { query: "q".repeat(201) },
+          toolName: "get_app_help_index",
+        }),
+      ),
+    ).toEqual({ ok: false, issue: "args" });
+    expect(
+      parseMastraAgentTurnQuestionPayload(
+        question({
+          toolName: "ask_user",
+          args: {
+            questions: [
+              {
+                question: "Pick",
+                kind: "single",
+                options: ["a"],
+                approved: true,
+              },
+            ],
+          },
+        }),
+      ),
+    ).toEqual({ ok: false, issue: "args" });
+    expect(
+      parseMastraAgentTurnQuestionPayload(
+        question({
+          toolName: "ask_user",
+          args: {
+            questions: [
+              {
+                question: "q".repeat(
+                  MASTRA_AGENT_TURN_QUESTION_TEXT_UTF16_MAX + 1,
+                ),
+                kind: "text",
+              },
+            ],
+          },
+        }),
+      ),
+    ).toEqual({ ok: false, issue: "args" });
+    expect(
+      parseMastraAgentTurnQuestionPayload(
+        question({
+          toolName: "ask_user",
+          args: {
+            questions: Array.from(
+              { length: MASTRA_AGENT_TURN_QUESTION_ARRAY_MAX + 1 },
+              () => ({
+                question: "q",
+                kind: "text",
+              }),
+            ),
+          },
+        }),
+      ),
+    ).toEqual({ ok: false, issue: "args" });
+    expect(
+      parseMastraAgentTurnQuestionPayload(
+        question({
+          toolName: "ask_user",
+          args: {
+            questions: [
+              {
+                question: "Pick",
+                kind: "single",
+                options: Array.from(
+                  { length: MASTRA_AGENT_TURN_QUESTION_OPTIONS_MAX + 1 },
+                  () => "a",
+                ),
+              },
+            ],
+          },
+        }),
+      ),
+    ).toEqual({ ok: false, issue: "args" });
+  });
+
+  it("bounds the absolute deadline to the tool's approved wait", () => {
+    expect(
+      parseMastraAgentTurnQuestionPayload(
+        question({
+          deadlineAt: Date.now() + MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS + 60_000,
+        }),
+      ),
+    ).toEqual({ ok: false, issue: "deadline" });
+    expect(
+      parseMastraAgentTurnQuestionPayload(
+        question({
+          deadlineAt: Date.now() + MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT_MS + 60_000,
+        }),
+      ),
+    ).toEqual({ ok: false, issue: "deadline" });
+    expect(
+      parseMastraAgentTurnQuestionPayload(
+        question({ deadlineAt: Number.MAX_SAFE_INTEGER }),
+      ),
+    ).toEqual({ ok: false, issue: "deadline" });
+  });
+
+  it("accepts only a bounded result or authority refusal in an answer", () => {
+    const result = questionResult();
+    expect(parseMastraAgentTurnAnswerRequest(result)).toEqual({
+      ok: true,
+      value: result,
+    });
+    const refusal = { requestId: REQUEST_ID, refusal: "authority-revoked" };
+    expect(parseMastraAgentTurnAnswerRequest(refusal)).toEqual({
+      ok: true,
+      value: refusal,
+    });
+    expect(
+      parseMastraAgentTurnAnswerRequest({ ...result, approved: true }),
+    ).toEqual({ ok: false, issue: "unknown-key" });
+    expect(
+      parseMastraAgentTurnAnswerRequest({
+        ...result,
+        resumeData: { approved: true },
+      }),
+    ).toEqual({ ok: false, issue: "unknown-key" });
+    expect(
+      parseMastraAgentTurnAnswerRequest({
+        requestId: REQUEST_ID,
+        result: { ...result.result, result: "extra" },
+      }),
+    ).toEqual({ ok: false, issue: "result" });
+    expect(
+      parseMastraAgentTurnAnswerRequest({
+        requestId: REQUEST_ID,
+        result: {
+          ...result.result,
+          content: "x".repeat(MASTRA_AGENT_TURN_ANSWER_CONTENT_UTF16_MAX + 1),
+        },
+      }),
+    ).toEqual({ ok: false, issue: "result" });
+    expect(
+      parseMastraAgentTurnAnswerResult({
+        status: "refused",
+        reason: "no-pending",
+      }),
+    ).toEqual({
+      status: "refused",
+      reason: "no-pending",
+    });
+    expect(
+      parseMastraAgentTurnAnswerResult({
+        status: "accepted",
+        requestId: REQUEST_ID,
+        approved: true,
+      }),
+    ).toBeNull();
+    expect(MASTRA_AGENT_TURN_ANSWER_COMMAND).toBe("mastra_agent_turn_answer");
   });
 });
 
