@@ -54,3 +54,16 @@
 - 効力：entity_tags_set に限り、Main の authority の許可に import-apply を足すことを、ユーザーが承認した。他の route は広げない。
 - 後の訂正：Pub-G Gap はその後、snippet の件について「公開版には入っていない（v2.0.10 は 08-01、#530 を含む tag は elv2-final だけ）」と報告した。この件も #530／#532 からなので、公開版には入っていない見込み（未確認）。
 - 問 6 の注（23:51、Pub-G Gap の報告。統合者は自分では確かめていない）：#1163 で import-apply が通るようになった入口は、JSON の取り込みだけでなかった。新しい project を「別の project から Codex の種類を写す」形で作るときの、seedCodexTypes.ts の setEntryTags（origin が import）も通るようになった。それまでは、写し元の entry に tag があると project の作成ごと rollback され、エラーになっていた。直る向きの変化で、route は同じ import-apply、command は同じ entity_tags_set。公開版 v2.0.10 にはもともと無い不具合。
+
+## 問 7（2026-11-27 06:46、統合者の AskUserQuestion。Quick の祖先の試験）
+- 背景：hosted の Quick は、runner の待ちを含めて約 27 分かかる。その間に Mastra が CI を待たずに merge すると master が進み、observation-prep.test.mjs:4232 の「origin/master が head の祖先」の試験が落ちる。M3 の #1165 が 2 回、M4 の #1158 が 3 回、これで落ちた。
+- 問い（原文）：「製品 PR の Quick が、同じ 1 件で落ち続けています。observation-prep.test.mjs:4232 の「origin/master が head の祖先」の試験です。hosted の Quick は runner の待ちを含めて約 27 分かかり、その間に Mastra が CI を待たずに merge すると master が進みます。すると job が取った origin/master が head の祖先でなくなり、落ちます。M3 の #1165 が 2 回、M4 の #1158 が 3 回、これで落ちました。docs だけの PR は、CI を無視して merge してよい決定があるので通せます。製品 PR はどうしますか？」
+- 選択肢：
+  - 「この 1 件だけなら merge 可 (Recommended)」（説明：Quick の失敗がこの祖先の試験 1 件だけで、他の part と ci.yml がすべて success なら merge してよい。ただし、PR の head が Quick の candidate_base を含むことを確かめ、run と理由を PR 本文に書く。品質ゲートの例外を、この試験 1 件に限って認める形）
+  - 「Mastra が merge を短く控える」
+  - 「試験の方を直す」
+- 回答：「この 1 件だけなら merge 可 (Recommended)」
+- 効力（Mastra を除く全 lane の製品 PR）：
+  - Quick の失敗が observation-prep.test.mjs の祖先の試験（4232 行の assert.ok(isAncestor(master, head))）の 1 件だけで、quick の他の part と ci.yml がすべて success なら、merge してよい。
+  - 条件：PR の head が Quick の candidate_base を含むこと（git merge-base --is-ancestor <candidate_base> <head>）。run の ID とこの理由を、PR 本文に書く。
+  - それ以外の失敗は、今までどおり merge しない。
