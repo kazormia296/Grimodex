@@ -160,7 +160,7 @@
 | 2   | `LanguageModelV4` adapter（B′。3 provider）と parity 試験                     | main                  | -    | revert                  |
 | 3   | loop の骨格（tool 0・memory 0）、gate L、lifecycle、audit owner、typed IPC    | renderer、IPC、main   | L 閉 | revert                  |
 | 4   | tool 基盤、loop 規則の同値移植、read tool の main 化                          | main、（N-API）       | L 閉 | revert                  |
-| 5   | main→renderer の RPC と UI tool（8 本。help 2 本を含む）                      | renderer、IPC、main   | L 閉 | revert                  |
+| 5   | main→renderer の RPC と UI tool（7 本。help 2 本を含む）                      | renderer、IPC、main   | L 閉 | revert                  |
 | 6   | write tool、capability、write 後処理                                          | main、renderer        | L 閉 | revert                  |
 | 7   | **schema の migration**、Rust の memory 書込み、N-API `memory_*`、D2a 台帳    | Rust、N-API、main     | M 閉 | **schema は戻らない**   |
 | 8   | TS の storage／vector adapter、`MemoryRuntimeOwner`、実 Mastra の呼び順の観測 | main                  | M 閉 | revert（schema は残る） |
@@ -359,7 +359,7 @@
   - manifest の 44 本（master で read 26、write 16、destructive 2）を Mastra の tool に。schema は `toolDefinitions.ts` の元の定義（adapter が `$schema`／`additionalProperties` を戻す。S6）。
     **段階に読み替える（2026-11-21 のユーザー決定 U-7(D)。[MP-4 の判断](mastra-mp4-decisions.md)第 1.2 節）**：
     MP-4 は、データ read のうち main の `dbExecute` と既存の Native の typed 呼出しで動く 20 本（M4。`get_codex_entry` は guard の扱い待ちで外す）を main の tool にする。
-    `get_ui_state`・`ask_user`・UI 系の write 4 本は MP-5（main→renderer の RPC）、残りの write 14 本は MP-6、`run_research` は MP-4 では移さない（DR-MP3-3）。help 2 本は MP-5 に寄せる（**技術判断**。[DR-MP4-11](mastra-mp4-decisions.md)。2026-11-21）。
+    `get_ui_state`・`ask_user`・UI 系の write 3 本は MP-5（main→renderer の RPC）、残りの write 15 本は MP-6（`propose_scene_body` は 2026-11-26 の Q4 で MP-5 から MP-6 へ）、`run_research` は MP-4 では移さない（DR-MP3-3）。help 2 本は MP-5 に寄せる（**技術判断**。[DR-MP4-11](mastra-mp4-decisions.md)。2026-11-21）。
     MP-4 の間は main の tool が 44 本そろわず、製品の agent-mode turn（毎 turn 44 本を宣言する）は Mastra に届かない（読み替えの帰結。**報告のみ**。C-5）。旗 L は閉のまま。
   - **loop 規則を同値に写す**（閾値の黙示変更は委任外）：
     - tool 回数の上限（窓に応じて 25／16／12／10。survey の点検は 25／16 だけ確認）、予算（窓の 30%、下限 2,000）。
@@ -390,6 +390,7 @@
   - main→renderer の request／response の新設。既存の event は一方向（`electron/shared/ipcContract.ts:303-307` の `BACKEND_EVENT_CHANNEL_ALLOWLIST`。renderer の `emit` からは送れない）。
   - renderer に残る 6 本：`ask_user`、`run_app_command`、`apply_layout_preset`、`propose_setting_change`、`propose_scene_body`、`get_ui_state`（survey 付録 A）。
     MP-4 の判断で help 2 本（`get_app_help_index`、`get_app_help`）を足して 8 本にする（[DR-MP4-11](mastra-mp4-decisions.md)。技術判断。2026-11-21）。
+    2026-11-26 のユーザー回答（Q4）で `propose_scene_body` を MP-6 に回し、**MP-5 は 7 本**（[MP-5 の判断](mastra-mp5-decisions.md)）。
   - 保留中の renderer 喪失（window close、reload、crash）時の所有と終了証跡。有限の待ち。
   - 同じ session の再入、複数 window。
 - 層：renderer、IPC、main。
@@ -403,7 +404,7 @@
 ### MP-6 write tool、capability、write 後処理
 
 - 範囲：
-  - write 系 tool の main 化（survey 付録 A が挙げる 15 本。`propose_scene_body` を含み、MP-5 の 8 本と重なる）。
+  - write 系 tool の main 化（survey 付録 A が挙げる 15 本。`propose_scene_body` を含む。MP-5 から回した 1 本）。
     manifest の read 以外は 18 本（write 16、destructive 2）で、survey の 15 本に UI の 3 本（`run_app_command`、`apply_layout_preset`、`propose_setting_change`）を足した数と合う。
   - **capability（製品認可）の維持**：main の発行（`electron/main/ipc.ts:1595`）と消費（同 `:1682`）を、loop の中で同じ関数で行う。
     one-shot、`senderId`・projectId・入力 digest の束縛を保つ。廃止は製品認可の削除で委任外。
