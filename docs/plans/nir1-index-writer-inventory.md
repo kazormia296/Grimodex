@@ -33,6 +33,8 @@
 
 Apply/undo/redoの3 delegated操作は既存domain writerから同じFeed公開を通る。Apply後の撤回権限や新しいMCP権限は追加しない。
 
+**追補（2026-11-26、確認 138）**　`nir1-chronicle-scene-review-apply-delta/1#chronicle-event-existence-sync`。Apply 後の撤回の禁止は、作者・AI・MCP が呼べる撤回操作に掛かる。取り込んだ出来事が無くなると、Native は同じ transaction で対象の提案に却下を 1 件追記する。
+
 ## Feed対象外の41操作
 
 Feed除外をIRの無効化除外と読み替えない。current revisionやDecisionのwriterには専用hookを置く。

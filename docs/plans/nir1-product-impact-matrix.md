@@ -44,6 +44,8 @@ L2 canonicalとwhole admission、L3 Indexは境界を分けた小候補として
 | OUT-01 | MCP / Agentによる新規検索・新規承認endpoint    | shared backendの既存domain writers                                                            | 既存mutation authorityは維持                                                                                                               | 該当なし                                                                         | 初回Related Scenesに新しいMCP検索/承認権限を追加しない。既存source mutationはL3-03対象             | existing writer registry照合                                                                   | out of scope: 新規consumer追加                                                   |
 | OUT-02 | Graph / Packing / 他recipe                     | 統合計画L6以降                                                                                | 今回L1–L3では実装しない                                                                                                                    | 将来lane                                                                         | 全体計画の要件として残す                                                                           | L6以降の別小候補                                                                               | out of scope: 現候補                                                             |
 
+**追補（2026-11-26、確認 138）**　`nir1-chronicle-scene-review-apply-delta/1#chronicle-event-existence-sync`。L1-04 の「Apply後の新しい撤回操作」は作者・AI・MCP が呼べる操作を指す。取り込んだ出来事が無くなったときの却下は、削除と同じ transaction で Native が対象の提案に追記する。
+
 ## 3. 最小L1候補の設計案
 
 ### 型と配置
