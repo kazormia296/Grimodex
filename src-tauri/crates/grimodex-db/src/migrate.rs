@@ -932,6 +932,10 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_mastra_memory_vectors_message
                 ON mastra_memory_vectors(message_id);
+            CREATE TABLE IF NOT EXISTS mastra_memory_vector_indexes (
+                index_name TEXT PRIMARY KEY,
+                dimension INTEGER NOT NULL CHECK(dimension > 0)
+            );
 
             -- Per-message prompt snapshot: the finalized system prompt actually
             -- sent for a chat turn, keyed to the triggering user message. Side-table

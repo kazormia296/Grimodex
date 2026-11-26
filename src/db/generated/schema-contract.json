@@ -6140,6 +6140,28 @@
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE map_stickies ( id TEXT PRIMARY KEY, board_id TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE, title TEXT, body TEXT NOT NULL DEFAULT '{\"type\":\"doc\",\"content\":[]}', preview_text TEXT, palette_id TEXT NOT NULL DEFAULT 'post-it-playful', color_slot INTEGER NOT NULL DEFAULT 0 CHECK(color_slot >= 0), ai_branch_id TEXT REFERENCES map_ai_branches(id) ON DELETE SET NULL, -- AI由来フラグ。ai_branch_id は「現在の所属 branch」(採用で NULL 化)、 -- こちらは「AI が生成した付箋か」という出自で採用後も保持する。 ai_derived INTEGER NOT NULL DEFAULT 0, source_chat_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
     },
+    "mastra_memory_vector_indexes": {
+      "kind": "table",
+      "columns": {
+        "dimension": {
+          "ordinal": 1,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "index_name": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE mastra_memory_vector_indexes ( index_name TEXT PRIMARY KEY, dimension INTEGER NOT NULL CHECK(dimension > 0) )"
+    },
     "mastra_memory_vectors": {
       "kind": "table",
       "columns": {
@@ -18331,6 +18353,9 @@
     "grimodex_clock_map_stickies_ad": "CREATE TRIGGER \"grimodex_clock_map_stickies_ad\" AFTER DELETE ON \"map_stickies\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_map_stickies_ai": "CREATE TRIGGER \"grimodex_clock_map_stickies_ai\" AFTER INSERT ON \"map_stickies\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_map_stickies_au": "CREATE TRIGGER \"grimodex_clock_map_stickies_au\" AFTER UPDATE ON \"map_stickies\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_mastra_memory_vector_indexes_ad": "CREATE TRIGGER \"grimodex_clock_mastra_memory_vector_indexes_ad\" AFTER DELETE ON \"mastra_memory_vector_indexes\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_mastra_memory_vector_indexes_ai": "CREATE TRIGGER \"grimodex_clock_mastra_memory_vector_indexes_ai\" AFTER INSERT ON \"mastra_memory_vector_indexes\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_mastra_memory_vector_indexes_au": "CREATE TRIGGER \"grimodex_clock_mastra_memory_vector_indexes_au\" AFTER UPDATE ON \"mastra_memory_vector_indexes\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_mastra_memory_vectors_ad": "CREATE TRIGGER \"grimodex_clock_mastra_memory_vectors_ad\" AFTER DELETE ON \"mastra_memory_vectors\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_mastra_memory_vectors_ai": "CREATE TRIGGER \"grimodex_clock_mastra_memory_vectors_ai\" AFTER INSERT ON \"mastra_memory_vectors\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_mastra_memory_vectors_au": "CREATE TRIGGER \"grimodex_clock_mastra_memory_vectors_au\" AFTER UPDATE ON \"mastra_memory_vectors\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",

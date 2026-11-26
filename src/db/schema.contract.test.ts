@@ -73,6 +73,7 @@ const RUST_ONLY_TABLES = new Set([
   "mastra_resources",
   "mastra_observational_memory",
   "mastra_memory_vectors",
+  "mastra_memory_vector_indexes",
   // DB stage 1 (DR-DBC-3): Native-owned commit sequence and lineage. The
   // grimodex_clock_* triggers write the clock table, so they are excluded from
   // the browser trigger comparison through the same table-name match.

@@ -64,6 +64,7 @@ const REPO_ROOT = path.resolve(
 // SCHEMA_VERSION 46 adds the Native-owned commit sequence and lineage tables
 // (DR-DBC-3). SCHEMA_VERSION 47 adds closed Mastra memory storage only; neither
 // adds a narrative semantic interpreter, so the concern matrix is unchanged.
+export const EXPECTED_SCHEMA_VERSION = 47;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,
@@ -8007,6 +8008,11 @@ function validateSchemaVersion(repoRoot, errors) {
   const source = readFileSync(sourcePath, "utf8");
   const match = /SCHEMA_VERSION:\s*i32\s*=\s*(\d+)/.exec(source);
   const version = match ? Number(match[1]) : null;
+  if (version !== EXPECTED_SCHEMA_VERSION) {
+    errors.push(
+      `workspace schema drifted from the version this semantic contract was last ratified against; expected SCHEMA_VERSION ${EXPECTED_SCHEMA_VERSION}, got ${version ?? "unknown"}`,
+    );
+  }
   const contractPath = path.join(
     repoRoot,
     "src/db/generated/schema-contract.json",

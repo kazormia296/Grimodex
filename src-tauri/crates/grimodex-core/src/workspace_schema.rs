@@ -794,9 +794,10 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// SCHEMA 46 also carries an in-version repair of the `_en` FTS AFTER DELETE
 /// triggers ([`EN_FTS_DELETE_TRIGGERS`]): the language guard they once had is
 /// gone, and the repair sweeps the orphaned `_en` rows the guard left behind.
-/// Version 47 adds five closed Mastra memory tables and their cascade edges.
+/// Version 47 adds six closed Mastra memory tables and their cascade edges.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(has_v3_physical_invariants(conn)?
+    Ok(SCHEMA_VERSION == 47
+        && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
         && has_v15_prepared_commit_columns(conn)?
@@ -871,6 +872,7 @@ fn has_v47_mastra_memory_storage(conn: &Connection) -> anyhow::Result<bool> {
         "mastra_resources",
         "mastra_observational_memory",
         "mastra_memory_vectors",
+        "mastra_memory_vector_indexes",
     ];
     for name in names {
         if !table_exists(conn, name)? {
@@ -899,6 +901,7 @@ fn has_v47_mastra_memory_storage(conn: &Connection) -> anyhow::Result<bool> {
     let resources = table_columns(conn, "mastra_resources")?;
     let observations = table_columns(conn, "mastra_observational_memory")?;
     let vectors = table_columns(conn, "mastra_memory_vectors")?;
+    let vector_indexes = table_columns(conn, "mastra_memory_vector_indexes")?;
     let observation_columns = [
         "id",
         "scope",
@@ -962,6 +965,12 @@ fn has_v47_mastra_memory_storage(conn: &Connection) -> anyhow::Result<bool> {
             column.name == "vector" && column.declared_type == "BLOB" && column.not_null
         })
         || !foreign_key_matches(conn, "mastra_memory_vectors", "message_id", "chat_messages", "id")?
+        || !has_pk(&vector_indexes, "index_name")
+        || !vector_indexes.iter().any(|column| {
+            column.name == "dimension" && column.declared_type == "INTEGER" && column.not_null
+        })
+        || !compact_sql(&table_sql(conn, "mastra_memory_vector_indexes")?)
+            .contains("check(dimension>0)")
     {
         return Ok(false);
     }
@@ -984,7 +993,20 @@ fn has_v47_mastra_memory_storage(conn: &Connection) -> anyhow::Result<bool> {
         [],
         |row| row.get(0),
     )?;
-    Ok(message_vector_index_exists
+    let thread_index_exists = index_columns(conn, "idx_mastra_observational_memory_thread")?
+        .as_slice()
+        == ["thread_id", "updated_at"];
+    let project_index_exists = index_columns(conn, "idx_mastra_observational_memory_project")?
+        .as_slice()
+        == ["project_id", "updated_at"];
+    let message_parts_sql = compact_sql(&table_sql(conn, "mastra_message_parts")?);
+    let thread_metadata_sql = compact_sql(&table_sql(conn, "mastra_thread_metadata")?);
+    Ok(thread_index_exists
+        && project_index_exists
+        && message_parts_sql.contains("check(json_valid(parts_json))")
+        && thread_metadata_sql
+            .contains("check(json_valid(metadata_json)andjson_type(metadata_json)='object')")
+        && message_vector_index_exists
         && index_columns(conn, "idx_mastra_memory_vectors_message")?.as_slice() == ["message_id"])
 }
 

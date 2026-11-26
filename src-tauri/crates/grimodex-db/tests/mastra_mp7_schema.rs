@@ -17,10 +17,11 @@ fn schema_46_upgrade_adds_closed_mastra_tables_with_cascades_and_clock_triggers(
     db.migrate().expect("create current schema");
 
     // Turn the current database into the exact pre-MP-7 shape: the old marker
-    // and clock remain, while all five MP-7 tables and their triggers are gone.
+    // and clock remain, while all six MP-7 tables and their triggers are gone.
     db.with_conn(|conn| {
         conn.execute_batch(
             "DROP TABLE mastra_memory_vectors;
+             DROP TABLE mastra_memory_vector_indexes;
              DROP TABLE mastra_observational_memory;
              DROP TABLE mastra_resources;
              DROP TABLE mastra_thread_metadata;
@@ -36,6 +37,22 @@ fn schema_46_upgrade_adds_closed_mastra_tables_with_cascades_and_clock_triggers(
         let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         assert_eq!(version, SCHEMA_VERSION);
         assert!(has_current_schema_checkpoint_invariants(conn)?);
+        conn.execute(
+            "INSERT INTO mastra_memory_vector_indexes (index_name, dimension) VALUES ('memory', 384)",
+            [],
+        )?;
+        assert!(conn
+            .execute(
+                "INSERT INTO mastra_memory_vector_indexes (index_name, dimension) VALUES ('invalid', 0)",
+                [],
+            )
+            .is_err());
+        assert!(conn
+            .execute(
+                "INSERT INTO mastra_memory_vector_indexes (index_name, dimension) VALUES ('memory', 768)",
+                [],
+            )
+            .is_err());
 
         conn.execute_batch(
             "INSERT INTO projects (id, title, language) VALUES
@@ -188,4 +205,36 @@ fn schema_46_upgrade_adds_closed_mastra_tables_with_cascades_and_clock_triggers(
         Ok(())
     })
     .expect("verify schema 47 storage, cascade behavior and clock coverage");
+}
+
+#[test]
+fn schema_47_checkpoint_rejects_missing_mastra_indexes_and_vector_dimensions() {
+    let db = Database::new(Path::new(":memory:")).expect("open database");
+    db.migrate().expect("create current schema");
+
+    db.with_conn(|conn| {
+        conn.execute_batch("DROP INDEX idx_mastra_observational_memory_thread")?;
+        assert!(!has_current_schema_checkpoint_invariants(conn)?);
+        conn.execute_batch(
+            "CREATE INDEX idx_mastra_observational_memory_thread
+                ON mastra_observational_memory(thread_id, updated_at);
+             DROP INDEX idx_mastra_observational_memory_project;",
+        )?;
+        assert!(!has_current_schema_checkpoint_invariants(conn)?);
+        Ok(())
+    })
+    .expect("partial schema 47 is rejected");
+
+    db.with_conn(|conn| {
+        conn.execute_batch(
+            "DROP TABLE mastra_memory_vector_indexes;
+             CREATE TABLE mastra_memory_vector_indexes (
+                 index_name TEXT PRIMARY KEY,
+                 dimension INTEGER NOT NULL
+             );",
+        )?;
+        assert!(!has_current_schema_checkpoint_invariants(conn)?);
+        Ok(())
+    })
+    .expect("schema 47 rejects missing vector dimension constraint");
 }

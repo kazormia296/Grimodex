@@ -6,8 +6,8 @@ pub const SCHEMA_VERSION: i32 = 47;
 /// the in-tree previous marker for open fast-path / Schema bump bookkeeping and
 /// can diverge from the physical seed after intermediate bumps (e.g. 3→4).
 pub const LAST_PUBLIC_RELEASE_SCHEMA_VERSION: i32 = 2;
-pub const PREVIOUS_COMPATIBLE_SCHEMA_VERSION: i32 = SCHEMA_VERSION - 1;
-pub const PREVIOUS_COMPATIBLE_TARGET_SCHEMA_VERSION: i32 = SCHEMA_VERSION;
+pub const PREVIOUS_COMPATIBLE_SCHEMA_VERSION: i32 = 46;
+pub const PREVIOUS_COMPATIBLE_TARGET_SCHEMA_VERSION: i32 = 47;
 
 /// Commit a manually-opened transaction, rolling back if the COMMIT itself
 /// fails. On the shared single connection a failed COMMIT (deferred FK check,

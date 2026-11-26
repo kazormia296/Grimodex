@@ -8698,7 +8698,7 @@ mod tests {
             assert_eq!(reservation(&db), reserved);
             assert!(reserved.0.is_some());
 
-            // 45 without the clock: the full migration installs it and stamps 46.
+            // 45 without the clock: the full migration installs it and stamps 47.
             let db = dead_lettered_by_contention();
             let before = terminal_records(&db);
             let reserved = reservation(&db);
@@ -8775,7 +8775,7 @@ mod tests {
         fn the_restore_preflight_of_an_older_workspace_releases() {
             for from in [
                 44,
-                42,
+                40,
             ] {
                 let db = dead_lettered_by_contention();
                 let before = terminal_records(&db);

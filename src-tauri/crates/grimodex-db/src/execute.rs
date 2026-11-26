@@ -4916,13 +4916,14 @@ mod tests {
             .iter()
             .filter(|table| is_read_open_table(table.name))
             .count();
-        assert_eq!((closed, read_open), (31, 58));
+        assert_eq!((closed, read_open), (32, 58));
         for name in [
             "mastra_message_parts",
             "mastra_thread_metadata",
             "mastra_resources",
             "mastra_observational_memory",
             "mastra_memory_vectors",
+            "mastra_memory_vector_indexes",
         ] {
             assert!(is_closed_table(name), "{name}");
         }

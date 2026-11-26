@@ -168,6 +168,7 @@ const RUST_ONLY_BROWSER_TABLES = new Set([
   "mastra_resources",
   "mastra_observational_memory",
   "mastra_memory_vectors",
+  "mastra_memory_vector_indexes",
   // DB stage 1 (DR-DBC-3): the commit sequence and lineage are Native-owned.
   // Every grimodex_clock_* trigger writes grimodex_write_clock, so excluding the
   // table also excludes those triggers below. BrowserMock does not serve a clock

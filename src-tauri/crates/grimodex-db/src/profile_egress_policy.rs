@@ -63,11 +63,11 @@ const fn read_open(name: &'static str) -> ProfileEgressTable {
     }
 }
 
-/// The D2a table ledger: 31 `closed` and 58 `read-open` tables, enumerated by
+/// The D2a table ledger: 32 `closed` and 58 `read-open` tables, enumerated by
 /// name (never by prefix).  FTS shadow tables carry the class of their
 /// content table because they hold the same plaintext.
 pub const PROFILE_EGRESS_TABLES: &[ProfileEgressTable] = &[
-    // closed (31)
+    // closed (32)
     closed("narrative_apply_commits"),
     closed("narrative_apply_operations"),
     closed("narrative_commit_journals"),
@@ -95,6 +95,7 @@ pub const PROFILE_EGRESS_TABLES: &[ProfileEgressTable] = &[
     closed("idempotency_requests"),
     closed("messages"),
     closed("mastra_memory_vectors"),
+    closed("mastra_memory_vector_indexes"),
     closed("mastra_message_parts"),
     closed("mastra_observational_memory"),
     closed("mastra_resources"),
@@ -282,9 +283,9 @@ mod tests {
             .map(|table| table.name)
             .collect::<BTreeSet<_>>();
         assert_eq!(all.len(), PROFILE_EGRESS_TABLES.len(), "duplicate table");
-        assert_eq!(PROFILE_EGRESS_TABLES.len(), 89);
-        // K3/2 "表の台帳" plus the five closed MP-7 tables.
-        assert_eq!(names_of(ProfileEgressTableClass::Closed).len(), 31);
+        assert_eq!(PROFILE_EGRESS_TABLES.len(), 90);
+        // K3/2 "表の台帳" plus the six closed MP-7 tables.
+        assert_eq!(names_of(ProfileEgressTableClass::Closed).len(), 32);
         assert_eq!(names_of(ProfileEgressTableClass::ReadOpen).len(), 58);
         for table in PROFILE_EGRESS_TABLES {
             assert_eq!(table.name, table.name.to_ascii_lowercase());
@@ -322,6 +323,7 @@ mod tests {
             "idempotency_requests",
             "messages",
             "mastra_memory_vectors",
+            "mastra_memory_vector_indexes",
             "mastra_message_parts",
             "mastra_observational_memory",
             "mastra_resources",
@@ -443,7 +445,7 @@ mod tests {
     fn status_policy_is_version_three_with_three_separate_sets() {
         let policy = sql_policy_for_status();
         assert_eq!(policy.version, 3);
-        assert_eq!(policy.closed_tables.len(), 31);
+        assert_eq!(policy.closed_tables.len(), 32);
         assert_eq!(policy.read_open_tables.len(), 58);
         assert_eq!(policy.read_open_columns.len(), 2);
         let closed = policy.closed_tables.iter().collect::<BTreeSet<_>>();

@@ -394,6 +394,7 @@ fn continuity_guard_rejects_a_delete_and_a_non_delete_for_one_object() {
 
 #[test]
 fn fresh_schema_22_contains_the_canonical_writer_origin_contract() {
+    assert_eq!(SCHEMA_VERSION, 47);
     let db = fresh_migrated_db();
     db.with_conn(|conn| {
         let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -402,7 +403,9 @@ fn fresh_schema_22_contains_the_canonical_writer_origin_contract() {
         // lookup indexes, Scene body declaration columns, the project Scene
         // Scope default table, the data-only Freshness contention release and
         // the write clock/lineage tables, Mastra memory tables and their triggers)
-        // migrate further on top.
+        // migrate further on top. Keep this guard so each schema bump revisits
+        // the contract assertions below.
+        assert_eq!(SCHEMA_VERSION, 47);
         assert_eq!(version, SCHEMA_VERSION);
 
         for table in [

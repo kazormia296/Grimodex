@@ -1220,6 +1220,10 @@ describe("D2a profile egress gate", () => {
       { sqlPolicy: nativeSqlPolicyV3({ version: 1 }) },
       "the previous policy version",
     ],
+    [
+      { sqlPolicy: nativeSqlPolicyV3({ version: 2 }) },
+      "policy version 2",
+    ],
     [{ sqlPolicy: undefined }, "missing table inventory"],
     [
       { sqlPolicy: nativeSqlPolicyV3({ extraSet: ["chat_messages"] }) },
