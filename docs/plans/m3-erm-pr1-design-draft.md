@@ -1,0 +1,106 @@
+# ERM PR 1（規則・lineage の保存の基盤）の設計草稿
+
+Status: 草稿（起案者 grimodex-13、2026-11-26）。実装の前の技術設計で、ADR 015（Proposed）の PR 1 にあたる。
+作者が確認した事項は ADR 015 §1・脅威モデル（版 v4）・保存の承認（「作品のファイルに次の記録を足します（ファイルの構造の版が 1 つ上がります）」）。
+この草稿の判断は、M3 の前倒し（2026-11-23 のユーザー決定：技術判断は NIR-1 と同じ範囲で委任）による技術判断で、判断の ID は DR-M3-38 とする。新しい保存・送信先・閾値・契約・脅威モデルの変更は委任に含まれず、伺う。
+
+## 0. 範囲
+
+入れるもの：
+
+- schema の版上げ 1 回。承認された 3 群（規則の版の履歴／統合・分割の履歴と項目の対応表／提案が使った規則と当て直しの結果）の表を**全部この版で作る**。この 3 群について後の PR で版を上げ直さない（「版上げ 1 回」はこの 3 群に限る。位置つきの言及の索引など、ADR 015 §5.2 の別の索引は別の版上げになりうる）。
+- 規則の revision の typed native writer（作成・置き換え・撤回）と reader（Rust だけ）。
+- 4 つの台帳への登録：profile egress、Change Feed writer／protected writer、スナップショットの復元（対象外の分類と park）、schema contract。`policies/narrative/*.json` を変えるので impact gate の対象。
+- 守りの試験（§6）。
+
+入れないもの（後の PR）：
+
+- N-API・IPC・renderer の command と画面。最初の画面の PR で足す。
+- 統合・分割の writer（PR 2）、規則の適用と当て直しの writer（PR 3）、検索・関連シーン・chat への適用（PR 4）、健全性の検査（PR 5）。
+- 語の一覧、finding の契約の変更、統合の「隠す／見せる」の文言。どれも伺いが要る。
+
+## 1. 表（版 47 または 48。番号は merge の順で、年表の CED/1 と合わせる）
+
+すべて project 単位で、`project_id` は `projects(id)` に `ON DELETE CASCADE`。Codex の項目と場面は **FK を張らずに ID で参照**する。張ると、Codex の範囲の復元（項目を消して入れ直す）で版の履歴が CASCADE で消えるか、復元が止まる。存在・project・削除済みの確認は適用の時に native が行い、当たらない規則は「当たらない」として数える（ADR 015 §2）。
+
+### 1.1 `identity_correction_rule_revisions`（規則の版の履歴）
+
+| 列 | 意味 |
+| --- | --- |
+| `id` TEXT PK | revision の ID |
+| `project_id` | 作品 |
+| `rule_id` TEXT | 規則の系列の ID（最初の revision の作成時に振る） |
+| `revision_no` INTEGER ≥ 1 | `UNIQUE(rule_id, revision_no)` |
+| `supersedes_revision_id` TEXT NULL | 前の revision。`UNIQUE` にして、1 つの revision の後継は 1 つだけ（同時の置き換えは片方が制約で落ちる＝OCC） |
+| `state` | `active`／`retired`（撤回は `retired` の新しい revision） |
+| `kind` | 5 種（`must-link-surface`／`cannot-link-entries`／`preferred-binding`／`preferred-canonical-name`／`suppressed-merge-candidate`）の CHECK |
+| `scope_kind`・`scope_scene_id` | ADR 009 の `any`／`exact`。`exact` のときだけ場面 ID を持つ CHECK |
+| `surface_text` | 表記の原文だけを保存する（正規化した値は保存しない）。表記を使う 2 種（must-link-surface・preferred-binding）で必須の CHECK |
+| `entry_id`・`other_entry_id` | 対象の項目。組を使う 2 種（cannot-link・suppressed-merge）は `entry_id < other_entry_id` に並べ替えて保存する CHECK |
+| `canonical_name`・`keep_previous_as_alias` | preferred-canonical-name だけ |
+| `reason` TEXT NULL | 作者の理由の文 |
+| `provenance_kind`・`provenance_ref` | 作った画面の文脈（例：review の提案の版から）。種類は CHECK |
+| `actor_id`・`created_at`・`request_id` | `UNIQUE(project_id, request_id)` で再送を同じ結果にする |
+
+- **書き換えない**：`BEFORE UPDATE` の TRIGGER で常に拒む（既存の `narrative_revision_source_basis` と同じ形）。DELETE は project の削除と復元だけが行い、writer には削除の API を作らない。
+- 今の規則＝後継の無い revision のうち `state='active'` のもの。系列の先頭の表は作らない（書き換える行が要らない）。
+- 正規化：保存しない。照合する側が、今の抽出の照合と同じ関数（`src/features/codex/codexCandidates.ts` の `candidateKey`：前後の空白の除去・NFC・英大文字の小文字化）で原文から都度求める。書き換えられない行に正規化済みの値を持つと、正規化を変えたときに照合し直せないため。規則は作品あたり少数の見込みで、都度の計算で足りる。敬称の除去と部分一致には使わない（ADR 015 §2。`matchExistingEntity` は敬称を除いた照合もするが、規則には当てない）。native 側で表記の重複を検査する必要が出たら、同じ規則の Rust 実装と共通の試験の値を足す（PR 3／PR 5）。
+
+### 1.2 `identity_lineage_operations` と `identity_lineage_mappings`（統合・分割の履歴と対応表）
+
+- operations：`id`、`project_id`、`op_kind`（`merge`／`split`）、`undoes_operation_id` NULL（取り消しは新しい行）、`reason`、`actor_id`、`created_at`、`request_id`、`narrative_commit_id` NULL（PR 2 の atomic commit との対応）、`restore_boundary_id` は持たない（下の残る危険）。
+- mappings：`operation_id`（operations に FK・CASCADE）、`ordinal`、`source_entry_id`、`target_entry_id`。PK は `(operation_id, ordinal)`。
+- 両方とも UPDATE を拒む TRIGGER。PR 1 では書き手が無い（表だけ）。
+- 残る危険：Split の参照の割当て（ADR 015 で未決）と、M2-D2〜D4 の同一性（M4 の 2026-11-26 の知らせ：年表の出来事は抽出ごとに ID が変わり、安定な key は Phase・Plot Thread／Foreshadow の行 ID だけ）が決まる前に表の形を固める。参照の型ごとの割当ては mappings の 1 行＝(source, target) では表せない可能性があり、そのときは PR 2 で表を足す（3 群の外の索引として別の版上げ）か、割当ての表を operations にぶら下げる形にする。Codex の範囲の復元の後に lineage が実態とずれる件は §5。
+
+### 1.3 `identity_correction_applications`（提案が使った規則と当て直しの結果）
+
+- `id`、`project_id`、`input_proposal_revision_id`（当てる前の版。抽出・取込みでは model output の版）、`output_proposal_revision_id` NULL（規則を当てて記録した新しい版。当てなかった・止めたときは NULL）、`rule_revision_id`（FK なし。§1 の理由）、`route`（`extraction`／`import`／`reapply`）、`outcome`（`applied`／`conflict`／`not-applicable`／`stale`）、`reason_code`（理由ごとの件数はこの列と `outcome` を `reapply_batch_id` で集計して出す）、`reapply_batch_id` NULL、`created_at`。
+- 提案の版への 2 つの参照は `narrative_proposal_revisions` に FK・CASCADE（提案の版が消えれば記録も消える。提案の表は部分復元の対象外なので、復元とはぶつからない）。元の model output との対応は `input_proposal_revision_id` で辿る（ADR 015 §6）。
+- UPDATE を拒む TRIGGER。PR 1 では書き手が無い。
+
+## 2. 書き込みの入口（PR 1 は規則の revision だけ）
+
+- `create_rule_revision`・`supersede_rule_revision`・`retire_rule_revision`（`grimodex-db`）。既存の `foreshadow_create` の形（`run_atomic_create` で `BEGIN IMMEDIATE`、同じ transaction で canonical と narrative の Change Feed を追記）に合わせる。
+- 呼び手：authority route が `human-direct` のときだけ通す。agent・import・maintenance・mcp の route は native で拒む（ADR 015 の版 v4 の「native 側で呼び手を拒む試験まで足せるか」への答え＝足せる）。画面の操作かどうかは確かめない（版 v4）。
+- 引数の検査（native）：project の存在、kind ごとの必須の欄、scope の形、組の並べ替え、置き換え・撤回の前の revision が同じ project の今の revision であること。項目・場面の存在は確かめて、無ければ拒む（作る時点では消えた項目の規則を作らない）。
+
+## 3. Change Feed
+
+- canonical の `change_events`：domain は新しく `identity-correction`、op は `rule.revise`。**payload は `ruleRevisionId`・`ruleId`・`kind`・`state` だけ**。表記・項目 ID・場面 ID・名前・理由は入れない。payload の外の列も固定する：`entity_type`＝`identity_correction_rule`、`entity_id`＝規則の revision の ID、`scene_id`＝NULL（場面 scope でも入れない）。監査の ZIP（`legacyEvidence.ts`）は `change_events` の全列を種類で絞らずそのまま出すため（codex-jobs/m3-erm-pr1-facts.out.md の 5）。
+- 規則の event は Undo の対象にしない（取り消しは撤回の revision）。Undo・履歴の表示・timelapse の caption が知らない domain をどう扱うかは facts3 の結果で決める。
+- narrative の transaction：依存する提案の freshness を古くする伝播は narrative の表を読む（`load_change_batch_envelope`）。PR 1 では依存先が無いので、無効化の key は規則の ID までにとどめる（表記や項目 ID を key にすると、narrative の表が別の漏れ口になる）。当て直しは PR 3。
+- `change-feed-writers.json` の operation は `required`、`protected-writers.json` に表と writer を登録する。
+
+【判断待ち：ユーザーに伺い中（2026-11-26）。advisor の推しは「ログと作者が出す 2 つの ZIP は守る先に含めず、記録は ID と種類だけ」】監査の ZIP と timelapse の ZIP に規則の revision の ID と種類が出るのは許す。理由：ZIP は作者向けの書き出しで、脅威モデルの (1) が出さない先として挙げるのは AI・検索・読者向けの書き出し。ID と種類からは、隠した人物の名前・表記・対応・理由は分からない。件数（規則の数）は分かるが、隠した人物かどうかとは結び付かない。
+
+## 4. 読み取りの閉じ方（profile egress）
+
+- 4 表とも `closed`（renderer の汎用 `db_execute` の読み書きを native の authorizer が拒む。既存の例は `narrative_proposal_revisions`）。
+- AI の読み取りの allowlist（`electron/shared/mastraRead/tables.ts` の `MAIN_READ_TABLES`）には載せない。
+- 読む入口は typed reader だけ（PR 1 は Rust のみ）。
+
+## 5. スナップショットと復元
+
+- 作品全体のバックアップ（`VACUUM INTO`）には自動で入り、往復する。
+- 作品の部分復元（project snapshot）：**4 表とも部分復元の対象外**（提案の表と同じ。語の一覧の回答「スナップショットで戻しても戻らない」ともそろう）。Codex の範囲を戻しても、規則の履歴・lineage・適用の記録は消えず、変わらない。
+  - 理由：同じ DB のスナップショットは、書き換えも削除もしない表について常に今の部分集合になるので、「足すだけ」は何もしない復元と同じ。「置き換え」は確認済みの「版を残して書き換えない」とぶつかる。
+  - 前提：スナップショットの中身が別の DB・別の作品から入る経路が無いこと（facts3 の問 4 で確かめる）。あれば前提が崩れるので見直す。
+  - 結果：戻した項目に、スナップショットより後に作った規則が残る。項目が無ければ当たらず、PR 5 の健全性で示す。統合の後に Codex を戻すと lineage は実態とずれる。PR 2 がこれを列なしで読み取り時に導けるか（例：lineage の対象の項目が今ある・無いで判定）を、schema の独立レビューの問いに入れる。
+  - **画面で見える挙動**（「Codex を戻しても訂正は残る」）なので、草稿を確定する前に作者に一覧で示す。
+- park：新しい FK は `project_id` と mappings→operations、applications→proposal revisions だけで、復元で消える親を指さないので `NOT_PARKED` に理由つきで分類する。
+
+## 6. 守りの試験（PR 1 で入れるもの）
+
+1. 4 表とも、renderer の汎用 `db_execute` から読めず書けない（native の authorizer）。
+2. `MAIN_READ_TABLES` と profile egress の台帳で、4 表が `closed` で、AI の読み取りの許可一覧に名前が無いことを固定する。訂正の命令が AI の道具の一覧と standalone MCP に無いことの試験は、命令（IPC）を足す PR に持ち越す（PR 1 には命令が無く、試験が必ず通るため）。
+3. writer が `human-direct` 以外の route（agent・import・maintenance・mcp）を拒む。
+4. 規則の event の行全体（payload の key と、`entity_type`・`entity_id`・`scene_id` の列）を固定し、表記・項目 ID・場面 ID・名前・理由が入らないことを確かめる。narrative の側の無効化の key も規則の ID だけであることを確かめる。
+5. revision の UPDATE を TRIGGER が拒む。置き換えの競合（同じ revision を 2 回置き換える）は片方が落ちる。
+6. 別の作品の revision の置き換え、存在しない項目・場面を指す規則の作成を拒む。
+7. 作品全体のバックアップと復元で 4 表が往復する。作品の部分復元（Codex の範囲を含む各 scope）で、4 表が変わらず、復元が止まらない。
+8. migration：版 46 の DB から上がり、invariant が通る。
+
+## 7. 版の番号の扱い
+
+版番号に触る変更（`grimodex-core` の 3 つの定数、版を固定した試験 5 か所、`src/db/generated/schema-contract.json`）は最後の別の commit にする。年表の CED/1 の移行と merge の順で 47／48 を決める（年表の担当と合意済み、2026-11-26）。
