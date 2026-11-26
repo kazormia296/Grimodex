@@ -6109,6 +6109,11 @@ const REMOVED_EVENT_PROPOSALS_SQL: &str = "
      GROUP BY p.id, r.id, d.id";
 
 pub(crate) enum EventExistenceChange<'a> {
+    /// The author's re-approval (SRD/1 RA). The writer judges the target itself.
+    Reapproved {
+        target: &'a super::ChronicleBulkApproveTarget,
+        decision_id: &'a str,
+    },
     Removed {
         event_ids: &'a [String],
         via: RemovedVia,
@@ -6146,7 +6151,12 @@ pub(crate) fn append_event_existence_decisions_in_tx(
                             "removedEventId": row.get::<_, String>(2)?,
                             "revokesDecisionId": row.get::<_, String>(3)?,
                         });
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, detail))
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            detail,
+                            Uuid::new_v4().to_string(),
+                        ))
                     },
                 )?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -6158,8 +6168,32 @@ pub(crate) fn append_event_existence_decisions_in_tx(
                 targets,
             )
         }
+        EventExistenceChange::Reapproved {
+            target,
+            decision_id,
+        } => {
+            let rejection_id = match super::reapproval::judge_reapproval(conn, project_id, target)?
+            {
+                super::reapproval::Eligibility::Eligible { rejection_id } => rejection_id,
+                super::reapproval::Eligibility::Skip(reason) => {
+                    anyhow::bail!("NEX_REAPPROVE_NOT_ELIGIBLE: {reason}")
+                }
+            };
+            (
+                "approved",
+                TrustedDecisionActor::Human {
+                    actor_id: "electron:human-review".into(),
+                },
+                vec![(
+                    target.proposal_id.clone(),
+                    target.revision_id.clone(),
+                    json!({"cause": "event-reapproved", "reapprovesDecisionId": rejection_id}),
+                    decision_id.to_owned(),
+                )],
+            )
+        }
     };
-    for (proposal, revision, detail) in &targets {
+    for (proposal, revision, detail, decision_id) in &targets {
         let authority = derive_decision_authority(&actor, project_id, proposal, revision, detail)?;
         conn.execute(
             "INSERT INTO narrative_proposal_decisions
@@ -6167,7 +6201,7 @@ pub(crate) fn append_event_existence_decisions_in_tx(
                  actor_kind, actor_id, authority_scope, override_field_paths_json)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?7, ?9, ?10)",
             params![
-                Uuid::new_v4().to_string(),
+                decision_id,
                 proposal,
                 revision,
                 decision,

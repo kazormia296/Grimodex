@@ -738,3 +738,316 @@ fn restore_revokes_only_before_minus_after_and_rolls_back_on_failure() -> anyhow
     }
     Ok(())
 }
+
+use crate::narrative_extraction::{
+    narrative_extraction_reapprove_applied_proposals, ChronicleBulkApproveTarget,
+    ReapproveAppliedProposalsPayload,
+};
+
+fn reapproval_request(
+    db: &Database,
+    ids: &[&str],
+) -> anyhow::Result<ReapproveAppliedProposalsPayload> {
+    db.with_conn(|conn| {
+        let mut targets = Vec::new();
+        for &id in ids {
+            let revision = conn
+                .query_row(
+                    "SELECT current_revision_id FROM narrative_proposals WHERE id=?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .unwrap_or_else(|| "missing-revision".to_owned());
+            targets.push(ChronicleBulkApproveTarget {
+                proposal_id: id.into(),
+                revision_id: revision,
+            });
+        }
+        Ok(ReapproveAppliedProposalsPayload {
+            project_id: PROJECT.into(),
+            targets,
+        })
+    })
+}
+
+fn reapprove(db: &Database, ids: &[&str]) -> anyhow::Result<Value> {
+    narrative_extraction_reapprove_applied_proposals(db, reapproval_request(db, ids)?, &mut || {
+        false
+    })
+}
+
+fn assert_reapproval_skip(result: &Value, proposal: &str, reason: &str) {
+    assert_eq!(
+        *result,
+        json!({
+            "approved": [], "skipped": [{"proposalId":proposal,"reasons":[reason]}],
+            "failed": [], "stopped": false
+        })
+    );
+}
+
+#[test]
+fn reapproval_invalid_requests_write_nothing() -> anyhow::Result<()> {
+    let db = human_import()?;
+    let journal = screen_delete(&db, &["event-one"], false)?;
+    replay(&db, &journal, "undo", "restore")?;
+    let valid = reapproval_request(&db, &["one"])?;
+    let target = &valid.targets[0];
+    let item = json!({"proposalId":target.proposal_id, "revisionId":target.revision_id});
+    for invalid in [
+        json!({"projectId":PROJECT,"targets":[item],"override":true}),
+        json!({"projectId":PROJECT,"targets":[{"proposalId":"one","revisionId":"r","decision":"approved"}]}),
+    ] {
+        assert!(serde_json::from_value::<ReapproveAppliedProposalsPayload>(invalid).is_err());
+    }
+    let mut too_many = vec![item.clone()];
+    too_many.extend((0..4096).map(|i| json!({"proposalId":format!("p{i}"),"revisionId":"r"})));
+    for (project, targets) in [
+        (PROJECT, json!([])),
+        (PROJECT, json!(too_many)),
+        (PROJECT, json!([item, item])),
+        (" project-1", json!([item])),
+        ("", json!([item])),
+        (
+            PROJECT,
+            json!([item,{"proposalId":"two ","revisionId":"r"}]),
+        ),
+        (
+            PROJECT,
+            json!([item,{"proposalId":"two","revisionId":" r"}]),
+        ),
+        (PROJECT, json!([item,{"proposalId":"","revisionId":"r"}])),
+        (PROJECT, json!([item,{"proposalId":"two","revisionId":""}])),
+    ] {
+        let payload = serde_json::from_value(json!({"projectId":project, "targets":targets}))?;
+        let error = narrative_extraction_reapprove_applied_proposals(&db, payload, &mut || false)
+            .unwrap_err();
+        assert!(error.to_string().starts_with("NEX_REAPPROVE_INVALID:"));
+    }
+    db.with_conn(|conn| {
+        assert_eq!(state(conn, "one")?, ("rejected".into(), 2));
+        assert_eq!(state(conn, "two")?, ("approved".into(), 1));
+        Ok(())
+    })
+}
+
+#[test]
+fn reapproval_skips_ineligible_targets_without_writing() -> anyhow::Result<()> {
+    let db = human_import()?;
+    screen_delete(&db, &["event-one"], false)?;
+    let mut wrong_project = reapproval_request(&db, &["one"])?;
+    wrong_project.project_id = "other".into();
+    assert_reapproval_skip(
+        &narrative_extraction_reapprove_applied_proposals(&db, wrong_project, &mut || false)?,
+        "one",
+        "proposal-not-found",
+    );
+    let mut stale = reapproval_request(&db, &["one"])?;
+    stale.targets[0].revision_id = "earlier".into();
+    assert_reapproval_skip(
+        &narrative_extraction_reapprove_applied_proposals(&db, stale, &mut || false)?,
+        "one",
+        "revision-changed",
+    );
+    assert_reapproval_skip(&reapprove(&db, &["two"])?, "two", "already-approved");
+    // Even with one live event, every event for this proposal must exist.
+    execute(
+        &db,
+        "INSERT INTO narrative_proposal_applications
+        (id,commit_id,proposal_id,revision_id,applied_entity_kind,applied_entity_id,created_at)
+        SELECT 'also-present',commit_id,proposal_id,revision_id,'event','event-two',created_at
+        FROM narrative_proposal_applications WHERE proposal_id='one'",
+    )?;
+    assert_reapproval_skip(&reapprove(&db, &["one"])?, "one", "event-missing");
+    execute(&db, "INSERT INTO narrative_proposal_decisions
+        (id,proposal_id,revision_id,decision,decision_json,created_at,created_by,actor_kind,actor_id,authority_scope)
+        SELECT 'later-human-rejection',proposal_id,revision_id,decision,decision_json,'2999-01-01',
+               'electron:human-review','human','electron:human-review',authority_scope
+          FROM narrative_proposal_decisions WHERE proposal_id='one' AND decision='rejected'")?;
+    assert_reapproval_skip(&reapprove(&db, &["one"])?, "one", "not-removal-rejection");
+    execute(&db, "INSERT INTO narrative_proposal_applications
+        (id,commit_id,proposal_id,revision_id,applied_entity_kind,applied_entity_id,created_at,
+         application_kind,compensates_application_id)
+        SELECT 'undo-'||id,commit_id,proposal_id,revision_id,'event',applied_entity_id,created_at,'compensation',id
+        FROM narrative_proposal_applications WHERE proposal_id='one' AND application_kind='normal'")?;
+    assert_reapproval_skip(&reapprove(&db, &["one"])?, "one", "no-application");
+    execute(
+        &db,
+        "INSERT INTO narrative_proposal_applications
+        (id,commit_id,proposal_id,revision_id,applied_entity_kind,applied_entity_id,created_at)
+        SELECT 'old-import',commit_id,'one',revision_id,'event',applied_entity_id,created_at
+        FROM narrative_proposal_applications WHERE proposal_id='two'",
+    )?;
+    assert_reapproval_skip(&reapprove(&db, &["one"])?, "one", "revision-changed");
+    db.with_conn(|conn| {
+        assert_eq!(state(conn, "one")?, ("rejected".into(), 3));
+        assert_eq!(state(conn, "two")?, ("approved".into(), 1));
+        Ok(())
+    })
+}
+
+#[test]
+fn reapproval_writer_judges_the_target_itself() -> anyhow::Result<()> {
+    let db = human_import()?;
+    screen_delete(&db, &["event-one"], false)?;
+    // "one" lost its event and "two" is still approved: calling the writer
+    // directly, without the command's judgement, is refused for both.
+    let request = reapproval_request(&db, &["one", "two"])?;
+    db.with_conn(|conn| {
+        for (target, reason) in request
+            .targets
+            .iter()
+            .zip(["event-missing", "already-approved"])
+        {
+            let tx = conn.unchecked_transaction()?;
+            let error = append_event_existence_decisions_in_tx(
+                &tx,
+                PROJECT,
+                EventExistenceChange::Reapproved {
+                    target,
+                    decision_id: "unverified",
+                },
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("NEX_REAPPROVE_NOT_ELIGIBLE: {reason}")
+            );
+        }
+        assert_eq!(state(conn, "one")?, ("rejected".into(), 2));
+        assert_eq!(state(conn, "two")?, ("approved".into(), 1));
+        Ok(())
+    })
+}
+
+#[test]
+fn reapproval_records_human_authority_and_can_be_revoked_again() -> anyhow::Result<()> {
+    let db = human_import()?;
+    let journal = screen_delete(&db, &["event-one", "event-two"], true)?;
+    replay(&db, &journal, "undo", "restore")?;
+    let index = crate::narrative_extraction::nir1_chronicle_index::INDEX_KEY;
+    db.with_conn(|conn| {
+        conn.execute("INSERT INTO narrative_semantic_index_metadata
+            (project_id,index_key,generation,built_at,source_digest,dependency_set_digest,dirty_cache_flag)
+            VALUES (?1,?2,1,'2026-01-01','source','deps',0)", params![PROJECT,index])?;
+        Ok(())
+    })?;
+    let result = reapprove(&db, &["one", "absent", "two"])?;
+    assert_eq!(
+        result["skipped"],
+        json!([{"proposalId":"absent","reasons":["proposal-not-found"]}])
+    );
+    assert_eq!(result["failed"], json!([]));
+    assert_eq!(result["stopped"], false);
+    assert_eq!(result["approved"].as_array().unwrap().len(), 2);
+    db.with_conn(|conn| {
+        for (i, proposal) in ["one", "two"].iter().enumerate() {
+            let receipt = &result["approved"][i];
+            assert_eq!(receipt["proposalId"], *proposal);
+            let (raw, rejected): (String, String) = conn.query_row(
+                "SELECT d.decision_json, r.id FROM narrative_proposal_decisions d
+                   JOIN narrative_proposal_decisions r ON r.proposal_id=d.proposal_id AND r.revision_id=d.revision_id
+                    AND r.decision='rejected' AND r.created_at<d.created_at
+                  WHERE d.id=?1 AND d.proposal_id=?2 AND d.revision_id=?3 AND d.decision='approved'
+                    AND d.actor_kind='human' AND d.actor_id='electron:human-review'
+                    AND d.authority_scope=r.authority_scope AND d.override_field_paths_json='[]'",
+                params![receipt["decisionId"].as_str().unwrap(), proposal, receipt["revisionId"].as_str().unwrap()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            assert_eq!(serde_json::from_str::<Value>(&raw)?, json!({"cause":"event-reapproved","reapprovesDecisionId":rejected}));
+            assert_eq!(state(conn, proposal)?, ("approved".into(), 3));
+        }
+        let dirty: bool = conn.query_row("SELECT dirty_cache_flag FROM narrative_semantic_index_metadata
+            WHERE project_id=?1 AND index_key=?2", params![PROJECT,index], |r| r.get(0))?;
+        assert!(dirty);
+        Ok(())
+    })?;
+    assert_reapproval_skip(&reapprove(&db, &["one"])?, "one", "already-approved");
+    // The events came back with a new version, so the import itself can no
+    // longer be undone (design §3; confirmation 139).
+    let commit: String = db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT id FROM narrative_apply_commits WHERE project_id=?1",
+            [PROJECT],
+            |r| r.get(0),
+        )?)
+    })?;
+    let refused = crate::narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        serde_json::from_value(json!({"projectId":PROJECT, "sessionId":"session",
+                                 "commitId":commit,"requestId":"undo-after-reapproval"}))?,
+    )
+    .unwrap_err();
+    assert!(
+        refused.to_string().contains("NEX_COMMIT_EVENT_EDITED"),
+        "{refused:#}"
+    );
+    db.with_conn(|conn| {
+        assert_eq!(state(conn, "one")?, ("approved".into(), 3));
+        assert_eq!(state(conn, "two")?, ("approved".into(), 3));
+        Ok(())
+    })?;
+    replay(&db, &journal, "redo", "remove-again")?;
+    db.with_conn(|conn| {
+        assert_eq!(state(conn, "one")?, ("rejected".into(), 4));
+        assert_eq!(state(conn, "two")?, ("rejected".into(), 4));
+        Ok(())
+    })
+}
+
+#[test]
+fn reapproval_honors_stop_policy_and_rollback() -> anyhow::Result<()> {
+    let db = human_import()?;
+    let journal = screen_delete(&db, &["event-one", "event-two"], true)?;
+    replay(&db, &journal, "undo", "restore")?;
+    execute(
+        &db,
+        "UPDATE narrative_runtime_policy SET runtime_mode='disabled'",
+    )?;
+    let disabled = reapprove(&db, &["one"])?;
+    assert_eq!(
+        disabled["failed"],
+        json!([{"proposalId":"one","code":"NARRATIVE_ENGINE_DISABLED"}])
+    );
+    execute(
+        &db,
+        "UPDATE narrative_runtime_policy SET runtime_mode='manual-apply'",
+    )?;
+    db.with_conn(|conn| {
+        assert_eq!(state(conn, "one")?, ("rejected".into(), 2));
+        Ok(())
+    })?;
+    execute(
+        &db,
+        "CREATE TEMP TRIGGER fail_status BEFORE UPDATE OF status ON narrative_proposals
+        WHEN NEW.id='one' BEGIN SELECT RAISE(ABORT,'write failed'); END",
+    )?;
+    let result = reapprove(&db, &["one", "two"])?;
+    assert_eq!(
+        result["failed"],
+        json!([{"proposalId":"one","code":"NEX_REAPPROVE_FAILED"}])
+    );
+    assert_eq!(result["approved"][0]["proposalId"], "two");
+    db.with_conn(|conn| {
+        assert_eq!(state(conn, "one")?, ("rejected".into(), 2));
+        assert_eq!(state(conn, "two")?, ("approved".into(), 3));
+        Ok(())
+    })?;
+    execute(&db, "DROP TRIGGER fail_status")?;
+    let mut calls = 0;
+    let stopped = narrative_extraction_reapprove_applied_proposals(
+        &db,
+        reapproval_request(&db, &["one", "two"])?,
+        &mut || {
+            calls += 1;
+            calls == 2
+        },
+    )?;
+    assert_eq!(stopped["approved"].as_array().unwrap().len(), 1);
+    assert_eq!(stopped["approved"][0]["proposalId"], "one");
+    assert_eq!(stopped["stopped"], true);
+    assert_eq!(stopped["skipped"], json!([]));
+    assert_eq!(stopped["failed"], json!([]));
+    Ok(())
+}

@@ -626,6 +626,19 @@ mod narrative_extraction_workspace_binding_tests {
             }))
             .await;
         assert!(unknown_field.is_err(), "unknown payload fields are refused");
+        for unexpected in [
+            serde_json::json!({"projectId":"p","targets":[],"authorityRoute":"review"}),
+            serde_json::json!({"projectId":"p","targets":[{"proposalId":"p","revisionId":"r","actor":"human"}]}),
+        ] {
+            let error = backend
+                .narrative_extraction_reapprove_applied_proposals(unexpected)
+                .await
+                .expect_err("RA accepts only project and target identities");
+            assert!(
+                error.reason.starts_with("NEX_REAPPROVE_INVALID:"),
+                "{error}"
+            );
+        }
         let unknown_run = backend
             .narrative_extraction_chronicle_bulk_approve(serde_json::json!({
                 "projectId": "project-1",
@@ -15857,6 +15870,32 @@ impl Backend {
                 )
             },
         )
+        .await
+    }
+
+    /// Reapprove restored Chronicle events as the human reviewer, checking each target before writing.
+    #[napi]
+    pub async fn narrative_extraction_reapprove_applied_proposals(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let _workspace_operation = state
+                .begin_workspace_operation()
+                .map_err(AppError::Anyhow)?;
+            let dto = serde_json::from_value(payload)
+                .map_err(|e| AppError::Anyhow(anyhow::anyhow!("NEX_REAPPROVE_INVALID: {e}")))?;
+            with_db_state(&state.ws, |db| {
+                let result =
+                    narrative_extraction::narrative_extraction_reapprove_applied_proposals(
+                        db,
+                        dto,
+                        &mut || chronicle_bulk_approve_stop_requested(&state),
+                    )?;
+                Ok(serde_json::to_string(&result)?)
+            })
+        })
         .await
     }
 

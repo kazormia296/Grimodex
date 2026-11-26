@@ -1098,6 +1098,8 @@ export declare class Backend {
    * stops and returns what was done so far.
    */
   narrativeExtractionChronicleBulkApprove(payload: any): Promise<string>
+  /** Reapprove restored Chronicle events as the human reviewer, checking each target before writing. */
+  narrativeExtractionReapproveAppliedProposals(payload: any): Promise<string>
   narrativeExtractionReviseAndDecide(payload: any): Promise<string>
   narrativeExtractionReviseAndDecideAsHuman(payload: any): Promise<string>
   narrativeExtractionSetHumanFieldLock(payload: any): Promise<string>
