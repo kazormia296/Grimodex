@@ -1040,6 +1040,25 @@ describe("EVENT_CHANNEL_ALLOWLIST", () => {
         extra: true,
       }),
     ).toBeNull();
+
+    const invalidEvents: unknown[] = [
+      { targetId: "", undoId: "undo-1" },
+      { targetId: "x".repeat(201), undoId: "undo-1" },
+      { targetId: " scene-1", undoId: "undo-1" },
+      { targetId: "scene-1 ", undoId: "undo-1" },
+      { targetId: "scene\n1", undoId: "undo-1" },
+      { targetId: "scene-1" },
+      ["scene-1", "undo-1"],
+      new (class {
+        targetId = "scene-1";
+        undoId = "undo-1";
+      })(),
+      { targetId: ["scene-1"], undoId: "undo-1" },
+      { targetId: "scene-1", undoId: new String("undo-1") },
+    ];
+    for (const event of invalidEvents) {
+      expect(parseMastraAgentWriteCompletedEvent(event)).toBeNull();
+    }
   });
 
   it.each([

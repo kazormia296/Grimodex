@@ -871,6 +871,23 @@ describe("registerIpcRouter fail-soft logging", () => {
         }),
       ),
     ).toMatchObject({ authorityRoute: "" });
+
+    const crossSenderGrant = await issueAgentCapability(
+      "create_foreshadow",
+      { title: "from the model" },
+      711,
+    );
+    expect(
+      bindRendererAuthorityForIpc(
+        "agent_foreshadow_create",
+        {
+          payload: agentCapabilityPayload(crossSenderGrant, {
+            title: "from the model",
+          }),
+        },
+        712,
+      ).payload,
+    ).toMatchObject({ authorityRoute: "" });
   });
 
   describe("agent capability issuance reads the project ai_policy row", () => {
