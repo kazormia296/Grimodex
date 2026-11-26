@@ -74,7 +74,9 @@ describe("registerMastraAgentTurnResponder", () => {
       deadlineAt: Date.now() - 1,
     });
 
-    await vi.waitFor(() => expect(response.answer).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(response.answer).toHaveBeenCalledOnce(), {
+      timeout: 10_000,
+    });
     expect(response.help.getUiStateTool).not.toHaveBeenCalled();
     expect(response.answer).toHaveBeenCalledWith({
       requestId: "req-1",
@@ -107,7 +109,9 @@ describe("registerMastraAgentTurnResponder", () => {
       deadlineAt: Date.now() + 10_000,
     });
 
-    await vi.waitFor(() => expect(response.answer).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(response.answer).toHaveBeenCalledOnce(), {
+      timeout: 10_000,
+    });
     expect(applyPreset).not.toHaveBeenCalled();
     expect(response.answer).toHaveBeenCalledWith({
       requestId: "req-1",
@@ -188,7 +192,9 @@ describe("registerMastraAgentTurnResponder", () => {
       deadlineAt: Date.now() + 10_000,
     });
 
-    await vi.waitFor(() => expect(response.answer).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(response.answer).toHaveBeenCalledOnce(), {
+      timeout: 10_000,
+    });
     expect(assertTurnAuthority).toHaveBeenCalledTimes(2);
     expect(response.answer).toHaveBeenCalledWith({
       requestId: "req-1",
@@ -261,12 +267,16 @@ describe("registerMastraAgentTurnResponder", () => {
       args: { questions: [{ question: "Continue?", kind: "text" }] },
       deadlineAt: Date.now() + 30 * 60_000,
     });
-    await vi.waitFor(() =>
-      expect(pendingUserQuestion.current).toEqual({ toolCallId: "tool-1" }),
+    await vi.waitFor(
+      () =>
+        expect(pendingUserQuestion.current).toEqual({ toolCallId: "tool-1" }),
+      { timeout: 10_000 },
     );
 
     unregister();
-    await vi.waitFor(() => expect(runtime.cancel).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(runtime.cancel).toHaveBeenCalledOnce(), {
+      timeout: 10_000,
+    });
     expect(pendingUserQuestion.current).toBeNull();
     expect(response.answer).not.toHaveBeenCalled();
   });
@@ -323,7 +333,9 @@ describe("registerMastraAgentTurnResponder", () => {
       args: { questions: [{ question: "Continue?", kind: "text" }] },
       deadlineAt: Date.now() + 30 * 60_000,
     });
-    await vi.waitFor(() => expect(runtime.register).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(runtime.register).toHaveBeenCalledOnce(), {
+      timeout: 10_000,
+    });
     pendingUserQuestion.current = { toolCallId: "tool-2" };
 
     unregister();

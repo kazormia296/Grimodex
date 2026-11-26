@@ -451,9 +451,11 @@ describe("trusted event broadcast", () => {
     const detachedPanel = makeWindow(22);
     allWindows.push(main, detachedPanel);
 
-    sendMainEventToWindow(21, "web-editor-handoff:requested", {
-      kind: "web-editor-handoff",
-    });
+    expect(
+      sendMainEventToWindow(21, "web-editor-handoff:requested", {
+        kind: "web-editor-handoff",
+      }),
+    ).toBe(true);
 
     expect(main.webContents.send).toHaveBeenCalledExactlyOnceWith(
       IPC.event,
@@ -468,7 +470,9 @@ describe("trusted event broadcast", () => {
     const main = makeWindow(21);
     allWindows.push(main);
 
-    sendMainEventToWindow(21, "backend:ready", { fake: true });
+    expect(sendMainEventToWindow(21, "backend:ready", { fake: true })).toBe(
+      false,
+    );
 
     expect(main.webContents.send).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("backend:ready"));
