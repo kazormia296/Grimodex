@@ -1703,6 +1703,18 @@
       "id": "codex.tags.set.renderer",
       "authorityRoute": "human-direct",
       "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        },
+        {
+          "authorityRoute": "import-apply",
+          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["import-session","import-review"]
+        }
+      ],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Codex or Snippet tag changes affect context selection and derived artifact dependencies.",

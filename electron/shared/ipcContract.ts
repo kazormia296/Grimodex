@@ -29,6 +29,7 @@ import {
 } from "./agentSettingCatalog.js";
 import { MODEL_CAPABILITY_SNAPSHOT_COMMAND } from "./modelCapabilitySnapshotWire.js";
 import {
+  MASTRA_AGENT_TURN_ANSWER_COMMAND,
   MASTRA_AGENT_TURN_CANCEL_COMMAND,
   MASTRA_AGENT_TURN_START_COMMAND,
 } from "./mastraAgentTurnWire.js";
@@ -353,8 +354,11 @@ export const BACKEND_EVENT_CHANNEL_ALLOWLIST = [
 
 /** Electron main 専用のイベント。renderer / backend callback からは送れない。 */
 export const MASTRA_AGENT_TURN_PROGRESS_EVENT = "mastra:agent-turn-progress";
+/** Main asks the renderer to run one UI tool; the event carries its bounded arguments. */
+export const MASTRA_AGENT_TURN_QUESTION_EVENT = "mastra:agent-turn-question";
 
 export const MAIN_EVENT_CHANNEL_ALLOWLIST = [
+  MASTRA_AGENT_TURN_QUESTION_EVENT,
   // Mastra agent turn progress is a numeric / identifier-only main event.
   MASTRA_AGENT_TURN_PROGRESS_EVENT,
   // electron-updater の byte progress（Phase 4）
@@ -4145,6 +4149,7 @@ function requireEntityTagsSetPayload(args: CommandArgs): CommandArgs {
   const command = "entity_tags_set";
   const payload = requireCanonicalWriterIdentity(args, command, [
     "human-direct",
+    "import-apply",
   ]);
   const kind = requireString(payload, "entityKind", command);
   if (kind !== "codex" && kind !== "snippet") {
@@ -7962,6 +7967,7 @@ function callerIdentityWire(args: CommandArgs): string | undefined {
       `invalid args \`callerIdentity\` for database command: ${
         error instanceof Error ? error.message : String(error)
       }`,
+      { cause: error },
     );
   }
 }
@@ -12911,6 +12917,8 @@ export const SHELL_COMMAND_NAMES: readonly string[] = [
   // product launch (`mastraAgentTurnGate.ts`) and never reaches Native.
   MASTRA_AGENT_TURN_START_COMMAND,
   MASTRA_AGENT_TURN_CANCEL_COMMAND,
+  // MP-5a: renderer answers one Main-owned UI-tool question.
+  MASTRA_AGENT_TURN_ANSWER_COMMAND,
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────

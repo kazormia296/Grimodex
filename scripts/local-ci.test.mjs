@@ -5667,7 +5667,8 @@ test("AI workflow authorities require local Quick and complete Full evidence", a
   assert.match(shipBranch, /pnpm ci:local:full/);
   assert.match(shipBranch, /pnpm ci:local:verify/);
   assert.match(shipBranch, /--from/);
-  assert.match(bumpVersion, /pnpm ci:local:full/);
+  assert.match(bumpVersion, /gh workflow run canonical-ci\.yml --ref master -f profile=full/);
+  assert.doesNotMatch(bumpVersion, /^\s*pnpm ci:local:full -- --base/m);
   assert.match(bumpVersion, /release commit/);
   assert.match(policy, /clean candidate run local Quick.*immediately verified/s);
   assert.match(policy, /Partial `--from` runs.*never\s+converted into merge or release passes/s);

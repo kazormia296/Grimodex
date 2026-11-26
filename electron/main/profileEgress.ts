@@ -480,6 +480,8 @@ const INTERNAL_COMMANDS = new Set([
   // The cancel of a Mastra agent turn (DR-MP3-11): it also stops, see the stop
   // ledger above; both ledgers list it by design (as `abort_chat_stream`).
   "mastra_agent_turn_cancel",
+  // MP-5a answer carries a bounded UI-tool result and has no Native egress.
+  "mastra_agent_turn_answer",
   "map_write_bundle",
   "mozkey_download_and_install",
   "narrative_extraction_append_decision",

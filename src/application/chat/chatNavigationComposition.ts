@@ -5,10 +5,11 @@ import {
   setChatSceneTransitionBlocker,
 } from "@/lib/chatNavigationGuard";
 import { registerSceneAuthorityCommitSink } from "@/application/tree/sceneAuthorityRegistry";
+import { registerActiveTurnStopper } from "@/lib/activeTurnStopRegistry";
 
 type ChatNavigationState = Pick<
   ChatState,
-  "agentMode" | "isStreaming" | "setActiveSceneId"
+  "agentMode" | "isStreaming" | "setActiveSceneId" | "stopGeneration"
 >;
 
 export function installChatNavigationBlockers(input: {
@@ -35,5 +36,10 @@ export function installChatNavigationBlockers(input: {
   });
   registerSceneAuthorityCommitSink((sceneId) => {
     input.getState().setActiveSceneId(sceneId);
+  });
+  // 終了や切替の前の確認（chatStopConfirm）が使う。
+  registerActiveTurnStopper({
+    isActive: () => input.getState().isStreaming,
+    stop: () => input.getState().stopGeneration(),
   });
 }

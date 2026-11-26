@@ -300,21 +300,23 @@ export function sendMainEventToWindow(
   webContentsId: number,
   channel: string,
   payload: unknown,
-): void {
+): boolean {
   if (!isAllowedMainEventChannel(channel)) {
     console.warn(`[main:event] rejected non-main channel: ${String(channel)}`);
-    return;
+    return false;
   }
   const target = BrowserWindow.getAllWindows().find(
     (win) => !win.isDestroyed() && win.webContents.id === webContentsId,
   );
-  if (!target) return;
+  if (!target) return false;
   try {
     target.webContents.send(IPC.event, channel, payload);
+    return true;
   } catch (cause) {
     console.warn(
       `[main:event] target ${webContentsId} became unavailable: ${cause instanceof Error ? cause.message : String(cause)}`,
     );
+    return false;
   }
 }
 

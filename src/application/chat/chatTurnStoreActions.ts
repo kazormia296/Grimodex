@@ -48,6 +48,9 @@ import {
   createRetryableCompletedTurnPersistence,
   createSessionForCurrentRuntime,
   fetchRequiredProjectContext,
+  isTruncatedStopReason,
+  agentContinuationReason,
+  streamAssistantMetadata,
   parseMetadataRecord,
   sendableHistory,
   turnErrorText,
@@ -1136,6 +1139,7 @@ function createChatTurnStoreActions(
             assertTurnAuthority,
             isCurrentTurn,
             shouldAbortTurn,
+            signal: sendControl.abortController.signal,
             getParentAuditExecutionId: () => parentAuditExecutionId,
             resolveTransportOverride: () => ({
               model:
@@ -1187,12 +1191,10 @@ function createChatTurnStoreActions(
             fullyInjectedIds,
             chatMessageId: assistantMsg.id,
           });
-          // クライアントツールは private Agent のときだけ渡す。Public RAG は
-          // tools=[] とし、Web検索だけを使う分離済み経路にする。
+          // client tool は private Agent だけ。Public RAG は tools=[] の Web 検索のみ。
           const agentTools = agentModeForThisSend ? turnAgentToolsSnapshot : [];
-          // Web検索設定はpublic RAGにだけ渡す。private Agentでは常にnull。
-          // Phase 2: 永続設定 (settingsStore の ai.webSearch.*) のドメイン制御 /
-          // content cap を載せる。
+          // Web検索設定（ai.webSearch.* のドメイン制御と content cap）は public RAG
+          // にだけ渡す。private Agent では常に null。
           const webSearchConfig = webSearchConfigAtTurnStart;
           let parentInputTokenDrift = createInputTokenDriftTotals();
           const agentTextBatcher = createAgentTextBatcher((text) => {
@@ -1300,6 +1302,7 @@ function createChatTurnStoreActions(
                   turnRoute?.resolvedEndpointId ?? null,
                   turnRoute?.toolProtocol ?? null,
                   turnRoute?.resolvedOllamaEndpoint ?? null,
+                  sendControl.abortController.signal,
                 );
                 parentAuditExecutionId = executionId;
                 parentInputTokenDrift = accumulateInputTokenDrift(
@@ -1358,7 +1361,7 @@ function createChatTurnStoreActions(
             cost,
             tokensIn: agentTokensIn,
             tokensOut: agentTokensOut,
-            stoppedReason: agentStoppedReason,
+            outputTruncated,
           } = agentLoopResult;
 
           const stoppedAgentTurnCanFinalize = canFinalizeStoppedAgentTurn();
@@ -1370,13 +1373,14 @@ function createChatTurnStoreActions(
             return await assistantRow.settleAbandoned(currentAgentModel);
           }
 
-          // 上限で打ち切られたターンには「続行」ボタンを出す。質問上限(ask_user)は
-          // 続行対象外（ユーザー回答待ちで止まる性質なので新予算で再開しても無意味）。
-          if (
-            agentStoppedReason === "limit_calls" ||
-            agentStoppedReason === "limit_tokens"
-          ) {
-            set({ agentContinuation: { sessionId: sessionIdForPersist } });
+          const reason = agentContinuationReason(
+            agentLoopResult,
+            agentModeForThisSend && !stoppedAgentTurnCanFinalize,
+          );
+          if (reason) {
+            set({
+              agentContinuation: { sessionId: sessionIdForPersist, reason },
+            });
           }
 
           // 引用の事後検証: 不正 URL を排除 + 本文中の裏付けなし URL を検出。
@@ -1398,6 +1402,7 @@ function createChatTurnStoreActions(
           const finalAgentMetadata = JSON.stringify({
             tool_calls: toolCallRecords,
             ...(stoppedAgentTurnCanFinalize ? { stopped: true } : {}),
+            ...(outputTruncated ? { output_truncated: true } : {}),
             ...(finalThinkingBlocks.length > 0
               ? { thinking_blocks: finalThinkingBlocks }
               : {}),
@@ -1434,7 +1439,7 @@ function createChatTurnStoreActions(
           const agentModel = currentModel || undefined;
           const recoverableAgentAssistant =
             lastMsg?.role === "assistant" &&
-            lastMsg.content &&
+            (lastMsg.content || outputTruncated) &&
             sessionIdForPersist
               ? {
                   ...lastMsg,
@@ -1476,7 +1481,8 @@ function createChatTurnStoreActions(
               }
             },
             ...(sessionIdForPersist &&
-            (lastMsg?.content || assistantRow.reserved)
+            lastMsg?.role === "assistant" &&
+            (lastMsg.content || assistantRow.reserved || outputTruncated)
               ? {
                   persistAssistant: async () => {
                     await assistantRow.persist(
@@ -2063,40 +2069,21 @@ function createChatTurnStoreActions(
                   : null,
               });
 
-              // Build metadata: thinking blocks + stopped flag
-              const metadataObj: Record<string, unknown> = {};
-              if (thinkingAccumulator) {
-                metadataObj.thinking_blocks = [
-                  { thinking: thinkingAccumulator },
-                ];
-              }
-              if (sendControl.transport === "codex-app-server") {
-                metadataObj.runtime = "codex-app-server";
-                metadataObj.usage_source = "app-server";
-                metadataObj.stop_reason = info.stopReason;
-                if (codexThreadId) metadataObj.codex_thread_id = codexThreadId;
-                if (codexTurnId) metadataObj.codex_turn_id = codexTurnId;
-                if (codexItems.size > 0) {
-                  metadataObj.codex_item_ids = [...codexItems.keys()];
-                  metadataObj.codex_items = [...codexItems.values()].map(
-                    (item) => {
-                      const safeItem = { ...item };
-                      delete safeItem.raw;
-                      return safeItem;
-                    },
-                  );
-                }
-                if (codexWarnings.length > 0) {
-                  metadataObj.codex_warnings = codexWarnings;
-                }
-              }
-              if (info.stopReason === "stopped") {
-                metadataObj.stopped = true;
-              }
-              const chatMetadata =
-                Object.keys(metadataObj).length > 0
-                  ? JSON.stringify(metadataObj)
-                  : undefined;
+              // Build metadata: thinking blocks + codex records + stop flags
+              const outputTruncated = isTruncatedStopReason(info.stopReason);
+              const chatMetadata = streamAssistantMetadata({
+                stopReason: info.stopReason,
+                thinking: thinkingAccumulator,
+                codex:
+                  sendControl.transport === "codex-app-server"
+                    ? {
+                        threadId: codexThreadId,
+                        turnId: codexTurnId,
+                        items: codexItems,
+                        warnings: codexWarnings,
+                      }
+                    : null,
+              });
 
               // draft を一度だけ確定 messages へ移し、以後は通常 message として扱う。
               finalizeStreamingDraft(chatMetadata);
@@ -2158,7 +2145,7 @@ function createChatTurnStoreActions(
               turnCoordinator.transition(sendControl, "persisting");
               const recoverableAssistant =
                 lastMsg?.role === "assistant" &&
-                lastMsg.content &&
+                (lastMsg.content || outputTruncated) &&
                 sessionIdForPersist
                   ? {
                       ...lastMsg,
@@ -2207,7 +2194,7 @@ function createChatTurnStoreActions(
                 },
                 ...(sessionIdForPersist &&
                 lastMsg?.role === "assistant" &&
-                lastMsg.content
+                (lastMsg.content || outputTruncated)
                   ? {
                       persistAssistant: async () => {
                         await chatApi.addMessage(

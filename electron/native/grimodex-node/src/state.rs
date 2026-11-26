@@ -2405,6 +2405,7 @@ impl NarrativeMaintenanceAttemptRegistry {
 #[derive(Debug)]
 pub struct StreamCancellation {
     abort: Arc<AtomicBool>,
+    abort_notify: Notify,
     quiesced: AtomicBool,
     quiesced_notify: Notify,
 }
@@ -2413,6 +2414,7 @@ impl StreamCancellation {
     fn new(aborted: bool) -> Self {
         Self {
             abort: Arc::new(AtomicBool::new(aborted)),
+            abort_notify: Notify::new(),
             quiesced: AtomicBool::new(false),
             quiesced_notify: Notify::new(),
         }
@@ -2424,6 +2426,19 @@ impl StreamCancellation {
 
     fn request_abort(&self) {
         self.abort.store(true, Ordering::Release);
+        self.abort_notify.notify_waiters();
+    }
+
+    pub async fn wait_abort_requested(&self) {
+        loop {
+            let notified = self.abort_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.abort.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
     }
 
     fn mark_quiesced(&self) {
@@ -2434,6 +2449,8 @@ impl StreamCancellation {
     async fn wait_quiesced(&self) {
         loop {
             let notified = self.quiesced_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if self.quiesced.load(Ordering::Acquire) {
                 return;
             }
@@ -2617,6 +2634,7 @@ pub struct AppState {
     /// and is loaded before any renderer or workspace event is published.
     pub profile_egress: ProfileEgressState,
     pub chat_streams: StreamAbortRegistry,
+    pub agent_sends: StreamAbortRegistry,
     pub inline_ai_streams: StreamAbortRegistry,
     /// post-effect run_id 単位の中止レジストリ。start/multi/abort が同じ Backend
     /// インスタンス上で共有し、並走runの一方だけを中止する。
@@ -2851,6 +2869,7 @@ impl AppState {
             ai_settings_path: dir.join("ai-settings.json"),
             profile_egress: ProfileEgressState::new(dir.join("profile-egress.json"))?,
             chat_streams: StreamAbortRegistry::new(),
+            agent_sends: StreamAbortRegistry::new(),
             inline_ai_streams: StreamAbortRegistry::new(),
             post_effect_abort: grimodex_post_effect::PostEffectAbortRegistry::new(),
             license: Arc::new(grimodex_license::LicenseRuntime::new(

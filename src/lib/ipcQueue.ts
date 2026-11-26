@@ -221,6 +221,33 @@ export function enqueueIpc<T>(
   });
 }
 
+/** Run a turn-control mutation without taking a queue slot, while retaining it in mutation drains. */
+export function enqueueTrackedMutationIpc<T>(
+  cmd: "mastra_agent_turn_answer" | "mastra_agent_turn_cancel",
+  run: () => Promise<T>,
+): Promise<T> {
+  if (mutationAdmissionBarrierCount > 0) {
+    return Promise.reject(mutationCancellationError(cmd));
+  }
+  const actualTask = Promise.resolve().then(run);
+  allActualTasks.set(actualTask, { cmd, category: "mutation" });
+  mutationActualTasks.set(actualTask, cmd);
+  void actualTask.then(
+    () => {
+      allActualTasks.delete(actualTask);
+      mutationActualTasks.delete(actualTask);
+    },
+    (error) => {
+      allActualTasks.delete(actualTask);
+      mutationActualTasks.delete(actualTask);
+      if (auditExportActualTaskTrackingCount > 0) {
+        auditExportActualTaskFailures.add(error);
+      }
+    },
+  );
+  return actualTask;
+}
+
 /**
  * Blocks new read IPC for the lifetime of a destructive lifecycle authority
  * lease. Existing reads are detached by the final IPC quiescence stage; the

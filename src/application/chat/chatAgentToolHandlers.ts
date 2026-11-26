@@ -58,6 +58,7 @@ interface ChatResearchSubagentOptions {
   assertTurnAuthority: () => void;
   isCurrentTurn: () => boolean;
   shouldAbortTurn: () => boolean;
+  signal: AbortSignal;
   getParentAuditExecutionId: () => string | null;
   resolveTransportOverride: () => ResearchTransportOverride;
   turnRoute: ResolvedChatTurnRoute | null;
@@ -86,6 +87,7 @@ export function createChatResearchSubagentHandler({
   assertTurnAuthority,
   isCurrentTurn,
   shouldAbortTurn,
+  signal,
   getParentAuditExecutionId,
   resolveTransportOverride,
   turnRoute,
@@ -191,6 +193,7 @@ export function createChatResearchSubagentHandler({
             turnRoute?.resolvedEndpointId ?? null,
             turnRoute?.toolProtocol ?? null,
             turnRoute?.resolvedOllamaEndpoint ?? null,
+            signal,
           );
           researchAuditExecutionId = executionId;
           researchInputTokenDrift = accumulateInputTokenDrift(
