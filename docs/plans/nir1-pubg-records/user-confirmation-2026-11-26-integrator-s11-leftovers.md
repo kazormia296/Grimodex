@@ -38,3 +38,18 @@
   - 統合者の読み：Mastra の PR は、他の lane の 2 本の枠に数えない。
 - 問 4 の理由（20:03、統合者の会話でユーザーが直接述べた。原文）：「MastraのlaneはSessionTasksのlaneのクリティカルパスになってるので例外です」
   - 統合者の読み：例外の理由は、SessionTasks のクリティカルパスであること。Mastra の PR が他の lane の PR とぶつかったら、Mastra を先に通す。
+
+## 問 5（21:47、統合者の AskUserQuestion。会話のタイトルの自動生成）
+- 経緯：ユーザーの問い（原文）：「Mastraの要約がうんぬんみたいなHeadsUpを消してしまったんですが、いま会話一発目にタイトルを別のセッションで付けてるじゃないですか？あれってMastraの機能でなんとかならないんですかね？」
+  - 統合者の答え：@mastra/core 1.83.0 の Memory に generateTitle（model・instructions・minMessages、data-thread-title の chunk）がある。前提はチャットが Mastra の Memory（MP-7〜10）を通ること。request は別に 1 回走る。役割別のモデル設定・使用量の記録・監査の経路・保存先を引き継ぐ必要がある。
+- 問い（原文）：「会話のタイトルの自動生成を、Mastra の Memory の generateTitle に置き換える件を、どう扱いますか？今は generateSessionTitle が別の 1 回の request を送っています。Mastra に任せても request は別に 1 回走ります。置き換えには、チャットが Mastra の Memory（MP-7〜10）を通っていることが前提です。役割別のモデル設定・使用量の記録・監査の経路も引き継ぐ必要があります。」
+- 選択肢：「Mastra の lane の候補に足す (Recommended)」（説明：MP-7〜10 の後の候補として積む。保存先・使用量の記録・モデル設定の引き継ぎの設計は、担当が起案してから伺う。今の MP-7〜10 の範囲は広げない）／「MP-7〜10 に含める」／「今のまま」
+- 回答：「Mastra の lane の候補に足す (Recommended)」
+
+## 問 6（21:47、統合者の AskUserQuestion。Codex の JSON の取り込みの不具合）
+- 背景：Pub-G Gap（grimodex-3e）の報告で、統合者は自分では確かめていない。Codex の JSON の取り込み（importCodexEntries）が、実 Electron で entry ごとに失敗する。取り込みは entity_tags_set を authorityRoute "import-apply" で送るが、Main の再検証（electron/shared/ipcContract.ts:4139 の requireEntityTagsSetPayload）が "human-direct" だけを許すので拒まれ、rollback される。#530／#532 から。
+- 問い（原文）：「Codex の JSON の取り込みが、実 Electron で entry ごとに失敗する不具合が見つかりました（Pub-G Gap の報告。#530／#532 からで、公開版にも入っている見込み）。取り込みは tag の設定を route "import-apply" で送ります。ところが Main の再検証（ipcContract.ts:4139）が「human-direct」だけを許しているので、拒まれて rollback されます。Native の側は route を絞っていない見込みです。直し方をどうしますか？」
+- 選択肢：「Main の許可に import-apply を足す (Recommended)」（説明：entity_tags_set に限って Main が許す route に import-apply を足す。他の取り込みの書き込みがすでに import-apply を許しているかを確かめて揃える。実 Electron の試験で、tag がある場合も無い場合も取り込めることを固める）／「tag が空のときだけ呼ばない」／「今は記録だけ」
+- 回答：「Main の許可に import-apply を足す (Recommended)」
+- 効力：entity_tags_set に限り、Main の authority の許可に import-apply を足すことを、ユーザーが承認した。他の route は広げない。
+- 後の訂正：Pub-G Gap はその後、snippet の件について「公開版には入っていない（v2.0.10 は 08-01、#530 を含む tag は elv2-final だけ）」と報告した。この件も #530／#532 からなので、公開版には入っていない見込み（未確認）。
