@@ -275,7 +275,7 @@ describe("own-data-read ledger (K3/2 区分の構成)", () => {
     expect(ledgers.internal).not.toContain("chat_agent_ir_select");
   });
 
-  it("classifies the Mastra agent turn: the start is denied as old-external-ai, the cancel is a stop and internal (MP-3b, DR-MP3-11)", async () => {
+  it("classifies the Mastra turn: start is provider-bound, cancel is stop, and answer is internal (MP-3b / MP-5a)", async () => {
     const ledgers = d2aRouteLedgersForTest();
     // The start sends the chat to the user's provider, like send_agent_message.
     expect(ledgers.denied).toContain("mastra_agent_turn_start");
@@ -288,6 +288,9 @@ describe("own-data-read ledger (K3/2 区分の構成)", () => {
     expect(ledgers.stop).toContain("mastra_agent_turn_cancel");
     expect(ledgers.internal).toContain("mastra_agent_turn_cancel");
     expect(ledgers.denied).not.toContain("mastra_agent_turn_cancel");
+    expect(ledgers.internal).toContain("mastra_agent_turn_answer");
+    expect(ledgers.denied).not.toContain("mastra_agent_turn_answer");
+    expect(ledgers.stop).not.toContain("mastra_agent_turn_answer");
     expect(ledgers.stop).toContain("abort_chat_stream");
     expect(ledgers.internal).toContain("abort_chat_stream");
     // The gate: restricted refuses the start and passes the cancel.
@@ -299,12 +302,16 @@ describe("own-data-read ledger (K3/2 区分の構成)", () => {
     expect(() =>
       gate.assertInvoke("mastra_agent_turn_cancel", { callerIdentity }),
     ).not.toThrow();
+    expect(() =>
+      gate.assertInvoke("mastra_agent_turn_answer", { callerIdentity }),
+    ).not.toThrow();
     // Unrestricted passes both.
     const open = await createProfileEgressGate(backend(false));
     const openIdentity = open.issueCallerIdentity(11);
     for (const command of [
       "mastra_agent_turn_start",
       "mastra_agent_turn_cancel",
+      "mastra_agent_turn_answer",
     ]) {
       expect(() =>
         open.assertInvoke(command, { callerIdentity: openIdentity }),

@@ -33,6 +33,7 @@ import { isAgentForeshadowSecretInputSupported } from "../shared/agentForeshadow
 import {
   hasMastraAgentTurnForbiddenKey,
   isMastraAgentTurnCommand,
+  MASTRA_AGENT_TURN_ANSWER_COMMAND,
   mastraAgentTurnRefusalValue,
 } from "../shared/mastraAgentTurnWire.js";
 import type {
@@ -2336,7 +2337,8 @@ export function registerIpcRouter(
         // Main's (the identity below replaces `callerIdentity`, so it is read
         // here, before that).
         const mastraForgedKey =
-          isMastraAgentTurnCommand(cmd) &&
+          (isMastraAgentTurnCommand(cmd) ||
+            cmd === MASTRA_AGENT_TURN_ANSWER_COMMAND) &&
           hasMastraAgentTurnForbiddenKey(rendererSafeArgs);
         const callerIdentity = profileEgress?.issueCallerIdentity(
           event.sender.id,
@@ -2426,6 +2428,9 @@ export function registerIpcRouter(
             };
           }
         }
+        if (cmd === MASTRA_AGENT_TURN_ANSWER_COMMAND && mastraForgedKey) {
+          return { ok: true, value: { status: "refused", reason: "invalid" } };
+        }
         const dispatch = async (args = dispatchArgs): Promise<Envelope> => {
           // D-10 (DR-DA2-18): an admitted stream is recorded until its invoke
           // settles, so stage 2 can send it a typed terminal.
@@ -2437,7 +2442,8 @@ export function registerIpcRouter(
               shell: {
                 ...buildShellCommandHandlers(win),
                 ...injectedHandlers,
-                ...(isMastraAgentTurnCommand(cmd)
+                ...(isMastraAgentTurnCommand(cmd) ||
+                cmd === MASTRA_AGENT_TURN_ANSWER_COMMAND
                   ? mastraAgentTurn.handlersFor({
                       sender: event.sender,
                       win,
