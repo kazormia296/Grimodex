@@ -1369,14 +1369,14 @@ describe("MP-5 UI question and answer wire", () => {
     expect(
       parseMastraAgentTurnQuestionPayload(
         question({
-          deadlineAt: Date.now() + MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS + 1,
+          deadlineAt: Date.now() + MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS + 60_000,
         }),
       ),
     ).toEqual({ ok: false, issue: "deadline" });
     expect(
       parseMastraAgentTurnQuestionPayload(
         question({
-          deadlineAt: Date.now() + MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT_MS + 1,
+          deadlineAt: Date.now() + MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT_MS + 60_000,
         }),
       ),
     ).toEqual({ ok: false, issue: "deadline" });

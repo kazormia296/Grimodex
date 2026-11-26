@@ -1,12 +1,59 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 function source(path: string): string {
   return readFileSync(resolve(__dirname, path), "utf8");
 }
 
+function productImporters(specifier: string): string[] {
+  const root = resolve(__dirname);
+  const importers: string[] = [];
+  const walk = (directory: string) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const full = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name !== "node_modules") walk(full);
+      } else if (
+        /\.tsx?$/u.test(entry.name) &&
+        !/\.test\.tsx?$/u.test(entry.name) &&
+        new RegExp(`from\\s+["'][^"']*${specifier}["']`, "u").test(
+          readFileSync(full, "utf8"),
+        )
+      ) {
+        importers.push(full.slice(root.length + 1));
+      }
+    }
+  };
+  walk(root);
+  return importers;
+}
+
 describe("AI audit startup lazy-import boundaries", () => {
+  it("keeps the Mastra UI responder and its legacy handlers outside startup imports", () => {
+    const responder = source("application/chat/mastraAgentTurnResponder.ts");
+    const runtimeImports = responder
+      .split("\n")
+      .filter((line) => {
+        const trimmed = line.trimStart();
+        return (
+          trimmed.startsWith("import ") && !trimmed.startsWith("import type")
+        );
+      })
+      .join("\n");
+
+    expect(runtimeImports).not.toMatch(
+      /appUiTools|uiOperationTools|settingProposalTools|appHelpTools|chatAgentToolHandlers/u,
+    );
+    expect(responder).toContain('import("@/features/chat/agent/appUiTools")');
+    expect(responder).toContain(
+      'import("@/features/chat/agent/settingProposalTools")',
+    );
+    expect(responder).toContain('import("@/features/chat/agent/appHelpTools")');
+    expect(responder).toContain('import("./chatAgentToolHandlers")');
+    expect(productImporters("mastraAgentTurnResponder")).toEqual([]);
+  });
+
   it("keeps chat execution transports out of the static startup graph", () => {
     const chatApi = source("features/chat/chatApi.ts");
     const turnActions = source("application/chat/chatTurnStoreActions.ts");

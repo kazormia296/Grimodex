@@ -19,6 +19,7 @@ const listenMock = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/tauri", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/tauri")>()),
   invoke: invokeMock,
+  invokeMastraAgentTurnControl: invokeMock,
   listen: listenMock,
 }));
 
@@ -282,6 +283,9 @@ describe("nothing calls the wrapper yet (the engine branch is MP-4)", () => {
           /\.tsx?$/u.test(entry.name) &&
           !/\.test\.tsx?$/u.test(entry.name) &&
           !full.endsWith(join("lib", "mastraAgentTurn.ts")) &&
+          !full.endsWith(
+            join("application", "chat", "mastraAgentTurnResponder.ts"),
+          ) &&
           /mastraAgentTurn["']/u.test(readFileSync(full, "utf8"))
         ) {
           importers.push(full.slice(root.length + 1));

@@ -2,19 +2,17 @@
  * The renderer's wrapper of the two Mastra agent turn commands (MP-3b,
  * DR-MP3-4; wire: `electron/shared/mastraAgentTurnWire.ts`).
  *
- * Nothing calls it yet: the renderer's engine branch is MP-4 (DR-MP3-2), and
- * Main's gate is closed in every product launch, so a start answers
- * `gate-closed` and the legacy route stays the only one. The wrapper holds no
+ * No turn starter reaches it yet: the renderer's engine branch is MP-4
+ * (DR-MP3-2), and Main's gate is closed in every product launch, so a start
+ * answers `gate-closed` and the legacy route stays the only one. The wrapper holds no
  * state and does no retry. A refusal is a value (`ok:true` on the wire); a
  * restricted profile's denial (an error from the profile gate) is folded into
  * the same `restricted` value, as the chat IR wrapper does. Any other failure of
  * the call is the caller's: it is rethrown, never turned into a refusal.
  *
- * Both calls use the router's default lane (a mutation): a start settles when
- * the turn does, so it has no caller timeout. The queue runs four commands at a
- * time, so a cancel is not held behind pending starts only while fewer than four
- * are pending (MP-4 keeps the pending starts under that, or gives the cancel a
- * lane; it is also refused while an audit export freezes mutations).
+ * Start uses the normal mutation queue and has no caller timeout. Answer and
+ * cancel use its tracked turn-control lane so they do not wait for queue slots;
+ * lifecycle drains still wait for their actual IPC settlement.
  */
 import {
   parseMastraAgentTurnCancelResult,
@@ -36,7 +34,12 @@ import {
   MASTRA_AGENT_TURN_PROGRESS_EVENT,
   MASTRA_AGENT_TURN_QUESTION_EVENT,
 } from "@/../electron/shared/ipcContract";
-import { invoke, isD2aEgressDenied, listen } from "@/lib/tauri";
+import {
+  invoke,
+  invokeMastraAgentTurnControl,
+  isD2aEgressDenied,
+  listen,
+} from "@/lib/tauri";
 
 export type MastraAgentTurnStartOutcome =
   | {
@@ -91,9 +94,10 @@ export async function listenMastraAgentTurnQuestion(
 export async function answerMastraAgentTurnQuestion(
   request: MastraAgentTurnAnswerRequest,
 ): Promise<MastraAgentTurnAnswerOutcome> {
-  const raw = await invoke<unknown>(MASTRA_AGENT_TURN_ANSWER_COMMAND, {
-    ...request,
-  });
+  const raw = await invokeMastraAgentTurnControl<unknown>(
+    MASTRA_AGENT_TURN_ANSWER_COMMAND,
+    { ...request },
+  );
   const answer = parseMastraAgentTurnAnswerResult(raw);
   if (answer === null) return { kind: "invalid-response" };
   return answer.status === "accepted"
@@ -170,9 +174,10 @@ export async function startMastraAgentTurn(
 export async function cancelMastraAgentTurn(
   request: MastraAgentTurnCancelRequest,
 ): Promise<MastraAgentTurnCancelOutcome> {
-  const raw = await invoke<unknown>("mastra_agent_turn_cancel", {
-    turnId: request.turnId,
-  });
+  const raw = await invokeMastraAgentTurnControl<unknown>(
+    "mastra_agent_turn_cancel",
+    { turnId: request.turnId },
+  );
   const answer = parseMastraAgentTurnCancelResult(raw);
   if (answer === null) return { kind: "invalid-response" };
   if (answer.status === "refused") {
