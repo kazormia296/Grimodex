@@ -2266,7 +2266,7 @@ describe("useChatStore", () => {
         useChatStore.setState({
           activeSessionId: "session-1",
           sessions: [session1],
-          agentContinuation: { sessionId: "session-1" },
+          agentContinuation: { sessionId: "session-1", reason: "limit" },
           sendMessage,
           ...loadingState,
         });
@@ -2277,6 +2277,7 @@ describe("useChatStore", () => {
           expect(sendMessage).not.toHaveBeenCalled();
           expect(useChatStore.getState().agentContinuation).toEqual({
             sessionId: "session-1",
+            reason: "limit",
           });
         } finally {
           useChatStore.setState({ sendMessage: originalSendMessage });
@@ -2412,7 +2413,10 @@ describe("useChatStore", () => {
         type ProjectRow = Awaited<ReturnType<typeof projectApi.getProject>>;
         const pendingProject = deferred<ProjectRow>();
         mockGetProject.mockReturnValueOnce(pendingProject.promise);
-        const continuation = { sessionId: session1.id };
+        const continuation = {
+          sessionId: session1.id,
+          reason: "limit" as const,
+        };
         const originalSendMessage = useChatStore.getState().sendMessage;
         const sendMessage = vi.fn(async () => {});
         useChatStore.setState({
@@ -4004,6 +4008,204 @@ describe("useChatStore", () => {
       expect(messages[1].role).toBe("assistant");
       expect(messages[1].content).toBe("こんにちは！");
       expect(isStreaming).toBe(false);
+    });
+
+    it.each([
+      ["max_tokens", true],
+      ["end_turn", false],
+    ])(
+      "stores stream truncation for stopReason=%s",
+      async (stopReason, truncated) => {
+        useChatStore.setState({
+          sessions: [session1],
+          activeSessionId: session1.id,
+        });
+        mockSendChatMessageStream.mockImplementationOnce(
+          async (_messages, _params, callbacks: StreamCallbacks) => {
+            callbacks.onTextDelta("answer");
+            callbacks.onDone({ stopReason });
+            return () => {};
+          },
+        );
+
+        await useChatStore.getState().sendMessage("question");
+
+        const assistant = useChatStore.getState().messages.at(-1)!;
+        const metadata = JSON.parse(assistant.metadata ?? "{}");
+        if (truncated) {
+          expect(metadata.output_truncated).toBe(true);
+          expect(mockAddMessage).toHaveBeenCalledWith(
+            session1.id,
+            "assistant",
+            "answer",
+            expect.objectContaining({
+              metadata: expect.stringContaining('"output_truncated":true'),
+            }),
+          );
+        } else {
+          expect(metadata).not.toHaveProperty("output_truncated");
+        }
+      },
+    );
+
+    it("persists an empty truncated stream row but excludes it from the next send history", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+      });
+      mockSendChatMessageStream.mockImplementationOnce(
+        async (_messages, _params, callbacks: StreamCallbacks) => {
+          callbacks.onDone({ stopReason: "max_tokens" });
+          return () => {};
+        },
+      );
+
+      await useChatStore.getState().sendMessage("cut off");
+
+      const truncatedAssistant = useChatStore.getState().messages.at(-1)!;
+      expect(truncatedAssistant).toMatchObject({
+        role: "assistant",
+        content: "",
+      });
+      expect(JSON.parse(truncatedAssistant.metadata ?? "{}")).toMatchObject({
+        output_truncated: true,
+      });
+      expect(mockAddMessage).toHaveBeenCalledWith(
+        session1.id,
+        "assistant",
+        "",
+        expect.objectContaining({
+          metadata: expect.stringContaining('"output_truncated":true'),
+        }),
+      );
+
+      mockStreamResponse("next answer");
+      await useChatStore.getState().sendMessage("next question");
+
+      expect(mockSendChatMessageStream.mock.calls[1]?.[0]).not.toContainEqual(
+        expect.objectContaining({ role: "assistant", content: "" }),
+      );
+    });
+
+    it("persists Agent truncation metadata and offers an output continuation", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      const activeSession = configurePlainCaptureTurn();
+      useChatStore.setState({
+        agentMode: true,
+        ragEnabled: false,
+        sessionAgentToolsSnapshot: null,
+      });
+      installChatCaptureBridge(async () => ({ ok: true, value: [] }));
+      mockSendAgentMessage.mockResolvedValueOnce({
+        blocks: [{ type: "text", content: "partial answer" }],
+        stopReason: "max_tokens",
+      });
+
+      try {
+        await useChatStore.getState().sendMessage("Agent question");
+
+        const assistant = useChatStore.getState().messages.at(-1)!;
+        expect(JSON.parse(assistant.metadata ?? "{}")).toMatchObject({
+          output_truncated: true,
+        });
+        expect(useChatStore.getState().agentContinuation).toEqual({
+          sessionId: activeSession.id,
+          reason: "output",
+        });
+        expect(mockAddMessage).toHaveBeenCalledWith(
+          activeSession.id,
+          "assistant",
+          "partial answer",
+          expect.objectContaining({
+            metadata: expect.stringContaining('"output_truncated":true'),
+          }),
+        );
+      } finally {
+        useChatStore.setState({ agentMode: false, ragEnabled: false });
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("does not offer Agent continuation when the user stops during a truncated response", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      configurePlainCaptureTurn();
+      useChatStore.setState({
+        agentMode: true,
+        ragEnabled: false,
+        sessionAgentToolsSnapshot: null,
+      });
+      installChatCaptureBridge(async () => ({ ok: true, value: [] }));
+      const response =
+        deferred<Awaited<ReturnType<typeof chatApi.sendAgentMessage>>>();
+      mockSendAgentMessage.mockReturnValueOnce(response.promise);
+
+      try {
+        const send = useChatStore.getState().sendMessage("Stop Agent");
+        await vi.waitFor(() =>
+          expect(mockSendAgentMessage).toHaveBeenCalledOnce(),
+        );
+        useChatStore.getState().stopGeneration();
+        response.resolve({
+          blocks: [{ type: "text", content: "partial answer" }],
+          stopReason: "max_tokens",
+        });
+        await send;
+
+        expect(useChatStore.getState().agentContinuation).toBeNull();
+        expect(
+          JSON.parse(useChatStore.getState().messages.at(-1)?.metadata ?? "{}"),
+        ).toMatchObject({ stopped: true });
+        expect(
+          JSON.parse(useChatStore.getState().messages.at(-1)?.metadata ?? "{}"),
+        ).not.toHaveProperty("output_truncated");
+      } finally {
+        useChatStore.setState({ agentMode: false, ragEnabled: false });
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("labels an Agent call-limit continuation as limit", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      const activeSession = configurePlainCaptureTurn();
+      useChatStore.setState({
+        agentMode: true,
+        ragEnabled: false,
+        sessionAgentToolsSnapshot: null,
+      });
+      installChatCaptureBridge(async () => ({ ok: true, value: [] }));
+      for (let index = 0; index < 10; index++) {
+        mockSendAgentMessage.mockResolvedValueOnce({
+          blocks: [
+            {
+              type: "tool_use",
+              id: `tool-${index}`,
+              name: "search_codex",
+              input: { query: "continuation limit test" },
+            },
+          ],
+          stopReason: "tool_use",
+        });
+      }
+      mockSendAgentMessage.mockResolvedValueOnce({
+        blocks: [{ type: "text", content: "limited answer" }],
+        stopReason: "end_turn",
+      });
+
+      try {
+        await useChatStore.getState().sendMessage("Agent search");
+
+        expect(mockSendAgentMessage).toHaveBeenCalledTimes(11);
+        expect(useChatStore.getState().agentContinuation).toEqual({
+          sessionId: activeSession.id,
+          reason: "limit",
+        });
+      } finally {
+        useChatStore.setState({ agentMode: false, ragEnabled: false });
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
     });
 
     it("keeps a switch waiting for the chat turn stopped by its confirmation", async () => {
@@ -7685,7 +7887,7 @@ describe("useChatStore", () => {
       }
     });
 
-    it("public RAGはprivate historyを除外しつつcommandInstructionを保持する", async () => {
+    it("public RAG excludes private history and records truncation without Agent continuation", async () => {
       useAiSettingsStore.setState({
         settings: {
           ...DEFAULT_AI_SETTINGS,
@@ -7701,8 +7903,8 @@ describe("useChatStore", () => {
         ragEnabled: true,
       });
       mockSendAgentMessage.mockResolvedValueOnce({
-        blocks: [{ type: "text", content: "public answer" }],
-        stopReason: "end_turn",
+        blocks: [{ type: "text", content: "public partial answer" }],
+        stopReason: "max_tokens",
       });
 
       try {
@@ -7720,6 +7922,20 @@ describe("useChatStore", () => {
           content: "public question",
         });
         expect(JSON.stringify(sentMessages)).not.toContain("PRIVATE HISTORY");
+        const assistant = useChatStore.getState().messages.at(-1)!;
+        expect(JSON.parse(assistant.metadata ?? "{}")).toMatchObject({
+          output_truncated: true,
+        });
+        expect(useChatStore.getState().agentContinuation).toBeNull();
+        expect(mockSendAgentMessage.mock.calls[0]?.[1]).toEqual([]);
+        expect(mockAddMessage).toHaveBeenCalledWith(
+          session1.id,
+          "assistant",
+          "public partial answer",
+          expect.objectContaining({
+            metadata: expect.stringContaining('"output_truncated":true'),
+          }),
+        );
       } finally {
         useChatStore.setState({ agentMode: false, ragEnabled: false });
         useAiSettingsStore.setState({ settings: null });

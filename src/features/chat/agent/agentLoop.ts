@@ -11,6 +11,7 @@ import type {
   Citation,
   AgentToolAuthorization,
 } from "./agentTypes";
+import { isTruncatedStopReason } from "./agentTypes";
 import { ensureTokenizer, countTokens } from "../contextBuilder";
 import { beginAgentToolTurn } from "./toolTurnCache";
 
@@ -98,6 +99,8 @@ export interface AgentLoopResult {
   tokensIn: number | null;
   /** 全ターンの出力トークン合計（N4。取得不可なら null）。 */
   tokensOut: number | null;
+  /** 最後の provider 応答が出力上限で切られた。 */
+  outputTruncated: boolean;
   /**
    * ループがなぜ止まったか。"limit_*" のとき UI は「続行」ボタンを出し、
    * ユーザーが新しい予算でターンを再開できるようにする。
@@ -199,6 +202,7 @@ export async function runAgentLoop(
   const result = (
     finalText: string,
     finalThinkingBlocks: ThinkingBlock[],
+    outputTruncated = false,
   ): AgentLoopResult => ({
     finalText,
     toolCallRecords,
@@ -207,6 +211,8 @@ export async function runAgentLoop(
     cost,
     tokensIn,
     tokensOut,
+    // 停止を求められた turn の途中で切れた応答は、打ち切りとして扱わない。
+    outputTruncated: outputTruncated && !aborted && !options.shouldAbort?.(),
     stoppedReason: aborted ? "aborted" : (limitReason ?? "completed"),
   });
 
@@ -226,11 +232,9 @@ export async function runAgentLoop(
 
     const currentThinkingBlocks = extractThinkingBlocks(response.blocks);
 
-    if (
-      response.stopReason === "end_turn" ||
-      response.stopReason === "max_tokens"
-    ) {
-      return result(textContent, currentThinkingBlocks);
+    const truncated = isTruncatedStopReason(response.stopReason);
+    if (response.stopReason === "end_turn" || truncated) {
+      return result(textContent, currentThinkingBlocks, truncated);
     }
 
     if (response.stopReason !== "tool_use") {

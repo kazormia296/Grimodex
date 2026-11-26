@@ -43,6 +43,7 @@ import { ContextBar } from "./components/ContextBar";
 import { roleSettingKey, ROLE_PROVIDERS_KEY } from "./modelRouting";
 import { canAttemptContextCreator } from "./contextCreatorApi";
 import { resolvedChatTurnRouteAuthorityKey } from "./turn/resolveTurnRoute";
+import "./outputTruncationTranslations";
 import { computeSpotlightCandidates } from "./spotlightSuggestion";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import * as chatApi from "./chatApi";
@@ -1395,7 +1396,11 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
               {t("chat.agentContinue")}
             </button>
             <p className="mt-1 text-[11px] text-muted-foreground">
-              {t("chat.agentContinueHint")}
+              {t(
+                agentContinuation.reason === "output"
+                  ? "chat.agentContinueOutputHint"
+                  : "chat.agentContinueHint",
+              )}
             </p>
           </div>
         )}

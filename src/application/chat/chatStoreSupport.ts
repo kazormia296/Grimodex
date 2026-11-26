@@ -4,6 +4,8 @@ import i18next from "@/lib/i18n";
 import { rootCause } from "@/lib/debugLog";
 import { isD2aEgressDenied } from "@/lib/tauri";
 import type { ProjectContext } from "@/features/chat/contextBuilder";
+import { isTruncatedStopReason } from "@/features/chat/agent/agentTypes";
+import type { CodexAppItem } from "@/features/chat/codexAppApi";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { fetchProjectContext as fetchProjectContextAtom } from "@/features/project/contextAtoms";
 import { readDocumentRuntimeTarget } from "@/runtime/runtimeDocumentTarget";
@@ -144,3 +146,71 @@ export {
   sendableHistory,
   parseMetadataRecord,
 } from "./chatAssistantRowReservation";
+
+export { isTruncatedStopReason };
+
+/**
+ * Agent の turn の後に出す「続行」の理由。上限で打ち切られた turn には出し、
+ * 質問上限(ask_user)は対象外（回答待ちで止まるので新予算で再開しても無意味）。
+ * 出力の打ち切りの続行は `outputContinuable`（Agent モードで停止していない turn）
+ * のときだけ出す。続行は Agent モードを強制するので、道具の無い公開の Web 検索の
+ * turn に出すと作品を読む経路に変わる。
+ */
+export function agentContinuationReason(
+  result: { outputTruncated: boolean; stoppedReason: string },
+  outputContinuable: boolean,
+): "output" | "limit" | null {
+  if (result.outputTruncated) return outputContinuable ? "output" : null;
+  return result.stoppedReason === "limit_calls" ||
+    result.stoppedReason === "limit_tokens"
+    ? "limit"
+    : null;
+}
+
+/**
+ * stream の応答の行の metadata。thinking、codex app-server の記録、停止と
+ * 出力の打ち切りの印をまとめる。何も無ければ undefined。
+ */
+export function streamAssistantMetadata(input: {
+  stopReason: string;
+  thinking: string;
+  codex: {
+    threadId: string | undefined;
+    turnId: string | undefined;
+    items: Map<string, CodexAppItem>;
+    warnings: string[];
+  } | null;
+}): string | undefined {
+  const metadataObj: Record<string, unknown> = {};
+  if (input.thinking) {
+    metadataObj.thinking_blocks = [{ thinking: input.thinking }];
+  }
+  const codex = input.codex;
+  if (codex) {
+    metadataObj.runtime = "codex-app-server";
+    metadataObj.usage_source = "app-server";
+    metadataObj.stop_reason = input.stopReason;
+    if (codex.threadId) metadataObj.codex_thread_id = codex.threadId;
+    if (codex.turnId) metadataObj.codex_turn_id = codex.turnId;
+    if (codex.items.size > 0) {
+      metadataObj.codex_item_ids = [...codex.items.keys()];
+      metadataObj.codex_items = [...codex.items.values()].map((item) => {
+        const safeItem = { ...item };
+        delete safeItem.raw;
+        return safeItem;
+      });
+    }
+    if (codex.warnings.length > 0) {
+      metadataObj.codex_warnings = codex.warnings;
+    }
+  }
+  if (input.stopReason === "stopped") {
+    metadataObj.stopped = true;
+  }
+  if (isTruncatedStopReason(input.stopReason)) {
+    metadataObj.output_truncated = true;
+  }
+  return Object.keys(metadataObj).length > 0
+    ? JSON.stringify(metadataObj)
+    : undefined;
+}

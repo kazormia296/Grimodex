@@ -252,6 +252,7 @@ function resetStore() {
     activeSceneId: "",
     activeSessionId: null,
     inputPinnedEntryIds: [],
+    agentContinuation: null,
   });
   useTreeStore.setState({ projectId: "proj-1", activeSceneId: "" });
   useProjectStore.setState({ currentProjectId: "proj-1", projects: [] });
@@ -618,6 +619,21 @@ describe("ChatPanel", () => {
     expect(
       screen.queryByRole("button", { name: /送信/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["output", /必要な情報を読み直して/],
+    ["limit", /新しい予算で続きを実行します/],
+  ] as const)("続行の説明は止まった理由で変わる: %s", (reason, hint) => {
+    useChatStore.setState({
+      activeSessionId: "s1",
+      agentContinuation: { sessionId: "s1", reason },
+    });
+
+    render(<ChatPanel />);
+
+    expect(screen.getByRole("button", { name: "続行" })).toBeInTheDocument();
+    expect(screen.getByText(hint)).toBeInTheDocument();
   });
 
   it("queues approval requests and clears only the answered request", () => {

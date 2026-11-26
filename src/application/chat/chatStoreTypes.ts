@@ -235,11 +235,14 @@ export interface ChatState {
    */
   subAgentProgress: AgentLoopProgress | null;
   /**
-   * 直近のエージェントターンがツール呼び出し/トークン上限で打ち切られたとき、
-   * 「続行」ボタンを出すための状態。新しい予算でターンを再開できる。
+   * 直近のエージェントターンが呼び出し/トークン上限または出力上限で止まったとき、
+   * 「続行」ボタンを出すための状態。reason で停止理由を区別する。
    * 新規送信の冒頭でクリアする（ボタンは最新ターンに対してのみ出す）。
    */
-  agentContinuation: { sessionId: string | null } | null;
+  agentContinuation: {
+    sessionId: string | null;
+    reason: "limit" | "output";
+  } | null;
   setAgentMode: (on: boolean) => void;
   /**
    * 「続行」: 上限で打ち切られたターンを新しい予算で再開する。

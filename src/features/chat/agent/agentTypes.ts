@@ -98,6 +98,12 @@ export interface AgentLLMResponse {
   cacheWriteTokens?: number;
 }
 
+export function isTruncatedStopReason(
+  reason: string | null | undefined,
+): boolean {
+  return reason === "max_tokens" || reason === "length";
+}
+
 export interface AgentAuthorityCapabilityGrant {
   /** Opaque capability issued by Electron main. */
   readonly capability: string;

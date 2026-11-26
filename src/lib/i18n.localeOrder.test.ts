@@ -66,6 +66,13 @@ const FEATURE_TRANSLATIONS: ReadonlyArray<{
       ).ensureBodyDeclarationTranslations(),
   },
   {
+    file: "features/chat/outputTruncationTranslations.ts",
+    install: async () =>
+      (
+        await import("@/features/chat/outputTruncationTranslations")
+      ).ensureOutputTruncationTranslations(),
+  },
+  {
     file: "application/lifecycle/chatStopConfirmTranslations.ts",
     install: async () =>
       (
