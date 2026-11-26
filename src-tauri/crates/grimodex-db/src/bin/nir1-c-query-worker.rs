@@ -23,7 +23,7 @@ use std::{
 };
 
 #[global_allocator]
-// SAFETY: the only allocator of the product slots.
+// SAFETY: the only allocator that uses the product slots.
 static WORKER_ALLOCATOR: ProductAllocator = unsafe { WorkerAllocator::new() };
 
 #[derive(Clone, Copy)]

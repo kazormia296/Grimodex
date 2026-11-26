@@ -242,8 +242,9 @@ impl<Q: QuerySlot, S: ScratchSlot> Drop for ScratchScopeGuard<'_, Q, S> {
 
 impl<Q: QuerySlot, S: ScratchSlot> WorkerAllocator<Q, S> {
     /// # Safety
-    /// At most one allocator may exist for a slot pair: the allocator claims
-    /// the slots' regions, and a second one would claim them again.
+    /// At most one allocator may use each slot: the allocator claims its
+    /// slots' regions, and another allocator sharing either slot would claim
+    /// that region again.
     pub const unsafe fn new() -> Self {
         Self {
             query_once: Once::new(),
@@ -754,7 +755,7 @@ mod tests {
 
     region_slot!(TestQuery: QuerySlot, QUERY_DATA);
     region_slot!(TestScratch: ScratchSlot, SCRATCH_DATA);
-    // SAFETY: the only allocator of the test slots.
+    // SAFETY: the only allocator that uses the test slots.
     static TEST_ALLOCATOR: WorkerAllocator<TestQuery, TestScratch> =
         unsafe { WorkerAllocator::new() };
 
@@ -1066,8 +1067,9 @@ mod tests {
                 assert!(a + a_len <= b || b + b_len <= a, "region statics overlap");
             }
         }
-        // N depends on the arena's start modulo Talc's 32-byte chunk unit; the
-        // claimed lengths are the capacity.
+        // The claimed lengths are the capacity. Talc trims each arena's ends to
+        // its 32-byte chunk unit; a region keeps its arena at the same offset,
+        // so that trim, and N, do not move with the link layout.
         eprintln!(
             "Q/S claim: QUERY_DATA={QUERY_DATA} B, SCRATCH_DATA={SCRATCH_DATA} B, Q start mod 32={}, S start mod 32={}, S footprint={SCRATCH_FOOTPRINT} B",
             TestQuery::region().backing.get() as usize % 32,
