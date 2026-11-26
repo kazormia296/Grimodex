@@ -70,8 +70,16 @@ import {
 import {
   createM4ReadToolDefinitions,
   M4_READ_TOOL_NAMES,
+  type AgentReadToolDefinition,
   type M4ReadToolName,
 } from "../shared/agentReadToolDefinitions.js";
+import {
+  createMastraUiToolDefinitions,
+  MASTRA_UI_TOOL_NAMES,
+  MAX_UI_OPERATIONS_PER_TURN,
+  UI_OPERATION_TOOL_NAMES,
+  type MastraUiToolName,
+} from "../shared/mastraUiToolDefinitions.js";
 import type * as MastraTurnReadBindings from "./mastraTurnReadBindings.js";
 import type { CoreTokenizer } from "../shared/mastraRead/tokenizer.js";
 import { isAgentModelError } from "./mastra/agentModelPolicy.js";
@@ -1152,18 +1160,36 @@ export function createMastraTurnOwner(
     }
     const tokenizer = options.tokenizer;
     if (!tokenizer) return refusal("unsupported");
-    // MP-5a admits the shared UI names on the wire, but this owner still only
-    // binds M4 until the MP-5d tool connection is implemented.
-    const toolDefinitions: ReturnType<typeof createM4ReadToolDefinitions> = [];
+    const uiTools = request.tools.some((name) =>
+      (MASTRA_UI_TOOL_NAMES as readonly string[]).includes(name),
+    )
+      ? new Map(
+          createMastraUiToolDefinitions().map((tool) => [tool.name, tool]),
+        )
+      : null;
+    const toolDefinitions: AgentReadToolDefinition[] = [];
+    const readToolDefinitions: AgentReadToolDefinition[] = [];
     const readToolNames: M4ReadToolName[] = [];
+    const uiToolNames: MastraUiToolName[] = [];
     for (const name of request.tools) {
-      const definition = m4Tools.get(name);
       const readToolName = M4_READ_TOOL_NAMES.find(
         (candidate) => candidate === name,
       );
-      if (!definition || !readToolName) return refusal("invalid");
+      if (readToolName) {
+        const definition = m4Tools.get(name);
+        if (!definition) return refusal("invalid");
+        toolDefinitions.push(definition);
+        readToolDefinitions.push(definition);
+        readToolNames.push(readToolName);
+        continue;
+      }
+      const uiToolName = MASTRA_UI_TOOL_NAMES.find(
+        (candidate) => candidate === name,
+      );
+      const definition = uiToolName ? uiTools?.get(uiToolName) : undefined;
+      if (!uiToolName || !definition) return refusal("invalid");
       toolDefinitions.push(definition);
-      readToolNames.push(readToolName);
+      uiToolNames.push(uiToolName);
     }
 
     let rejectForced: (error: Error) => void = () => undefined;
@@ -1289,7 +1315,7 @@ export function createMastraTurnOwner(
       }
       if (!tokenizerReady) return refusal("unsupported");
       let readBindingsModule: typeof MastraTurnReadBindings | null = null;
-      if (request.tools.length > 0) {
+      if (readToolNames.length > 0) {
         const loaded = await Promise.race([
           loadReadBindings().then(
             (module) => ({ module }),
@@ -1335,7 +1361,7 @@ export function createMastraTurnOwner(
       // The identity, the profile or a stop may have changed during the await.
       assertLive(turn);
       const turnReadBindings =
-        request.tools.length === 0
+        readToolNames.length === 0
           ? null
           : await readBindingsModule!.createTurnReadBindings({
               backend: options.backend!,
@@ -1345,8 +1371,50 @@ export function createMastraTurnOwner(
               projectId: turn.projectId,
               currentSceneId: turn.currentSceneId,
               tokenizer,
-              toolDefinitions,
+              toolDefinitions: readToolDefinitions,
             });
+      let uiOperationAttempts = 0;
+      const uiToolResults = new Map<string, MastraAgentTurnUiToolResult>();
+      const uiToolBindings = uiToolNames.map((name) => {
+        const definition = uiTools?.get(name);
+        if (!definition) throw new Error("MASTRA_AGENT_UI_TOOL_MISSING");
+        return {
+          name,
+          description: definition.description,
+          execute: async (
+            args: unknown,
+            { toolCallId }: { toolCallId: string },
+          ) => {
+            if ((UI_OPERATION_TOOL_NAMES as readonly string[]).includes(name)) {
+              uiOperationAttempts += 1;
+              if (uiOperationAttempts > MAX_UI_OPERATIONS_PER_TURN) {
+                const message = `UI operation limit reached (${MAX_UI_OPERATIONS_PER_TURN} per response). Do not operate the UI further; tell the user what you did and that they can undo it from the tool result.`;
+                throw new Error(message);
+              }
+            }
+            const result = await requestUiTool(
+              turn.turnId,
+              toolCallId,
+              name,
+              args as Readonly<Record<string, unknown>>,
+            );
+            uiToolResults.set(toolCallId, result);
+            if (result.error) throw new Error(result.error);
+            return {
+              text:
+                result.content == null
+                  ? result.summary || "No result (not found)."
+                  : JSON.stringify(result.content),
+              summary: result.summary,
+              tokensUsed: result.tokensUsed,
+            };
+          },
+        };
+      });
+      const bindings = [
+        ...(turnReadBindings?.bindings ?? []),
+        ...uiToolBindings,
+      ];
       const run = runtime.runTurn({
         instructions: split.instructions,
         messages: split.messages,
@@ -1370,7 +1438,9 @@ export function createMastraTurnOwner(
           });
         },
         toolDefinitions,
-        bindings: turnReadBindings?.bindings ?? [],
+        bindings: request.tools.map(
+          (name) => bindings.find((binding) => binding.name === name)!,
+        ),
         isToolDeclared: (name) => declaredToolNames.has(name),
         isTurnStopped: () => {
           if (turn.finished) return true;
@@ -1550,15 +1620,24 @@ export function createMastraTurnOwner(
           }
           if (completedToolCallIds.has(toolCallId)) return;
           completedToolCallIds.add(toolCallId);
-          loopState = recordToolResultTokens(loopState, tokens);
+          const uiResult = uiToolResults.get(toolCallId);
+          uiToolResults.delete(toolCallId);
+          loopState = recordToolResultTokens(
+            loopState,
+            uiResult?.tokensUsed ?? tokens,
+          );
           const recordIndex = toolCallRecordIndexes.get(toolCallId);
           if (recordIndex !== undefined) {
             const record = toolCallRecords[recordIndex];
             if (record && record.name === toolName) {
               toolCallRecords[recordIndex] = {
                 ...record,
-                resultSummary: summary,
-                tokensUsed: tokens,
+                resultSummary: uiResult?.summary ?? summary,
+                tokensUsed: uiResult?.tokensUsed ?? tokens,
+                ...(uiResult?.undoId ? { undoId: uiResult.undoId } : {}),
+                ...(uiResult?.settingProposal && !uiResult.error
+                  ? { settingProposal: uiResult.settingProposal }
+                  : {}),
               };
             }
           }
