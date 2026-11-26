@@ -396,7 +396,8 @@ describe("Chronicle bulk approve (BAO/1)", () => {
             }),
           ]),
         );
-        expect(await pending).toBe(false);
+        // Superseded, not failed: the newer read owns the screen.
+        expect(await pending).toBe(true);
         expect(rowsInStore()[0]).toMatchObject({
           status: "rejected",
           redecide: removed,

@@ -1048,6 +1048,53 @@ describe("ChronicleProposalReview: approve again (SRD/1 RA7)", () => {
     ).toHaveTextContent("1 件を承認し直しました。");
   });
 
+  it("shows the proposal as imported again once the re-read says it was approved", async () => {
+    useChronicleExtractionStore.getState().setProjection(
+      projection([
+        proposal({
+          status: "rejected",
+          application: APPLICATION,
+          redecide: removed(),
+        }),
+      ]),
+    );
+    // The command re-reads the review itself; stand in for that re-read.
+    reapproveMock.mockImplementationOnce(async () => {
+      const store = useChronicleExtractionStore.getState();
+      const current = store.projection!;
+      store.setProjection({
+        ...current,
+        proposals: current.proposals.map((item) => ({
+          ...item,
+          status: "approved" as const,
+          redecide: {
+            rejectedBy: null,
+            removedVia: null,
+            rejectedAt: null,
+            reapproval: {
+              available: false,
+              reason: "already-approved" as const,
+            },
+          },
+        })),
+      });
+      return outcome();
+    });
+    render(<ChronicleProposalReview />);
+    fireEvent.click(
+      screen.getByTestId("chronicle-proposal-reapprove-proposal-1"),
+    );
+    expect(
+      await screen.findByText("取り込み済み（再適用しません）"),
+    ).toBeTruthy();
+    expect(
+      screen.queryByTestId("chronicle-proposal-removed-proposal-1"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("chronicle-reapprove-all"),
+    ).not.toBeInTheDocument();
+  });
+
   it("counts only what Native says can be approved again, and sends the whole screen", async () => {
     useChronicleExtractionStore.getState().setProjection(
       projection([

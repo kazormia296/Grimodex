@@ -751,6 +751,75 @@ describe("ChronicleExtractDialog run-path cutover", () => {
     ).not.toHaveBeenCalled();
   });
 
+  it("閉じている間に出来事が消えても、開き直すと「却下」が出る（SRD/1 RA7）", async () => {
+    seedProjection({
+      status: "approved",
+      application: {
+        commitId: "commit-1",
+        revisionId: "rev-1",
+        appliedEntityKind: "event",
+        appliedEntityId: "event-1",
+        createdAt: "2026-11-26T09:00:00.000Z",
+        applicationKind: "normal",
+        compensatesApplicationId: null,
+      },
+    });
+    const refresh = extractionMocks.refreshChronicleRedecideState;
+    refresh.mockClear();
+    const { rerender } = render(
+      <ChronicleExtractDialog
+        open
+        scope={SCOPE_A}
+        isActive
+        onOpenChange={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    expect(
+      await screen.findByText("取り込み済み（再適用しません）"),
+    ).toBeTruthy();
+    rerender(
+      <ChronicleExtractDialog
+        open={false}
+        scope={SCOPE_A}
+        isActive
+        onOpenChange={vi.fn()}
+      />,
+    );
+    // While closed, the event is removed: the next read returns Native's state.
+    refresh.mockImplementationOnce(async () => {
+      const store = useChronicleExtractionStore.getState();
+      const current = store.projection!;
+      store.setProjection({
+        ...current,
+        proposals: current.proposals.map((proposal) => ({
+          ...proposal,
+          status: "rejected" as const,
+          redecide: {
+            rejectedBy: "event-removed" as const,
+            removedVia: "screen-delete" as const,
+            rejectedAt: "2026-11-26T10:00:00.000Z",
+            reapproval: { available: true, reason: null },
+          },
+        })),
+      });
+      return true;
+    });
+    rerender(
+      <ChronicleExtractDialog
+        open
+        scope={SCOPE_A}
+        isActive
+        onOpenChange={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+    expect(
+      await screen.findByText("却下（出来事を消したため）", { exact: false }),
+    ).toBeTruthy();
+    expect(screen.queryByText("取り込み済み（再適用しません）")).toBeNull();
+  });
+
   it("投影が無ければ復元し、読み直しは復元に任せる（SRD/1 RA7）", async () => {
     extractionMocks.refreshChronicleRedecideState.mockClear();
     render(

@@ -2223,8 +2223,14 @@ export class ChronicleBulkApproveCommandError extends Error {
   }
 }
 
+/**
+ * SRD/1 RA7: re-read the review bundle for the applied proposals' removal
+ * state. `false` only when the read failed (the store then marks applied
+ * proposals unverified); a read superseded by a newer one is not a failure,
+ * since the newer read owns the screen.
+ */
 export async function refreshChronicleRedecideState(): Promise<boolean> {
-  return (await readChronicleBulkApprovalJudgements()) === "applied";
+  return (await readChronicleBulkApprovalJudgements()) !== "failed";
 }
 
 export interface ChronicleReapprovalOutcome {
