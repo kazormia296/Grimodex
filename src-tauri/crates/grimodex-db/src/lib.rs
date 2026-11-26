@@ -924,6 +924,7 @@ pub mod change_events;
 pub mod chat_typed_writes;
 pub mod chronicle;
 pub mod chronicle_bulk;
+pub mod chronicle_date_migration;
 pub mod chronicle_read;
 pub mod codex_relation_keys;
 pub mod codex_writes;
