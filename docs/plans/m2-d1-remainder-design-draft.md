@@ -28,6 +28,8 @@ D2〜D4 は [D2〜D4 の起案](m2-d2-d4-design-draft.md)（M4 の担当）が�
 | `staleBind`／`staleBindCause`（renderer の store）                                  | 構造の抽出の review の表示用の状態。共有の Decision の台帳から復元（`codexStructureExtractionApi.ts:2988-3014`）                                         | 独自の DB の列は無い。共有の台帳から作る                            |
 
 抽出の途中結果は Codex 専用の table を持たない。共有の `narrative_proposal_sets`／`narrative_proposals`／`narrative_proposal_revisions` に入る（`migrate.rs:2765-2809`）。
+
+feature を横断する旧い dependency の store として `narrative_projection_dependencies`（application ごとの依存、`migrate.rs:3370-3379`）がある。Codex 専用ではなく、今も `incremental_freshness.rs`・`commit.rs` などが読む。registry の `legacy-application-projection-dependency`（`legacy_backfill.rs`）が共通の辺へ写し、片付けの parity の gate は Gate C2 の cutover（`c2z_preparation.rs:792-835`）が持つ。
 共通の Freshness は `narrative_dependency_edge_states` と `narrative_consumer_freshness`（`migrate.rs:3705-3748`）。
 
 ### 1.2 ADR 005 の「Legacy cleanup」
@@ -67,6 +69,7 @@ Gate A2 の公開版 fixture（`grimodex-db/tests/support/release_schema_fixture
 - `codex_entries.summary` は作者が書く正本で、共通の層から導出できない。
 - 3 つの索引（FTS・embedding・言及）は、共通の層の Freshness と対象が違い、重複でない。
 - `staleBind` は共有の台帳から作る表示の状態で、独自の store が無い。
+- `narrative_projection_dependencies` は ADR 005 の「重複した Dependency store」の候補になりうるが、Codex 専用でなく全 feature の application にまたがり、片付けは Gate C2 の cutover の範囲にある。M2-D1 の候補には数えない。
 
 したがって M2-D1 では何も消さず、消す前の証跡も出すものが無い。この項目は「対象なし（0 件）」と記録し、「完了」とは書かない。
 
@@ -107,15 +110,15 @@ M2-D1 の同一性（`codex-relation:{edge_id}`）は Relation の id を使う�
 
 ## 4. 7 項目の状態（M2-D1）
 
-| 項目                                 | 状態                                                                                                   | 根拠                                                      |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------- |
-| Shared Narrative IR typed payloads   | #1108 の土台（呼び手なし）                                                                             | [同一性の設計](m2-d1-identity-design-draft.md) §2.1・§2.2 |
-| Compatibility adapters               | データの移行は不要と判断（同 §2.4）。公開版の Relation の行は fixture で覆われていない（§3.3、未解決） | 同 §2.4                                                   |
-| Producer-time Dependency declaration | 宣言を別 file に置いた                                                                                 | 同 §2.3                                                   |
-| Review and Projection state mapping  | bundle 単位の Decision を継承                                                                          | 同 §2.5                                                   |
-| Structure Health rules               | コードの追加なし                                                                                       | 同 §2.6                                                   |
-| Retrieval participation              | Graph の index だけ（閉じている）。新しい経路はこの版で足さない                                        | §3                                                        |
-| Migration evidence                   | 消す候補 0 件。証跡の規則を定めた                                                                      | §2                                                        |
+| 項目                                 | 状態                                                                                                                                                                                                                | 根拠                                                    |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| Shared Narrative IR typed payloads   | `EntityRelationBundle`（`narrative_nir1.rs:249`、#572 から）。#1108 は Assertion の任意の `identityDeclaration` の検証を足した（呼び手なし）                                                                        | [同一性の設計](m2-d1-identity-design-draft.md) §1・§2.1 |
+| Compatibility adapters               | データの移行は不要と判断（同 §2.4）。公開版の Relation の行は fixture で覆われていない（§3.3、未解決）                                                                                                              | 同 §2.4                                                 |
+| Producer-time Dependency declaration | registry の `nir1-reviewed-entity-relation-v1`（既存）と、版を作る prepare の時に書く proposal-revision の辺（`nir1_entity_relation.rs:1095`、呼び出し `:1949`）。#1108 の同一性の宣言（同 §2.3）は依存の宣言とは別 | registry、`nir1_entity_relation.rs`                     |
+| Review and Projection state mapping  | bundle 単位の Decision を継承                                                                                                                                                                                       | 同 §2.5                                                 |
+| Structure Health rules               | コードの追加なし                                                                                                                                                                                                    | 同 §2.6                                                 |
+| Retrieval participation              | Graph の index だけ（閉じている）。新しい経路はこの版で足さない                                                                                                                                                     | §3                                                      |
+| Migration evidence                   | 消す候補 0 件。証跡の規則を定めた                                                                                                                                                                                   | §2                                                      |
 
 どの項目にも「完了」の印は付けない。M2-D1 の受入れは、呼び手と旗を開けるときに改めて行う。
 
