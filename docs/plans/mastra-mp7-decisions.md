@@ -31,3 +31,20 @@
 
 - migration は schema と削除境界だけを確定する。Mastra adapter の往復、JSON の意味検証、vector の符号化、thread と resource の ID 写像、message 削除時の OM/WM purge は 7b/後続 lane で決めて試験する。
 - Drizzle は renderer の読み定義を確認し、新表を renderer が読む必要がなければ追加しない。
+
+## MP-7b decisions
+
+- **DR-MP7B-1 — 信頼境界。** U-1 の actor と防御を保つ。Rust `grimodex-db` が payload 検証・SQL・transaction・拒否を所有し、Native `Backend` の `memory_*` は main 専用 N-API とする。IPC contract／preload／renderer API／TS adapter は追加せず、旗 M は閉じたまま。新しい送信先・表・保存対象・authority は増やさない。
+- **DR-MP7B-2 — command 群。** `memory_thread_{read,write,delete}`、`memory_message_{read,write,delete}`、`memory_resource_{read,write}`、`memory_om_{read,write,delete}`、`memory_vector_{read,write,delete}` と `memory_clear_all`。各 read/write は Rust の tagged operation union で別 payload を検証し、N-API は既存 wire と同じ JSON 文字列を返す。任意 SQL／汎用 DB query は作らない。deleteMessages は既存 `chat_typed_writes` の IMMEDIATE writer を利用する。
+- **DR-MP7B-3 — message と scope。** `sessionId` は `chat_sessions.id`、`resourceId` は `mastra_resources.id` に対応する。`nir1-local-*` session は SQL lookup/list から除外し、指定された書込みも拒否する。role が user／assistant／system 以外、または明示された `injected` user message は保存を skip する。別 session の message ID は typed refusal。version/capture 行は `parts_json` だけを更新する。その他の upsert は変化時だけ `ON CONFLICT DO UPDATE` し、SET に `role`／`session_id`／`created_at` を含めない。
+- **DR-MP7B-4 — vector の既存 schema 限界。** `mastra_memory_vectors` に index 定義列がないため index 作成は検証のみ、list は保存済み index、describe は保存済み vector から dimension を返す。metric は cosine 固定。空 index の永続化と metric 別設定は追加 table を要求するため行わない。各 vector は `metadata.messageId` から既存の非 `nir1-local-*` chat message に束ね、message FK cascade で削除する。
+- **DR-MP7B-5 — omitted capabilities。** Resource merge callback を Rust に渡せないため atomic merge は宣言しない（MP-8 は false）。run fencing、thread clone/copy、message 以外を参照する vector、非 cosine metric も MP-8 が使わない限り実装しない。Observational Memory の CRUD/lifecycle は typed operation で実装し、history と message/thread list の同時刻は id を tie-breaker にする。
+
+### Impact matrix
+
+| Flow | Owner → contract → consumer | 保つ境界 / fallback | Verification |
+| --- | --- | --- | --- |
+| Thread/message | Main-only N-API tagged command → `grimodex-db::mastra_memory` → `chat_sessions` / `chat_messages` / 2 side tables | 既存 chat schema、NIR-1 captured content、nir1-local 除外。削除は typed writer。IPC/renderer は追加しない | role・injection skip、session collision、capture parts-only、pending attempt、tie-breaker |
+| Resource/OM | typed command → scoped Rust transaction → 2 memory tables | D2a closed を維持。project/resource/session mapping を Rust で検証 | scope/refusal、partial thread metadata、OM state lifecycle、clear scope |
+| Vector | typed command → Rust cosine query/upsert/delete → vector table + chat-message FK | 既存5表だけ。index metadata は保存しない。message delete で cascade | message ID mapping、stable score tie-breaker、filter、cascade |
+| Native surface | `Backend` async + `spawn_blocking` → JSON wire | main process 内のみ。IPC contract／preload／M gate は変更しない | generated `index.d.ts`、Native test suite |

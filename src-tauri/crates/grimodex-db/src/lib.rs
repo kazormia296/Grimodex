@@ -920,8 +920,10 @@ pub mod ai_audit;
 pub mod backup_restore;
 pub(crate) mod canonical_feed_snapshots;
 pub mod change_events;
-#[cfg(feature = "native-current-human-capture")]
+#[cfg(any(test, feature = "native-current-human-capture"))]
 pub mod chat_typed_writes;
+#[cfg(any(test, feature = "native-current-human-capture"))]
+pub mod mastra_memory;
 pub mod chronicle;
 pub mod chronicle_bulk;
 pub mod codex_relation_keys;

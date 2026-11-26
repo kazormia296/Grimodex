@@ -102,6 +102,12 @@ pub struct DeleteMessagesRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeleteMessagesByIdsRequest {
+    pub message_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeleteSessionRequest {
     pub project_id: String,
     pub session_id: String,
@@ -250,6 +256,54 @@ pub fn delete_messages(db: &Database, request: DeleteMessagesRequest) -> Result<
                 "DELETE FROM chat_messages WHERE id = ?1 AND session_id = ?2",
                 params![id, request.session_id],
             )?;
+        }
+        Ok(DeletedCount { deleted })
+    })
+}
+
+/// Delete arbitrary message ids as one typed operation. Mastra supplies only
+/// ids, so derive session/project ownership first and check every generation
+/// attempt before deleting any group.
+pub fn delete_messages_by_ids(
+    db: &Database,
+    request: DeleteMessagesByIdsRequest,
+) -> Result<DeletedCount> {
+    if request.message_ids.is_empty() || request.message_ids.len() > MAX_MESSAGE_IDS {
+        return refuse(ChatWriteRefusal::InvalidRequest);
+    }
+    for id in &request.message_ids {
+        require_id(id)?;
+    }
+    let ids = request.message_ids.into_iter().collect::<BTreeSet<_>>();
+    with_immediate_transaction(db, |conn| {
+        let mut by_session = std::collections::BTreeMap::<(String, String), Vec<String>>::new();
+        for id in ids {
+            let owner = conn
+                .query_row(
+                    "SELECT m.session_id, s.project_id
+                       FROM chat_messages m JOIN chat_sessions s ON s.id = m.session_id
+                      WHERE m.id = ?1 AND s.id NOT LIKE 'nir1-local-%'",
+                    params![id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            if let Some((session_id, project_id)) = owner {
+                by_session.entry((session_id, project_id)).or_default().push(id);
+            }
+        }
+        for ((session_id, _), _) in &by_session {
+            if session_has_pending_attempt(conn, session_id)? {
+                return refuse(ChatWriteRefusal::GenerationPending);
+            }
+        }
+        let mut deleted = 0;
+        for ((session_id, _), ids) in by_session {
+            for id in ids {
+                deleted += conn.execute(
+                    "DELETE FROM chat_messages WHERE id = ?1 AND session_id = ?2",
+                    params![id, session_id],
+                )?;
+            }
         }
         Ok(DeletedCount { deleted })
     })
