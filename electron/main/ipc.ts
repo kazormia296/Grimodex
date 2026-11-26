@@ -1613,7 +1613,8 @@ function bindMainOwnedAgentMutation(
   return bound;
 }
 
-async function issueAgentAuthorityCapabilitiesForSender(
+/** Main-only authority issuer shared by the legacy invoke and Mastra turn loop. */
+export async function issueAgentAuthorityCapabilitiesForSender(
   senderId: number,
   args: CommandArgs,
   response: unknown,
@@ -1702,7 +1703,8 @@ async function issueAgentAuthorityCapabilitiesForSender(
   return { ...response, agentAuthorityCapabilities: issued };
 }
 
-function consumeAgentAuthorityCapability(
+/** Main-only one-shot capability consumer shared by renderer and Main writers. */
+export function consumeAgentAuthorityCapability(
   cmd: string,
   payload: CommandArgs,
   senderId: number,
