@@ -726,7 +726,10 @@ fn restore_revokes_only_before_minus_after_and_rolls_back_on_failure() -> anyhow
         check_event(&db, "hand", true)?;
         check_decisions(&db, "one", None)?;
         execute(&db, "DROP TRIGGER fail_sync")?;
-        assert_eq!(restore()?, restore()?);
+        let first = restore()?;
+        // §5 0 (d): a restore that removes events must not take the no-op branch.
+        assert!(!first.no_op);
+        assert_eq!(first, restore()?);
         check_event(&db, "event-one", false)?;
         check_event(&db, "hand", false)?;
         check_event(&db, "event-two", keep_two)?;

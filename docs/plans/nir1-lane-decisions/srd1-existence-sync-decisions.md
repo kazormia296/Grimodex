@@ -36,11 +36,24 @@
 - `tests/narrative_extraction.rs` の `current_chronicle_unmarked_event_survives_undo_and_redo`：提案は却下（`removedVia` は `commit-undo`）。版と本文と封筒は変わらない。
 - `tests/narrative_nir1_retrieval_admission.rs` の `edited_revision_apply_survives_undo_and_redo_as_unmarked_events`：2 つの版は、関連する過去シーンに使えない。
 
+## DR-SRD-X-5　登録と、今は通らない枝
+
+- `change-feed-writers.json`：出来事を消す 7 つの操作の行（単体の削除 3、まとめ 2、元に戻す、スナップショットの復元）の `writerIds` に `narrative.authority` を足した（取り込みの取り消しの行は、前からある）。新しい route と caller は足さない（ADR 006 の追補のとおり）。`protected-writers.json` は表と書き手の対応表で、決定の表の持ち主は変わらないので、直さない。
+- 決定を追記する公開の入口（人の決定、直して決定、まとめて承認）は、同じ関数を通り、その後の追加の処理は無い。承認を写して持つ表も無い。X の書き手の後始末（status の更新と索引の停止）は、同じである。
+- `agent-delete` と `mcp-delete` の枝は、取り込んだ出来事が欄の所有の検査で消せないので、今は通らない。通る場合の試験は、AWA/1 の削除を開ける PR で足す。画面の `event_delete` の route は renderer の origin から決まり、`interactive-agent-command` にはならない（main の `authorityRouteForRendererCommand`）。
+- 失敗の符号の再試行：まとめ操作の元に戻すは、この符号のとき `requestId` を保つ（HK3）。`retryable` を見て自動で再試行する所は無い。
+- MCP の試験の簡易 DB は、取り込みの記録の表を持たず、出来事の削除が落ちた。本物の schema の定義を写して足した（製品の側で「表が無ければ飛ばす」とはしない。X5）。
+
+## 残る制限と、後で見ること
+
+- 出来事を消すたびに、取り込みの記録の表を全件走査する（索引なし）。既定を開ける前に、大きい作品で測る。
+- スナップショットの復元の確認の文に、外れる承認の件数を出すこと（RD6）は、次の PR。それまで、復元は承認を黙って外す（製品の取り込みは閉じている）。
+
 ## 見つけたこと（X の前からの挙動。直さない）
 
-- MCP の削除は、成功の後に同じ `request_id` を再送すると、Native の保存済みの応答に届く前の存在の確認で「見つからない」になる。二重の書き込みは無い。取り込んだ出来事は、MCP の経路では欄の所有の検査で消せない（試験で確かめた）ので、X の動きには影響しない。
+- MCP の削除は、成功の後に同じ `request_id` を再送すると、Native の保存済みの応答に届く前の存在の確認で `event not found` になる（実行で確かめた）。二重の書き込みは無い。取り込んだ出来事は、MCP の経路では欄の所有の検査で消せない（試験で確かめた）ので、X の動きには影響しない。
 
-## PR の前に残ること
+## 実装の前後の確かめ
 
 - （済）§5 の 0 (c) と確認 59 の件数（2026-11-26、読み取り専用で件数だけ）：`fusion-eval-data` の下の DB 19 個のうち、取り込みの表がある 15 個は、出来事の取り込みの記録が 0 件。版の違い、承認でない提案、消された出来事の承認のままの提案は、どれも 0 件。残り 4 個は、表の無い測定用の DB。作者の手元の作品の DB は読んでいない（製品の取り込みは閉じている）。
 - （済、読みで）HK1 の符号が画面に届くこと：Native の戻り値の文面の先頭が符号であることは試験で確かめた。その後の `app_err_to_napi`（`to_string`）、main の `toErrorString`（`message`）、renderer の分類（`includes`）は、読んで確かめた。実機では実行していない。

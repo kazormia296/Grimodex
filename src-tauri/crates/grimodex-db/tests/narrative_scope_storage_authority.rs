@@ -1007,6 +1007,10 @@ fn assert_restore_runs_inside_the_create_transaction(hit: &Hit, sources: &[Sourc
     );
 }
 
+/// SRD/1 §5 0 (e): the closed set of entries that remove events. Outside X:
+/// `workspace.backup.restore` and `workspace.recovery.restore` (Safe Mode)
+/// replace the whole database file, so decisions revert together with events
+/// and neither appears below.
 #[test]
 fn event_removal_sql_and_cascade_callers_are_accounted_for() {
     let sources = load_production_sources(&repo_root());
