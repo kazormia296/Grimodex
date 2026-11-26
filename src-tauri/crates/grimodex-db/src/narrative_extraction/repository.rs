@@ -6108,6 +6108,26 @@ const REMOVED_EVENT_PROPOSALS_SQL: &str = "
        AND d.revision_id = r.id AND d.decision = 'approved'
      GROUP BY p.id, r.id, d.id";
 
+pub(crate) fn count_removed_event_proposals(
+    conn: &Connection,
+    project_id: &str,
+    event_ids: &[String],
+) -> anyhow::Result<usize> {
+    if event_ids.is_empty() {
+        return Ok(0);
+    }
+    Ok(conn.query_row(
+        &format!("SELECT count(*) FROM ({REMOVED_EVENT_PROPOSALS_SQL})"),
+        params![
+            project_id,
+            serde_json::to_string(event_ids)?,
+            NIR1_ENTITY_RELATION_PROPOSAL_KIND
+        ],
+        |row| row.get::<_, i64>(0),
+    )?
+    .try_into()?)
+}
+
 pub(crate) enum EventExistenceChange<'a> {
     /// The author's re-approval (SRD/1 RA). The writer judges the target itself.
     Reapproved {

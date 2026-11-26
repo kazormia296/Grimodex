@@ -118,7 +118,8 @@ pub use reconciliation_envelope::SourceBasisRow;
 pub use repository::project_lifecycle_namespace_for_database;
 pub use repository::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
 pub(crate) use repository::{
-    append_event_existence_decisions_in_tx, EventExistenceChange, RemovedVia,
+    append_event_existence_decisions_in_tx, count_removed_event_proposals, EventExistenceChange,
+    RemovedVia,
 };
 pub(crate) use repository::{
     project_creation_reservation_active_for_database,
