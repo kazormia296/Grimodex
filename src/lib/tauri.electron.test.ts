@@ -388,6 +388,62 @@ describe("caller timeout policy（electron 分岐）", () => {
     expect(drained).toBe(true);
   });
 
+  it("drain 開始後に来た Mastra answer も実際の応答完了まで待つ", async () => {
+    vi.useFakeTimers();
+    let resolveStart!: (value: { ok: true; value: unknown }) => void;
+    let resolveAnswer!: (value: { ok: true; value: unknown }) => void;
+    const bridge = installBridge({
+      invoke: vi.fn((command: string) => {
+        if (command === "mastra_agent_turn_start") {
+          return new Promise((resolve) => {
+            resolveStart = resolve;
+          });
+        }
+        if (command === "mastra_agent_turn_answer") {
+          return new Promise((resolve) => {
+            resolveAnswer = resolve;
+          });
+        }
+        return Promise.resolve({ ok: true, value: null });
+      }),
+    });
+    const { invoke, invokeMastraAgentTurnControl } = await import("./tauri");
+    const start = invoke("mastra_agent_turn_start", { turnId: "t-1" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    let drained = false;
+    const { flushQuiescenceProviderStage } =
+      await import("./quiescenceProviders");
+    const drain = flushQuiescenceProviderStage("ipc-actual-tasks").then(() => {
+      drained = true;
+    });
+    const answer = invokeMastraAgentTurnControl("mastra_agent_turn_answer", {
+      requestId: "req-1",
+      refusal: "authority-revoked",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(bridge.invoke).toHaveBeenCalledWith(
+      "mastra_agent_turn_answer",
+      expect.anything(),
+    );
+    expect(drained).toBe(false);
+
+    resolveStart({ ok: true, value: { status: "completed", turnId: "t-1" } });
+    await start;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(drained).toBe(false);
+    resolveAnswer({
+      ok: true,
+      value: { status: "accepted", requestId: "req-1" },
+    });
+    await expect(answer).resolves.toEqual({
+      status: "accepted",
+      requestId: "req-1",
+    });
+    await expect(drain).resolves.toBeUndefined();
+    expect(drained).toBe(true);
+  });
+
   it.each([
     "foreshadow_load_anchors_for_scene",
     "list_annotations_for_scene",
@@ -986,6 +1042,7 @@ describe("caller timeout policy（electron 分岐）", () => {
   });
 
   it.each([
+    ["mastra_agent_turn_start", { turnId: "t-1" }, 10 * 60_000],
     ["open_workspace", { path: "/tmp/ws" }, 301_000],
     [
       "db_execute",

@@ -172,6 +172,7 @@ export async function registerMastraAgentTurnResponder(
           loadChatAgentToolHandlers(),
           loadUiOperationTools(),
         ]);
+        if (!active) return;
         uiOperationLimit = createUiOperationLimitHandler(
           MAX_UI_OPERATIONS_PER_TURN,
         ) as UiOperationLimit;
@@ -248,14 +249,17 @@ export async function registerMastraAgentTurnResponder(
       const toolCallId = activeAskUserToolCallId;
       void loadAskUserTools()
         .then(({ dismissedAskUserResult }) => {
-          askUserContext.runtime.cancel(
-            dismissedAskUserResult(toolCallId, askUserContext.dismissNote),
-          );
-          askUserContext.set((state) =>
-            state.pendingUserQuestion?.toolCallId === toolCallId
-              ? { pendingUserQuestion: null }
-              : {},
-          );
+          let matchesPendingQuestion = false;
+          askUserContext.set((state) => {
+            matchesPendingQuestion =
+              state.pendingUserQuestion?.toolCallId === toolCallId;
+            return matchesPendingQuestion ? { pendingUserQuestion: null } : {};
+          });
+          if (matchesPendingQuestion) {
+            askUserContext.runtime.cancel(
+              dismissedAskUserResult(toolCallId, askUserContext.dismissNote),
+            );
+          }
         })
         .catch(() => undefined);
     }

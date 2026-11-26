@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   acquireIpcDerivedAdmissionBarrier,
+  acquireIpcMutationAdmissionBarrier,
   cancelDerivedIpcCallersForLifecycle,
   enqueueIpc,
   enqueueTrackedMutationIpc,
@@ -63,15 +64,21 @@ describe("enqueueIpc", () => {
     await Promise.all(queued);
   });
 
-  it("keeps an immediate turn answer in the existing mutation drain", async () => {
-    let release!: () => void;
-    const answer = new Promise<string>((resolve) => {
-      release = () => resolve("answered");
-    });
-    const caller = enqueueTrackedMutationIpc(
-      "mastra_agent_turn_answer",
-      () => answer,
+  it("tracks a turn answer admitted after drain starts and waits for it", async () => {
+    let releaseBlocker!: () => void;
+    const blocker = enqueueIpc(
+      "blocked-mutation",
+      () =>
+        new Promise<void>((resolve) => {
+          releaseBlocker = resolve;
+        }),
+      null,
+      "mutation",
     );
+    let releaseAnswer!: () => void;
+    const answer = new Promise<string>((resolve) => {
+      releaseAnswer = () => resolve("answered");
+    });
     let drained = false;
     const drain = flushQuiescenceProviderStage("ipc-actual-tasks").then(() => {
       drained = true;
@@ -79,10 +86,30 @@ describe("enqueueIpc", () => {
 
     await Promise.resolve();
     expect(drained).toBe(false);
-    release();
+    const caller = enqueueTrackedMutationIpc(
+      "mastra_agent_turn_answer",
+      () => answer,
+    );
+    releaseBlocker();
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    releaseAnswer();
     await expect(caller).resolves.toBe("answered");
+    await expect(blocker).resolves.toBeUndefined();
     await expect(drain).resolves.toBeUndefined();
     expect(drained).toBe(true);
+  });
+
+  it("rejects a turn answer admitted under the mutation barrier", async () => {
+    const releaseBarrier = acquireIpcMutationAdmissionBarrier();
+    const answer = vi.fn(async () => "answered");
+    await expect(
+      enqueueTrackedMutationIpc("mastra_agent_turn_answer", answer),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining("IPC_MUTATION_CANCELLED"),
+    });
+    expect(answer).not.toHaveBeenCalled();
+    releaseBarrier();
   });
 
   it("starts timeout when execution begins, not while queued", async () => {
