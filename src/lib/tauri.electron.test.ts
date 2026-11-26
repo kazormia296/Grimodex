@@ -329,38 +329,63 @@ describe("caller timeout policy（electron 分岐）", () => {
     });
   });
 
-  it("mastra_agent_turn_start は turn の完了まで待つ mutation で、caller timeout も read lane も無い。cancel は start の後ろに並ばない（MP-3b）", async () => {
+  it("Mastra answer と cancel は全 queue slot が埋まっていても通り、drain の mutation として残る", async () => {
     vi.useFakeTimers();
+    const pendingStarts: Array<(value: unknown) => void> = [];
     const bridge = installBridge({
-      invoke: vi.fn().mockImplementation((command: string) =>
-        command === "mastra_agent_turn_cancel"
-          ? Promise.resolve({
-              ok: true,
-              value: { status: "ok", turnId: "t", found: true },
-            })
-          : new Promise(() => {}),
-      ),
+      invoke: vi.fn().mockImplementation((command: string) => {
+        if (command === "mastra_agent_turn_answer") {
+          return Promise.resolve({
+            ok: true,
+            value: { status: "accepted", requestId: "req-1" },
+          });
+        }
+        if (command === "mastra_agent_turn_cancel") {
+          return Promise.resolve({
+            ok: true,
+            value: { status: "ok", turnId: "t", found: true },
+          });
+        }
+        return new Promise((resolve) => pendingStarts.push(resolve));
+      }),
     });
-    const { invoke } = await import("./tauri");
-    let startSettled = false;
-    void invoke("mastra_agent_turn_start", { turnId: "t" }).then(
-      () => {
-        startSettled = true;
-      },
-      () => {
-        startSettled = true;
-      },
+    const { invoke, invokeMastraAgentTurnControl } = await import("./tauri");
+    const starts = Array.from({ length: 4 }, (_, index) =>
+      invoke("mastra_agent_turn_start", { turnId: `t-${index}` }),
     );
     await vi.advanceTimersByTimeAsync(0);
-    // Far past every caller timeout of the read lanes (10 s, 20 s).
-    await vi.advanceTimersByTimeAsync(10 * 60_000);
-    expect(startSettled).toBe(false);
-    // The pending start does not hold the cancel back.
+    expect(bridge.invoke).toHaveBeenCalledTimes(4);
     await expect(
-      invoke("mastra_agent_turn_cancel", { turnId: "t" }),
+      invokeMastraAgentTurnControl("mastra_agent_turn_answer", {
+        requestId: "req-1",
+        refusal: "authority-revoked",
+      }),
+    ).resolves.toEqual({ status: "accepted", requestId: "req-1" });
+    await expect(
+      invokeMastraAgentTurnControl("mastra_agent_turn_cancel", {
+        turnId: "t",
+      }),
     ).resolves.toEqual({ status: "ok", turnId: "t", found: true });
-    expect(bridge.invoke).toHaveBeenCalledTimes(2);
-    expect(startSettled).toBe(false);
+    expect(bridge.invoke).toHaveBeenCalledTimes(6);
+
+    let drained = false;
+    const { flushQuiescenceProviderStage } =
+      await import("./quiescenceProviders");
+    const drain = flushQuiescenceProviderStage("ipc-actual-tasks").then(() => {
+      drained = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(drained).toBe(false);
+
+    pendingStarts.forEach((resolve, index) =>
+      resolve({
+        ok: true,
+        value: { status: "completed", turnId: `t-${index}` },
+      }),
+    );
+    await Promise.all(starts);
+    await expect(drain).resolves.toBeUndefined();
+    expect(drained).toBe(true);
   });
 
   it.each([
