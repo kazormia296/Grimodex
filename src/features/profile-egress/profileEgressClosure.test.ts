@@ -5,7 +5,7 @@ import {
   createProfileEgressGate,
   d2aRouteLedgersForTest,
 } from "../../../electron/main/profileEgress";
-import { nativeSqlPolicyV2 } from "../../../electron/main/d2aSqlPolicyFixture";
+import { nativeSqlPolicyV3 } from "../../../electron/main/d2aSqlPolicyFixture";
 import type { NapiBackendLike } from "../../../electron/shared/ipcContract";
 import { isD2aEgressDenied } from "@/lib/tauri";
 import i18next from "@/lib/i18n";
@@ -30,7 +30,7 @@ function restrictedBackend(): NapiBackendLike {
         restricted: true,
         handlesInvalidated: true,
         inFlightStopped: true,
-        sqlPolicy: nativeSqlPolicyV2(),
+        sqlPolicy: nativeSqlPolicyV3(),
       }),
     registerProfileEgressCaller: () => undefined,
     invalidateProfileEgressCallers: () => undefined,

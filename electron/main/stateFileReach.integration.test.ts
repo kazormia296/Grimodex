@@ -64,7 +64,7 @@ const { getDefaultProfileDataGuard } =
 
 import type { ExternalMountManagerOptions } from "./externalMount.js";
 import type { NapiBackendLike } from "../shared/ipcContract.js";
-import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
+import { nativeSqlPolicyV3 } from "./d2aSqlPolicyFixture.js";
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 
@@ -129,7 +129,7 @@ async function gateFor(mode: "unrestricted" | "restricted") {
     restricted,
     handlesInvalidated: restricted,
     inFlightStopped: true,
-    sqlPolicy: nativeSqlPolicyV2(),
+    sqlPolicy: nativeSqlPolicyV3(),
   };
   return createProfileEgressGate({
     initializeProfileEgress: async () => JSON.stringify(status),

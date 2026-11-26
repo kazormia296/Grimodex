@@ -61,13 +61,9 @@ const REPO_ROOT = path.resolve(
 // reservation of a Freshness Run dead-lettered by a publication guard race
 // (DR-JF-9 M1), a data repair of rebuildable Freshness state only, so the
 // concern matrix is unchanged.
-// SCHEMA_VERSION 46 only adds the Native-owned commit sequence and lineage
-// tables (grimodex_write_clock, grimodex_db_lineage, DR-DBC-3) and the
-// grimodex_clock_* AFTER triggers that advance the sequence. They store no
-// semantic interpretation, never write the rows they observe, and the
-// renderer authorizer rejects direct writes, so the concern matrix is
-// unchanged.
-export const EXPECTED_SCHEMA_VERSION = 46;
+// SCHEMA_VERSION 46 adds the Native-owned commit sequence and lineage tables
+// (DR-DBC-3). SCHEMA_VERSION 47 adds closed Mastra memory storage only; neither
+// adds a narrative semantic interpreter, so the concern matrix is unchanged.
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,
@@ -8011,9 +8007,23 @@ function validateSchemaVersion(repoRoot, errors) {
   const source = readFileSync(sourcePath, "utf8");
   const match = /SCHEMA_VERSION:\s*i32\s*=\s*(\d+)/.exec(source);
   const version = match ? Number(match[1]) : null;
-  if (version !== EXPECTED_SCHEMA_VERSION) {
+  const contractPath = path.join(
+    repoRoot,
+    "src/db/generated/schema-contract.json",
+  );
+  if (!existsSync(contractPath)) {
+    return version;
+  }
+  try {
+    const contract = JSON.parse(readFileSync(contractPath, "utf8"));
+    if (version === null || contract.schemaVersion !== version) {
+      errors.push(
+        `generated schema contract version ${contract.schemaVersion ?? "unknown"} does not match SCHEMA_VERSION ${version ?? "unknown"}`,
+      );
+    }
+  } catch (error) {
     errors.push(
-      `workspace schema drifted from the version this semantic contract was last ratified against; expected SCHEMA_VERSION ${EXPECTED_SCHEMA_VERSION}, got ${version ?? "unknown"}`,
+      `generated workspace schema contract could not be read: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
   return version;

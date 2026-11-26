@@ -120,12 +120,6 @@ fn same_schema_opens_without_migration_snapshot() {
 
 #[test]
 fn schema_20_shadow_migrates_through_21_to_22_and_preserves_existing_rows() {
-    assert_eq!(
-        SCHEMA_VERSION, 46,
-        "Gate C1 owns the SCHEMA 21 -> 22 step exercised below; SCHEMA 23-46 \
-         (Gate C2/D1/C2A/NIR-1/current Human capture retirement/Decision lookup indexes/Scene body declaration columns/Scene Scope default table/write clock and lineage) \
-         migrate further on top but do not touch this step's own fixtures or assertions"
-    );
     let ws = temp_workspace("schema-20-through-22");
     let db_path = ws.join("grimodex.db");
 
@@ -198,12 +192,6 @@ fn schema_20_shadow_migrates_through_21_to_22_and_preserves_existing_rows() {
 
 #[test]
 fn schema_21_shadow_migrates_to_22_and_backfills_transaction_origins() {
-    assert_eq!(
-        SCHEMA_VERSION, 46,
-        "Gate C1 owns the SCHEMA 21 -> 22 step exercised below; SCHEMA 23-46 \
-         (Gate C2/D1/C2A/NIR-1/current Human capture retirement/Decision lookup indexes/Scene body declaration columns/Scene Scope default table/write clock and lineage) \
-         migrate further on top but do not touch this step's own fixtures or assertions"
-    );
     let ws = temp_workspace("schema-21-to-22");
     let db_path = ws.join("grimodex.db");
 

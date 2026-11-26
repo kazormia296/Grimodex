@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 46,
+  "schemaVersion": 47,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -6139,6 +6139,453 @@
       ],
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE map_stickies ( id TEXT PRIMARY KEY, board_id TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE, title TEXT, body TEXT NOT NULL DEFAULT '{\"type\":\"doc\",\"content\":[]}', preview_text TEXT, palette_id TEXT NOT NULL DEFAULT 'post-it-playful', color_slot INTEGER NOT NULL DEFAULT 0 CHECK(color_slot >= 0), ai_branch_id TEXT REFERENCES map_ai_branches(id) ON DELETE SET NULL, -- AI由来フラグ。ai_branch_id は「現在の所属 branch」(採用で NULL 化)、 -- こちらは「AI が生成した付箋か」という出自で採用後も保持する。 ai_derived INTEGER NOT NULL DEFAULT 0, source_chat_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
+    },
+    "mastra_memory_vectors": {
+      "kind": "table",
+      "columns": {
+        "id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "index_name": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "message_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "metadata_json": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'{}'",
+          "primaryKey": 0
+        },
+        "vector": {
+          "ordinal": 2,
+          "declaredType": "BLOB",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "chat_messages",
+          "from": "message_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE mastra_memory_vectors ( index_name TEXT NOT NULL, id TEXT NOT NULL, vector BLOB NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(metadata_json) AND json_type(metadata_json) = 'object'), message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE, PRIMARY KEY (index_name, id) )"
+    },
+    "mastra_message_parts": {
+      "kind": "table",
+      "columns": {
+        "message_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "parts_json": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "chat_messages",
+          "from": "message_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE mastra_message_parts ( message_id TEXT PRIMARY KEY REFERENCES chat_messages(id) ON DELETE CASCADE, parts_json TEXT NOT NULL CHECK(json_valid(parts_json)) )"
+    },
+    "mastra_observational_memory": {
+      "kind": "table",
+      "columns": {
+        "active_observations": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "buffered_message_ids_json": {
+          "ordinal": 15,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "buffered_observation_chunks_json": {
+          "ordinal": 12,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "buffered_observation_tokens": {
+          "ordinal": 14,
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "buffered_observations": {
+          "ordinal": 13,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "buffered_reflection": {
+          "ordinal": 16,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "buffered_reflection_input_tokens": {
+          "ordinal": 18,
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "buffered_reflection_tokens": {
+          "ordinal": 17,
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "config_json": {
+          "ordinal": 31,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'{}'",
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "generation_count": {
+          "ordinal": 9,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "is_buffering_observation": {
+          "ordinal": 27,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "is_buffering_reflection": {
+          "ordinal": 28,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "is_observing": {
+          "ordinal": 26,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "is_reflecting": {
+          "ordinal": 25,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "last_buffered_at_time": {
+          "ordinal": 30,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "last_buffered_at_tokens": {
+          "ordinal": 29,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "last_observed_at": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "metadata_json": {
+          "ordinal": 32,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "observation_token_count": {
+          "ordinal": 23,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "observed_message_ids_json": {
+          "ordinal": 20,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "observed_timezone": {
+          "ordinal": 21,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "origin_type": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "pending_message_tokens": {
+          "ordinal": 24,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "reflected_observation_line_count": {
+          "ordinal": 19,
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "resource_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "scope": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "superseded_by": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "thread_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "total_tokens_observed": {
+          "ordinal": 22,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "chat_sessions",
+          "from": "thread_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE mastra_observational_memory ( id TEXT PRIMARY KEY, scope TEXT NOT NULL CHECK(scope IN ('thread', 'resource')), thread_id TEXT REFERENCES chat_sessions(id) ON DELETE CASCADE, project_id TEXT REFERENCES projects(id) ON DELETE CASCADE, resource_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_observed_at TEXT, origin_type TEXT NOT NULL CHECK(origin_type IN ('initial', 'reflection')), generation_count INTEGER NOT NULL CHECK(generation_count >= 0), superseded_by TEXT, active_observations TEXT NOT NULL, buffered_observation_chunks_json TEXT CHECK(buffered_observation_chunks_json IS NULL OR json_valid(buffered_observation_chunks_json)), buffered_observations TEXT, buffered_observation_tokens INTEGER, buffered_message_ids_json TEXT CHECK(buffered_message_ids_json IS NULL OR json_valid(buffered_message_ids_json)), buffered_reflection TEXT, buffered_reflection_tokens INTEGER, buffered_reflection_input_tokens INTEGER, reflected_observation_line_count INTEGER, observed_message_ids_json TEXT CHECK(observed_message_ids_json IS NULL OR json_valid(observed_message_ids_json)), observed_timezone TEXT, total_tokens_observed INTEGER NOT NULL DEFAULT 0, observation_token_count INTEGER NOT NULL DEFAULT 0, pending_message_tokens INTEGER NOT NULL DEFAULT 0, is_reflecting INTEGER NOT NULL DEFAULT 0 CHECK(is_reflecting IN (0, 1)), is_observing INTEGER NOT NULL DEFAULT 0 CHECK(is_observing IN (0, 1)), is_buffering_observation INTEGER NOT NULL DEFAULT 0 CHECK(is_buffering_observation IN (0, 1)), is_buffering_reflection INTEGER NOT NULL DEFAULT 0 CHECK(is_buffering_reflection IN (0, 1)), last_buffered_at_tokens INTEGER NOT NULL DEFAULT 0, last_buffered_at_time TEXT, config_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(config_json) AND json_type(config_json) = 'object'), metadata_json TEXT CHECK(metadata_json IS NULL OR (json_valid(metadata_json) AND json_type(metadata_json) = 'object')), CHECK ((scope = 'thread' AND thread_id IS NOT NULL AND project_id IS NULL) OR (scope = 'resource' AND thread_id IS NULL AND project_id IS NOT NULL)) )"
+    },
+    "mastra_resources": {
+      "kind": "table",
+      "columns": {
+        "created_at": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "datetime('now')",
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "metadata_json": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'{}'",
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "datetime('now')",
+          "primaryKey": 0
+        },
+        "working_memory": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "project_id"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE mastra_resources ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE, working_memory TEXT, metadata_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(metadata_json) AND json_type(metadata_json) = 'object'), created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
+    },
+    "mastra_thread_metadata": {
+      "kind": "table",
+      "columns": {
+        "metadata_json": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'{}'",
+          "primaryKey": 0
+        },
+        "session_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "chat_sessions",
+          "from": "session_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE mastra_thread_metadata ( session_id TEXT PRIMARY KEY REFERENCES chat_sessions(id) ON DELETE CASCADE, metadata_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(metadata_json) AND json_type(metadata_json) = 'object') )"
     },
     "narrative_application_contributions": {
       "kind": "table",
@@ -15825,6 +16272,50 @@
       ],
       "createSql": "CREATE INDEX idx_map_stickies_chat_msg ON map_stickies(source_chat_message_id) WHERE source_chat_message_id IS NOT NULL"
     },
+    "idx_mastra_memory_vectors_message": {
+      "table": "mastra_memory_vectors",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "message_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_mastra_memory_vectors_message ON mastra_memory_vectors(message_id)"
+    },
+    "idx_mastra_observational_memory_project": {
+      "table": "mastra_observational_memory",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "updated_at"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_mastra_observational_memory_project ON mastra_observational_memory(project_id, updated_at)"
+    },
+    "idx_mastra_observational_memory_thread": {
+      "table": "mastra_observational_memory",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "thread_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "updated_at"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_mastra_observational_memory_thread ON mastra_observational_memory(thread_id, updated_at)"
+    },
     "idx_narrative_application_contributions_application": {
       "table": "narrative_application_contributions",
       "unique": false,
@@ -17840,6 +18331,21 @@
     "grimodex_clock_map_stickies_ad": "CREATE TRIGGER \"grimodex_clock_map_stickies_ad\" AFTER DELETE ON \"map_stickies\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_map_stickies_ai": "CREATE TRIGGER \"grimodex_clock_map_stickies_ai\" AFTER INSERT ON \"map_stickies\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_map_stickies_au": "CREATE TRIGGER \"grimodex_clock_map_stickies_au\" AFTER UPDATE ON \"map_stickies\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_mastra_memory_vectors_ad": "CREATE TRIGGER \"grimodex_clock_mastra_memory_vectors_ad\" AFTER DELETE ON \"mastra_memory_vectors\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_mastra_memory_vectors_ai": "CREATE TRIGGER \"grimodex_clock_mastra_memory_vectors_ai\" AFTER INSERT ON \"mastra_memory_vectors\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_mastra_memory_vectors_au": "CREATE TRIGGER \"grimodex_clock_mastra_memory_vectors_au\" AFTER UPDATE ON \"mastra_memory_vectors\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_mastra_message_parts_ad": "CREATE TRIGGER \"grimodex_clock_mastra_message_parts_ad\" AFTER DELETE ON \"mastra_message_parts\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_mastra_message_parts_ai": "CREATE TRIGGER \"grimodex_clock_mastra_message_parts_ai\" AFTER INSERT ON \"mastra_message_parts\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_mastra_message_parts_au": "CREATE TRIGGER \"grimodex_clock_mastra_message_parts_au\" AFTER UPDATE ON \"mastra_message_parts\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_mastra_observational_memory_ad": "CREATE TRIGGER \"grimodex_clock_mastra_observational_memory_ad\" AFTER DELETE ON \"mastra_observational_memory\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_mastra_observational_memory_ai": "CREATE TRIGGER \"grimodex_clock_mastra_observational_memory_ai\" AFTER INSERT ON \"mastra_observational_memory\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_mastra_observational_memory_au": "CREATE TRIGGER \"grimodex_clock_mastra_observational_memory_au\" AFTER UPDATE ON \"mastra_observational_memory\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_mastra_resources_ad": "CREATE TRIGGER \"grimodex_clock_mastra_resources_ad\" AFTER DELETE ON \"mastra_resources\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_mastra_resources_ai": "CREATE TRIGGER \"grimodex_clock_mastra_resources_ai\" AFTER INSERT ON \"mastra_resources\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_mastra_resources_au": "CREATE TRIGGER \"grimodex_clock_mastra_resources_au\" AFTER UPDATE ON \"mastra_resources\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_mastra_thread_metadata_ad": "CREATE TRIGGER \"grimodex_clock_mastra_thread_metadata_ad\" AFTER DELETE ON \"mastra_thread_metadata\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_mastra_thread_metadata_ai": "CREATE TRIGGER \"grimodex_clock_mastra_thread_metadata_ai\" AFTER INSERT ON \"mastra_thread_metadata\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_mastra_thread_metadata_au": "CREATE TRIGGER \"grimodex_clock_mastra_thread_metadata_au\" AFTER UPDATE ON \"mastra_thread_metadata\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_narrative_application_contributions_ad": "CREATE TRIGGER \"grimodex_clock_narrative_application_contributions_ad\" AFTER DELETE ON \"narrative_application_contributions\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_narrative_application_contributions_ai": "CREATE TRIGGER \"grimodex_clock_narrative_application_contributions_ai\" AFTER INSERT ON \"narrative_application_contributions\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_narrative_application_contributions_au": "CREATE TRIGGER \"grimodex_clock_narrative_application_contributions_au\" AFTER UPDATE ON \"narrative_application_contributions\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",

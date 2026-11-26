@@ -72,7 +72,7 @@ test("the startup status publishes policy version 2 as closed / read-open / read
       "readOpenTables",
       "version",
     ]);
-    assert.equal(policy.version, 2);
+    assert.equal(policy.version, 3);
     assert.equal(policy.closedTables.length, 26);
     assert.equal(policy.readOpenTables.length, 58);
     assert.deepEqual(policy.readOpenColumns, [

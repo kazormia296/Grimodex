@@ -20,6 +20,7 @@ type SchemaForeignKey = {
 };
 
 type SchemaContract = {
+  schemaVersion: number;
   tables: Record<
     string,
     {
@@ -66,6 +67,12 @@ const RUST_ONLY_TABLES = new Set([
   // SDEF/1 MD5: the project Scene Scope default is Native-owned; the renderer
   // reads and writes it only through typed commands, never through Drizzle.
   "narrative_scope_project_defaults",
+  // MP-7 stores Mastra memory behind the main-only typed writer added in 7b.
+  "mastra_message_parts",
+  "mastra_thread_metadata",
+  "mastra_resources",
+  "mastra_observational_memory",
+  "mastra_memory_vectors",
   // DB stage 1 (DR-DBC-3): Native-owned commit sequence and lineage. The
   // grimodex_clock_* triggers write the clock table, so they are excluded from
   // the browser trigger comparison through the same table-name match.
