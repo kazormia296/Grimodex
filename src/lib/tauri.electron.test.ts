@@ -160,6 +160,23 @@ describe("envelope 解封 = typed error + legacy wire compatibility", () => {
     expect(String(caught)).not.toContain("WORKSPACE_SWITCHING");
   });
 
+  it("NEX_EXISTENCE_SYNC_FAILED は、履歴が保てるように専用の code にする", async () => {
+    installBridge({
+      invoke: vi.fn().mockResolvedValue({
+        ok: false,
+        error: "NEX_EXISTENCE_SYNC_FAILED: approval revocation was refused",
+      }),
+    });
+    const { invoke } = await import("./tauri");
+    await expect(
+      invoke("db_execute", { sql: "SELECT 1", params: [], method: "all" }),
+    ).rejects.toMatchObject({
+      code: "NEX_EXISTENCE_SYNC_FAILED",
+      retryable: true,
+      outcome: "failed",
+    });
+  });
+
   it("RERANKER_BUSYをretryableなtyped errorへ正規化する", async () => {
     installBridge({
       invoke: vi.fn().mockResolvedValue({
