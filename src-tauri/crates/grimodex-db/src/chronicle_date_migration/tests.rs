@@ -174,3 +174,29 @@ fn skips_unexpected_rows_and_leaves_them_unchanged() -> Result<()> {
     assert_eq!(counters(&conn)?, before);
     Ok(())
 }
+
+#[test]
+fn does_not_place_a_day_past_the_bound() -> Result<()> {
+    let db = crate::test_support::current_schema_memory()?;
+    let conn = db.lock()?;
+    // 9007199254740991 = 2^53 - 1, the bound itself, is a normal day.
+    conn.execute_batch(
+        "SAVEPOINT migration;
+         INSERT INTO projects(id,title) VALUES ('a','A'),('z','Z');
+         INSERT INTO events(id,project_id,start_time,start_granularity)
+         VALUES ('at-bound','a',9007199254740991,'day'), ('below','z',9007199254740990,'day');
+         INSERT INTO events(id,project_id,ordinal)
+         VALUES ('past','a','a'), ('last','z','a'), ('over','z','b');",
+    )?;
+    let untouched = "SELECT * FROM events WHERE id IN ('past','over','at-bound') ORDER BY id";
+    let original = snapshot(&conn, untouched)?;
+    let report = fill_missing_chronicle_dates(&conn)?;
+    assert_eq!(report.skipped_event_ids, ["past", "over"]);
+    assert_eq!(report.changed.len(), 1);
+    assert_eq!(day(&conn, "last")?, 9_007_199_254_740_991);
+    assert_eq!(snapshot(&conn, untouched)?, original);
+    let before = counters(&conn)?;
+    assert!(fill_missing_chronicle_dates(&conn)?.changed.is_empty());
+    assert_eq!(counters(&conn)?, before);
+    Ok(())
+}

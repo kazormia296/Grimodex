@@ -170,6 +170,11 @@ fn fill_project(
     for date in dates {
         let e = targets[date.id.as_str()];
         let day = date.start_time as i64;
+        // A day past the bound would itself be an unexpected value on the next call.
+        if !safe_day(day) {
+            report.skipped_event_ids.push(date.id);
+            continue;
+        }
         let mut actions = Vec::new();
         let mut columns = Vec::new();
         for (changed, column) in [

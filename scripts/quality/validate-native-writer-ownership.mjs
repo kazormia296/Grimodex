@@ -204,6 +204,8 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/agent_writes.rs",
     "src-tauri/crates/grimodex-db/src/chronicle.rs",
     "src-tauri/crates/grimodex-db/src/chronicle_bulk.rs",
+    // CED/1 migration (I2・I3) only: fills missing dates of stored events.
+    "src-tauri/crates/grimodex-db/src/chronicle_date_migration.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/chronicle_operations.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/temporal_operations.rs",
     "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
