@@ -1170,7 +1170,7 @@ export type MaintenanceInboxEvidenceFreshness =
   | null;
 
 /**
- * The only fields of an Inbox row that the structure-health counts need.
+ * Allow-listed Inbox fields exposed to renderer callers.
  * Free text (`attention.reason`), actor / request identities, payload digests
  * and observation rows ride on the wire but are deliberately never read here.
  */
@@ -1178,6 +1178,7 @@ export interface MaintenanceInboxEntry {
   readonly entryKind: MaintenanceInboxEntryKind;
   readonly consumerKind: MaintenanceInboxConsumerKind;
   readonly evidenceFreshness: MaintenanceInboxEvidenceFreshness;
+  readonly attentionApplies: boolean;
 }
 
 function pickKnown<const T extends readonly string[]>(
@@ -1193,7 +1194,7 @@ function pickKnown<const T extends readonly string[]>(
 /**
  * Validate the snake_case Inbox wire and project it onto the allow-listed
  * camelCase shape. Throws when the wire is not an array; an element that is
- * not an object, or a field that is missing or unknown, becomes
+ * not an object, or a vocabulary field that is missing or unknown, becomes
  * `"unrecognized"` rather than an error.
  */
 export function parseMaintenanceInbox(
@@ -1226,6 +1227,7 @@ export function parseMaintenanceInbox(
               record["evidence_freshness"],
               MAINTENANCE_INBOX_EVIDENCE_FRESHNESS,
             ),
+      attentionApplies: record["attention_applies"] === true,
     };
   });
 }
