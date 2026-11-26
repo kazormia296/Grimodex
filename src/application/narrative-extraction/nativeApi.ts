@@ -828,6 +828,16 @@ export async function narrativeExtractionChronicleBulkApprove(
   );
 }
 
+/** Reapprove an applied proposal after its Chronicle event was removed. */
+export async function narrativeExtractionReapproveAppliedProposals(
+  payload: ReapproveAppliedProposalsPayload,
+): Promise<ReapproveAppliedProposalsResult> {
+  return invoke<ReapproveAppliedProposalsResult>(
+    "narrative_extraction_reapprove_applied_proposals",
+    { payload },
+  );
+}
+
 export async function narrativeExtractionReviseAndDecide(
   payload: ReviseAndDecidePayload,
 ): Promise<ReviseAndDecideResult> {
@@ -881,6 +891,39 @@ export interface ChronicleBulkApproveResult {
     readonly code: string;
   }[];
   /** Shutdown or a workspace switch stopped the run between proposals. */
+  readonly stopped: boolean;
+}
+
+export type ReapproveAppliedProposalSkipReasonCode =
+  | "proposal-not-found"
+  | "no-application"
+  | "revision-changed"
+  | "already-approved"
+  | "not-removal-rejection"
+  | "event-missing";
+
+export interface ReapproveAppliedProposalsPayload {
+  readonly projectId: string;
+  readonly targets: readonly {
+    readonly proposalId: string;
+    readonly revisionId: string;
+  }[];
+}
+
+export interface ReapproveAppliedProposalsResult {
+  readonly approved: readonly {
+    readonly proposalId: string;
+    readonly revisionId: string;
+    readonly decisionId: string;
+  }[];
+  readonly skipped: readonly {
+    readonly proposalId: string;
+    readonly reasons: readonly ReapproveAppliedProposalSkipReasonCode[];
+  }[];
+  readonly failed: readonly {
+    readonly proposalId: string;
+    readonly code: string;
+  }[];
   readonly stopped: boolean;
 }
 

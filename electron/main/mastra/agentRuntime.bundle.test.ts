@@ -382,6 +382,14 @@ describe("the real Agent in the third bundle", () => {
 describe("the runtime tool allow-list (DR-MP3-14, layer 2)", () => {
   it("matches the M4 shared names, and a tool outside it is refused by name", () => {
     expect([...MASTRA_AGENT_TOOL_ALLOWLIST]).toEqual([...M4_READ_TOOL_NAMES]);
+    expect(MASTRA_AGENT_TOOL_ALLOWLIST).not.toContain(
+      "narrative_extraction_reapprove_applied_proposals",
+    );
+    expect(() =>
+      assertAgentToolsAllowed([
+        "narrative_extraction_reapprove_applied_proposals",
+      ]),
+    ).toThrow(MastraAgentToolNotAllowedError);
     expect(() => assertAgentToolsAllowed([])).not.toThrow();
     expect(() => assertAgentToolsAllowed(["not_allowed"])).toThrow(
       MastraAgentToolNotAllowedError,
