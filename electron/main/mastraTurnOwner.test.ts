@@ -568,6 +568,70 @@ async function startPendingUiQuestion(
   };
 }
 
+async function startAdapterPendingUiTool(
+  toolName: MastraAgentTurnQuestionToolName,
+  args: Readonly<Record<string, unknown>>,
+  loop: Partial<MastraAgentTurnStartRequest["loop"]> = {},
+): Promise<{
+  readonly h: Harness;
+  readonly context: MastraTurnInvokeContext;
+  readonly sender: FakeSender;
+  readonly win: FakeWindow;
+  readonly pending: Promise<string>;
+  readonly start: Promise<MastraAgentTurnStartResult>;
+  readonly question: MastraAgentTurnQuestionPayload;
+}> {
+  const response: AgentWireResponse = {
+    blocks: [
+      {
+        type: "tool_use",
+        id: UI_TOOL_CALL_ID,
+        name: toolName,
+        input: args,
+      },
+    ],
+    stopReason: "tool_use",
+  };
+  const pendingReady = deferred<{ readonly pending: Promise<string> }>();
+  const h = harness({
+    responses: [
+      response,
+      { blocks: [{ type: "text", content: "Done." }], stopReason: "end_turn" },
+    ],
+    runTurn: async (input) =>
+      driveCoreReadOwnerLoop(input, true, (execution) => {
+        const pending = Promise.resolve(execution).then((result) =>
+          String(result),
+        );
+        void pending.catch(() => undefined);
+        pendingReady.resolve({
+          pending,
+        });
+      }),
+  });
+  const { context, sender, win } = h.newContext();
+  const request = startRequest(TURN_A);
+  const start = h.owner.start(context, {
+    ...request,
+    tools: [toolName],
+    loop: { ...request.loop, ...loop },
+  });
+  void start.catch(() => undefined);
+  const { pending } = await pendingReady.promise;
+  await flush();
+  const delivery = questionDeliveries[questionDeliveries.length - 1];
+  if (!delivery) throw new Error("MP5_ADAPTER_QUESTION_NOT_SENT");
+  return {
+    h,
+    context,
+    sender,
+    win,
+    pending,
+    start,
+    question: delivery[2] as MastraAgentTurnQuestionPayload,
+  };
+}
+
 function auditRequestFor(
   input: MastraAgentTurnInput,
   messages: AgentAuditRequest["messages"] = [...input.messages],
@@ -814,6 +878,7 @@ function mainReadFixture(title: string): NapiBackendLike["dbExecute"] {
 async function driveCoreReadOwnerLoop(
   input: MastraAgentTurnInput,
   continueAfterControl = false,
+  onToolExecute?: (execution: Promise<unknown>) => void,
 ): Promise<void> {
   const tools = createMastraAgentTools({
     names: (input.toolDefinitions ?? []).map(({ name }) => name),
@@ -860,12 +925,14 @@ async function driveCoreReadOwnerLoop(
       let content: string;
       let isError = false;
       try {
-        content = String(
-          await adapter.execute(tool.input, {
+        const execution = Promise.resolve(
+          adapter.execute(tool.input, {
             agent: { toolCallId: tool.id },
             abortSignal: input.signal,
           } as never),
         );
+        onToolExecute?.(execution);
+        content = String(await execution);
       } catch (error) {
         if (input.signal.aborted) throw error;
         content = `Error: ${error instanceof Error ? error.message : String(error)}`;
@@ -4815,6 +4882,194 @@ describe("MP-5 main-owned question holds", () => {
       expect(h.owner.activeTurnCount()).toBe(0);
     },
   );
+
+  it.each([
+    ["run_app_command", { command: "focusScenes" }],
+    ["apply_layout_preset", { preset: "builtin:plan" }],
+    ["propose_setting_change", { key: "editor.fontSize", value: "16" }],
+    ["get_ui_state", {}],
+    ["get_app_help_index", {}],
+    ["get_app_help", { id: "topic:layout.presets" }],
+  ] as const)(
+    "the real tool adapter returns the %s uncertain-timeout error without repeating the operation",
+    async (toolName, args) => {
+      vi.useFakeTimers();
+      const { h, context, pending, start, question } =
+        await startAdapterPendingUiTool(toolName, args);
+      await vi.advanceTimersByTimeAsync(MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT_MS);
+      await expect(pending).rejects.toThrow(
+        /outcome is uncertain; do not repeat the operation/,
+      );
+      await expect(start).resolves.toMatchObject({ status: "completed" });
+      await expect(
+        h.owner.answer(context, answerForQuestion(question)),
+      ).resolves.toEqual({ status: "refused", reason: "no-pending" });
+      expect(questionDeliveries).toHaveLength(1);
+      expect(h.sends).toHaveLength(2);
+      expect(h.owner.activeTurnCount()).toBe(0);
+    },
+  );
+
+  it("returns only the answer content through the real tool adapter", async () => {
+    const { h, context, pending, start, question } =
+      await startAdapterPendingUiTool("get_ui_state", {});
+    await expect(
+      h.owner.answer(context, answerForQuestion(question)),
+    ).resolves.toEqual({ status: "accepted", requestId: question.requestId });
+    await expect(pending).resolves.toBe(JSON.stringify({ answer: "A" }));
+    await expect(start).resolves.toMatchObject({ status: "completed" });
+    expect(h.owner.activeTurnCount()).toBe(0);
+  });
+
+  it("the real tool adapter ends ask_user at its deadline without another send", async () => {
+    vi.useFakeTimers();
+    const { h, context, pending, start, question } =
+      await startAdapterPendingUiTool("ask_user", ASK_USER_ARGS);
+    expect(question.deadlineAt - Date.now()).toBe(
+      MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS,
+    );
+    await vi.advanceTimersByTimeAsync(MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS);
+    await expect(pending).resolves.toBe(
+      "Tool execution skipped because the turn stopped.",
+    );
+    await expect(start).resolves.toMatchObject({
+      status: "completed",
+      loopResult: { stoppedReason: "aborted" },
+    });
+    await expect(
+      h.owner.answer(context, answerForQuestion(question)),
+    ).resolves.toEqual({ status: "refused", reason: "no-pending" });
+    expect(h.sends).toHaveLength(1);
+    expect(h.owner.activeTurnCount()).toBe(0);
+  });
+
+  it("ask_user still uses the separate legacy question limit", async () => {
+    const { h, context, pending, start, question } =
+      await startAdapterPendingUiTool("ask_user", ASK_USER_ARGS, {
+        maxUserQuestions: 1,
+      });
+    await h.owner.answer(context, answerForQuestion(question));
+    await expect(pending).resolves.toBe(JSON.stringify({ answer: "A" }));
+    await expect(start).resolves.toMatchObject({
+      status: "completed",
+      loopResult: { stoppedReason: "limit_questions" },
+    });
+    expect(h.sends).toHaveLength(2);
+    expect(
+      h.sends[1]?.args.messages.some((message) =>
+        message.content.includes("questions"),
+      ),
+    ).toBe(true);
+  });
+
+  it("a renderer authority refusal ends the real tool adapter turn", async () => {
+    const { h, context, pending, start, question } =
+      await startAdapterPendingUiTool("ask_user", ASK_USER_ARGS);
+    await h.owner.answer(context, {
+      requestId: question.requestId,
+      refusal: "authority-revoked",
+    });
+    await expect(pending).resolves.toBe(
+      "Tool execution skipped because the turn stopped.",
+    );
+    await expect(start).resolves.toMatchObject({
+      status: "completed",
+      loopResult: { stoppedReason: "aborted" },
+    });
+    expect(h.sends).toHaveLength(1);
+    expect(h.owner.activeTurnCount()).toBe(0);
+  });
+
+  it("limits UI operation attempts to the legacy ten per turn", async () => {
+    let owner: MastraTurnOwner | null = null;
+    let context: MastraTurnInvokeContext | null = null;
+    let answered = 0;
+    const toolUses: AgentWireResponse["blocks"] = Array.from(
+      { length: 11 },
+      (_, index) => {
+        const name =
+          index % 2 === 0 ? "run_app_command" : "apply_layout_preset";
+        return {
+          type: "tool_use" as const,
+          id: `ui-op-${index}`,
+          name,
+          input:
+            name === "run_app_command"
+              ? { command: "focusScenes" }
+              : { preset: "builtin:plan" },
+        };
+      },
+    );
+    const h = harness({
+      responses: [
+        { blocks: toolUses, stopReason: "tool_use" },
+        {
+          blocks: [{ type: "text", content: "Done." }],
+          stopReason: "end_turn",
+        },
+      ],
+      runTurn: async (input) => driveCoreReadOwnerLoop(input, true),
+      sendQuestion: (_senderId, question) => {
+        if (!owner || !context) return false;
+        answered += 1;
+        queueMicrotask(() => {
+          void owner!.answer(context!, {
+            requestId: question.requestId,
+            result: {
+              toolCallId: question.toolCallId,
+              name: question.toolName,
+              content: { ok: true },
+              summary: "ok",
+              tokensUsed: 1,
+            },
+          });
+        });
+        return true;
+      },
+    });
+    owner = h.owner;
+    const caller = h.newContext();
+    context = caller.context;
+    const request = startRequest(TURN_A);
+    const result = completed(
+      await h.owner.start(caller.context, {
+        ...request,
+        tools: ["run_app_command", "apply_layout_preset"],
+        loop: {
+          ...request.loop,
+          tokenBudget: 20_000,
+          contextWindow: 50_000,
+          maxToolCalls: 25,
+        },
+      }),
+    );
+    expect(answered).toBe(10);
+    expect(h.readBindingLoads.count).toBe(0);
+    expect(result.loopResult?.toolCallRecords).toHaveLength(11);
+    expect(result.loopResult?.toolCallRecords.at(-1)?.resultSummary).toContain(
+      "UI operation limit reached (10 per response)",
+    );
+    expect(
+      h.sends[1]?.args.messages.some((message) =>
+        message.content.includes("UI operation limit reached"),
+      ),
+    ).toBe(true);
+  });
+
+  it("closing the window ends a pending ask_user through the real tool adapter", async () => {
+    const { h, win, pending, start } = await startAdapterPendingUiTool(
+      "ask_user",
+      ASK_USER_ARGS,
+    );
+    win.emit("closed");
+    await expect(pending).resolves.toBe(
+      "Tool execution skipped because the turn stopped.",
+    );
+    await expect(start).rejects.toThrow(
+      /MASTRA_AGENT_TURN_ABORTED: sender-gone/,
+    );
+    expect(h.owner.activeTurnCount()).toBe(0);
+  });
 
   it("rejects an answer at its absolute deadline even before the timer callback runs", async () => {
     vi.useFakeTimers();
