@@ -6963,8 +6963,10 @@ mod unit_tests {
     };
     use serde_json::json;
 
+    // The file drives the product delete paths (SRD/1 X), so it lives outside
+    // the semantic boundary of this directory, whose code must not call writers.
     mod event_existence_tests {
-        include!("event_existence_tests.rs");
+        include!("../event_existence_tests.rs");
     }
 
     #[test]

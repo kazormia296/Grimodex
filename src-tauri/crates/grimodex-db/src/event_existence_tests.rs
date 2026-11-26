@@ -287,7 +287,7 @@ fn ineligible_applications_leave_status_and_decisions_untouched() -> anyhow::Res
 #[test]
 fn only_the_native_existence_writer_can_append_after_apply() {
     use sha2::{Digest, Sha256};
-    let source = include_str!("repository.rs");
+    let source = include_str!("narrative_extraction/repository.rs");
     let start = source.find("fn append_decision_on_conn(").unwrap();
     let end = source[start..]
         .find("\n#[derive(Clone, Copy, serde::Serialize)]")
@@ -297,33 +297,8 @@ fn only_the_native_existence_writer_can_append_after_apply() {
         hex::encode(Sha256::digest(&source.as_bytes()[start..end])),
         "a47bd72dc0a5d379a248eccaff9fafe3493b481f366f985fc1b3c410ea4e2b4a"
     );
-    // The ownership validator rejects unregistered files. Inspect the other
-    // registered writers too, since they can legitimately mutate related tables.
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    let registry =
-        std::fs::read_to_string(root.join("scripts/quality/validate-native-writer-ownership.mjs"))
-            .unwrap();
-    let (_, registry) = registry.split_once("\"narrative.authority\": [").unwrap();
-    let (files, _) = registry.split_once("],").unwrap();
-    let mut found_repository = false;
-    for file in files
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix('"')?.strip_suffix("\","))
-    {
-        if file == "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs" {
-            found_repository = true;
-            continue;
-        }
-        let contents = std::fs::read_to_string(root.join(file)).unwrap();
-        let production = contents.split("#[cfg(test)]\nmod ").next().unwrap();
-        let sql = production
-            .to_ascii_lowercase()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert!(!sql.contains("into narrative_proposal_decisions"), "{file}");
-    }
-    assert!(found_repository);
+    // Which production functions append decisions at all is pinned by
+    // `proposal_decision_writer_inventory` (narrative_scope_storage_authority).
     let production = source.split("mod unit_tests {").next().unwrap();
     let insertion = "INSERT INTO narrative_proposal_decisions";
     assert_eq!(production.matches(insertion).count(), 2);

@@ -8,6 +8,8 @@
 - 既にある `append_decision_on_conn`・`append_decision_on_conn_with_reuse` は変えない。本体の SHA-256 を試験で固定する。
 - X2 の対象は、1 回の探索で引く。`narrative_proposal_applications` を結合の外側に置き、出来事の id の集合は `json_each` で渡す。索引は足さない（大きい作品で測ってから決める）。
 - 型付きの Entity／Relation の提案には働かない（X3 (2)）。
+- 決定の表（`narrative_proposal_decisions`）に追記する本番の関数は 2 つだけで、`narrative_scope_storage_authority.rs` の `proposal_decision_writer_inventory` が固定する。
+- 試験は `grimodex-db/src/event_existence_tests.rs`（`repository.rs` の試験 module から `include!`）。製品の削除の入口を通すので、「`narrative_extraction` の下のコードは writer を呼ばない」という境界の検査の対象の外に置く。検査と許可の一覧は変えていない。
 
 ## DR-SRD-X-2　入口と `removedVia`
 

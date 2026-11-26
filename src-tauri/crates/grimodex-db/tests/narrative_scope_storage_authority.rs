@@ -1522,6 +1522,35 @@ fn chronicle_event_write_inventory() {
     assert_eq!(actual, expected);
 }
 
+/// SRD/1 X3: Proposal decisions are appended only by these functions. Of them,
+/// only `append_event_existence_decisions_in_tx` may append after an Application.
+#[test]
+fn proposal_decision_writer_inventory() {
+    let sources = load_production_sources(&repo_root());
+    let mut actual = count_hits(&scan_table_hits(
+        &sources,
+        &["narrative_proposal_decisions"],
+    ));
+    actual.retain(|(_, _, verb_table), _| verb_table.starts_with("INSERT "));
+    let expected: BTreeMap<_, _> = [
+        "append_decision_on_conn_with_reuse",
+        "append_event_existence_decisions_in_tx",
+    ]
+    .into_iter()
+    .map(|function| {
+        (
+            (
+                "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs".to_string(),
+                function.to_string(),
+                "INSERT narrative_proposal_decisions".to_string(),
+            ),
+            1,
+        )
+    })
+    .collect();
+    assert_eq!(actual, expected, "{}", describe(&actual));
+}
+
 #[test]
 fn scanner_skips_test_items_and_non_write_statements() {
     let source = [
