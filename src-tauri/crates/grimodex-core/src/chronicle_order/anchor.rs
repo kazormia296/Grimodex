@@ -55,8 +55,10 @@ impl ChroniclePrecision {
             Self::Other(other) => other,
         }
     }
+}
 
-    fn from_string(value: String) -> Self {
+impl From<String> for ChroniclePrecision {
+    fn from(value: String) -> Self {
         match value.as_str() {
             "exact" => Self::Exact,
             "approx" => Self::Approx,
@@ -74,7 +76,7 @@ impl Serialize for ChroniclePrecision {
 
 impl<'de> Deserialize<'de> for ChroniclePrecision {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        String::deserialize(deserializer).map(Self::from_string)
+        String::deserialize(deserializer).map(Self::from)
     }
 }
 

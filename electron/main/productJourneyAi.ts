@@ -60,6 +60,31 @@ function streamIdFromArgs(args: unknown): string {
   return request.streamId;
 }
 
+function executionIdFromArgs(args: unknown): string {
+  if (typeof args !== "object" || args === null || Array.isArray(args)) {
+    throw new Error("product journey Agent args must be an object");
+  }
+  const executionId = (args as { auditContext?: { executionId?: unknown } })
+    .auditContext?.executionId;
+  if (
+    typeof executionId !== "string" ||
+    !executionId.trim() ||
+    executionId !== executionId.trim()
+  ) {
+    throw new Error("product journey Agent executionId must be non-empty");
+  }
+  return executionId;
+}
+
+function isLifecycleSwitchPrompt(input: string): boolean {
+  return [
+    "PROJECT-CHAT-AUTHORITY-JOURNEY-",
+    "AGENT-PROJECT-SWITCH-PROMPT",
+    "AGENT-WORKSPACE-SWITCH-PROMPT",
+    "WORKSPACE-CHAT-AUTHORITY-JOURNEY-",
+  ].some((marker) => input.includes(marker));
+}
+
 function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -133,6 +158,11 @@ export function wrapBackendForProductJourneyAi(
   let eventSink: BackendEventSink | null = null;
   let activeStream: ProductJourneyStream | null = null;
   const pendingAborts = new Set<string>();
+  const activeAgentSends = new Map<
+    string,
+    { abort: () => void; quiesced: Promise<void> }
+  >();
+  const pendingAgentAborts = new Set<string>();
 
   const overrides: Partial<NapiBackendLike> = {
     onEvent(callback) {
@@ -155,29 +185,78 @@ export function wrapBackendForProductJourneyAi(
     },
 
     async sendAgentMessage(args) {
+      const executionId = executionIdFromArgs(args);
       const input = messageText(args);
       const authorityJourney = input.includes(PRODUCT_JOURNEY_AGENT_MARKER);
       const projectSwitch = input.includes("AGENT-PROJECT-SWITCH-PROMPT");
       const workspaceSwitch = input.includes("AGENT-WORKSPACE-SWITCH-PROMPT");
-      if (authorityJourney || projectSwitch || workspaceSwitch)
-        await wait(STREAM_BOUNDARY_DELAY_MS);
-      return JSON.stringify({
-        blocks: [
-          {
-            type: "text",
-            content: authorityJourney
-              ? PRODUCT_JOURNEY_AGENT_OUTPUT
-              : projectSwitch
-                ? PRODUCT_JOURNEY_AGENT_PROJECT_SWITCH_OUTPUT
-                : workspaceSwitch
-                  ? PRODUCT_JOURNEY_AGENT_WORKSPACE_SWITCH_OUTPUT
-                  : "Product Journey Agent",
-          },
-        ],
-        stopReason: "end_turn",
-        inputTokens: 1,
-        outputTokens: authorityJourney ? 4 : 2,
+      const delayed = authorityJourney || projectSwitch || workspaceSwitch;
+      if (activeAgentSends.has(executionId)) {
+        throw new Error("product journey Agent executionId is already active");
+      }
+      if (pendingAgentAborts.delete(executionId)) {
+        throw new Error("AI_REQUEST_STOPPED_BY_USER");
+      }
+
+      let aborted = false;
+      let rejectAborted = (_error: Error) => {};
+      let resolveQuiesced = () => {};
+      const abortError = new Error("AI_REQUEST_STOPPED_BY_USER");
+      const abortPromise = new Promise<never>((_resolve, reject) => {
+        rejectAborted = reject;
       });
+      // Gated sends observe abort through polling instead of racing this promise.
+      void abortPromise.catch(() => {});
+      const quiesced = new Promise<void>((resolve) => {
+        resolveQuiesced = resolve;
+      });
+      const send = {
+        abort() {
+          if (aborted) return;
+          aborted = true;
+          rejectAborted(abortError);
+        },
+        quiesced,
+      };
+      activeAgentSends.set(executionId, send);
+      try {
+        if (delayed) {
+          const gateFile =
+            gateDir &&
+            path.isAbsolute(gateDir) &&
+            isLifecycleSwitchPrompt(input)
+              ? path.join(gateDir, `release-lifecycle-switch-${executionId}`)
+              : null;
+          if (gateFile) {
+            await waitForStreamGate(gateFile, () => aborted);
+          } else {
+            await Promise.race([wait(STREAM_BOUNDARY_DELAY_MS), abortPromise]);
+          }
+        }
+        if (aborted) throw abortError;
+        return JSON.stringify({
+          blocks: [
+            {
+              type: "text",
+              content: authorityJourney
+                ? PRODUCT_JOURNEY_AGENT_OUTPUT
+                : projectSwitch
+                  ? PRODUCT_JOURNEY_AGENT_PROJECT_SWITCH_OUTPUT
+                  : workspaceSwitch
+                    ? PRODUCT_JOURNEY_AGENT_WORKSPACE_SWITCH_OUTPUT
+                    : "Product Journey Agent",
+            },
+          ],
+          stopReason: "end_turn",
+          inputTokens: 1,
+          outputTokens: authorityJourney ? 4 : 2,
+        });
+      } finally {
+        if (activeAgentSends.get(executionId) === send) {
+          activeAgentSends.delete(executionId);
+        }
+        resolveQuiesced();
+      }
     },
 
     async sendChatMessageStream(args) {
@@ -226,6 +305,15 @@ export function wrapBackendForProductJourneyAi(
             path.join(gateDir, PRODUCT_JOURNEY_CODEX_SWITCH_GATE),
             () => stream.aborted,
           );
+        } else if (
+          gateDir &&
+          path.isAbsolute(gateDir) &&
+          isLifecycleSwitchPrompt(input)
+        ) {
+          await waitForStreamGate(
+            path.join(gateDir, `release-lifecycle-switch-${streamId}`),
+            () => stream.aborted,
+          );
         } else {
           await wait(STREAM_BOUNDARY_DELAY_MS);
         }
@@ -252,14 +340,27 @@ export function wrapBackendForProductJourneyAi(
     },
 
     async abortChatStream(streamId) {
-      if (activeStream?.streamId === streamId) {
-        activeStream.aborted = true;
-        await activeStream.quiesced;
+      const stream = activeStream?.streamId === streamId ? activeStream : null;
+      const agentSend = activeAgentSends.get(streamId);
+      if (stream || agentSend) {
+        if (stream) stream.aborted = true;
+        agentSend?.abort();
+        await Promise.all(
+          [stream?.quiesced, agentSend?.quiesced].filter(
+            (pending): pending is Promise<void> => pending !== undefined,
+          ),
+        );
         return true;
       }
       pendingAborts.add(streamId);
+      pendingAgentAborts.add(streamId);
       if (pendingAborts.size > 256) {
         pendingAborts.delete(pendingAborts.values().next().value ?? "");
+      }
+      if (pendingAgentAborts.size > 256) {
+        pendingAgentAborts.delete(
+          pendingAgentAborts.values().next().value ?? "",
+        );
       }
       return false;
     },

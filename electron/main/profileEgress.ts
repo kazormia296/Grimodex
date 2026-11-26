@@ -214,7 +214,7 @@ const OWN_DATA_READ_COMMANDS = [
   "list_scene_lens_for_project",
   "list_annotations_for_scene",
   "list_annotations_for_project",
-  // Extraction review and maintenance inbox (9)
+  // Extraction review and maintenance inbox (10)
   "narrative_extraction_get_run",
   "narrative_extraction_get_run_review_bundle",
   "narrative_extraction_list_resumable_runs",
@@ -223,7 +223,9 @@ const OWN_DATA_READ_COMMANDS = [
   "narrative_extraction_get_commit_status",
   "narrative_extraction_list_scene_proposals",
   "narrative_maintenance_inbox_list",
+  "narrative_maintenance_health_summary",
   "narrative_maintenance_stale_proposal_count",
+  "narrative_maintenance_stale_proposal_scenes",
 ] as const satisfies readonly (keyof typeof NAPI_COMMANDS)[];
 
 /**
@@ -490,6 +492,7 @@ const INTERNAL_COMMANDS = new Set([
   "narrative_extraction_fail_task",
   "narrative_extraction_finish_task",
   "narrative_extraction_prepare_commit",
+  "narrative_extraction_reapprove_applied_proposals",
   "narrative_extraction_redo_commit",
   // DR-CSX-1: returns only the Native sha256 revision token of the author's own
   // Codex catalog (no plaintext, no egress), pinned to the captured extraction

@@ -3308,7 +3308,7 @@ fn negative_snapshot_restore_without_body_moves_only_the_epoch() -> Result<()> {
             project_id: PROJECT.to_owned(),
             snapshot_id: "hc1-snapshot".to_owned(),
             scopes,
-            inserts,
+            inserts: inserts.inserts,
         },
     )?;
     let epochs: i64 = session.db().with_conn(|conn| {

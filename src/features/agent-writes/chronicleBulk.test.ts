@@ -201,6 +201,25 @@ describe("uiMutateChronicleBulk", () => {
     expect(mocks.push).toHaveBeenCalledTimes(1);
   });
 
+  it("承認を外せず失敗した undo は、失敗をそのまま返し、同じ requestId で再試行する（SRD/1 HK3）", async () => {
+    await uiMutateChronicleBulk([
+      { kind: "eventDelete", eventId: "e1", baseVersion: 2 },
+    ]);
+    const command = mocks.push.mock.calls[0][0];
+    const refused = {
+      code: "NEX_EXISTENCE_SYNC_FAILED",
+      outcome: "failed",
+    };
+    mocks.applyUndoJournal.mockRejectedValueOnce(refused);
+
+    // The history store keeps the entry only if the code survives this path.
+    await expect(command.undo()).rejects.toBe(refused);
+    await command.undo();
+
+    const [first, retried] = mocks.applyUndoJournal.mock.calls;
+    expect(retried[2]).toBe(first[2]);
+  });
+
   it("native成功後のpublication失敗も同じ forward requestId で再開する", async () => {
     const publicationFailure = new Error("history publication failed");
     mocks.push.mockImplementationOnce(() => {

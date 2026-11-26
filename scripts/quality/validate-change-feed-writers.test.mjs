@@ -162,6 +162,10 @@ describe("validate-change-feed-writers", () => {
     ]) {
       assert.ok(mcpRoutes.includes(route), `missing MCP route ${route}`);
     }
+    assert.ok(
+      !mcpRoutes.includes("narrative_extraction_reapprove_applied_proposals"),
+      "applied proposal reapproval must not be exposed as an MCP tool",
+    );
 
     for (const route of [
       "ai_tree_plan_apply",

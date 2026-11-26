@@ -1117,6 +1117,7 @@ pub fn narrative_extraction_apply_commit_with_control(
             let mut after_snapshots = Vec::new();
             let mut scene_scope_refresh_events = Vec::new();
             let mut application_ids = Vec::with_capacity(payload.applications.len());
+            let mut system_dated_operations = BTreeSet::new();
             // Kept so each Contribution can name the operation that produced
             // it (SCHEMA 29). 1:1 with `payload.operations` by construction,
             // the same way `application_ids` is.
@@ -1136,16 +1137,20 @@ pub fn narrative_extraction_apply_commit_with_control(
                         let event_payload = parse_event_create_payload(&op.payload)?;
                         let ordinal = &ordinals[ordinal_index];
                         ordinal_index += 1;
-                        let result = apply_chronicle_event_create(ChronicleEventCreateContext {
-                            conn,
-                            project_id: &payload.project_id,
-                            session_id: &payload.session_id,
-                            surface: payload.surface.as_deref(),
-                            payload: &event_payload,
-                            ordinal,
-                            now: &now,
-                            timestamp,
-                        })?;
+                        let (result, assigned_date) =
+                            apply_chronicle_event_create(ChronicleEventCreateContext {
+                                conn,
+                                project_id: &payload.project_id,
+                                session_id: &payload.session_id,
+                                surface: payload.surface.as_deref(),
+                                payload: &event_payload,
+                                ordinal,
+                                now: &now,
+                                timestamp,
+                            })?;
+                        if assigned_date {
+                            system_dated_operations.insert(index);
+                        }
                         (
                             "event",
                             result.entity_id,
@@ -1736,6 +1741,7 @@ pub fn narrative_extraction_apply_commit_with_control(
                 &payload.operations,
                 &now,
                 &commit_map,
+                &system_dated_operations,
             )?;
 
             let after_json = json!({

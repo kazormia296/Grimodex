@@ -72,16 +72,6 @@ import {
   eventSearchFetchLimit,
   eventSearchLimit,
 } from "@/../electron/shared/readDomain/core/chronicleSearchTools";
-import {
-  createEventTool,
-  updateEventTool,
-  deleteEventTool,
-  stampSceneEventTool,
-  unstampSceneEventTool,
-  setEventParticipantsTool,
-  addEventRelationTool,
-  removeEventRelationTool,
-} from "./chronicleWriteTools";
 import { agentApplyTreePlan } from "@/features/agent-writes/tree";
 import { agentProposeSceneBody } from "@/features/agent-writes/prose";
 import { useProseStagingStore } from "@/features/agent-writes/proseStagingStore";
@@ -1219,6 +1209,8 @@ async function updateForeshadowTool(
 }
 
 /** Mutating tools — knowledgeWrite / structureWrite / bodyWrite gated per tool. */
+const chronicleWrite = () => import("./chronicleWriteTools");
+
 export const MUTATING_EXECUTORS: Record<string, Executor> = {
   create_codex_entry: createCodexEntryTool,
   update_codex_entry: updateCodexEntryTool,
@@ -1227,14 +1219,43 @@ export const MUTATING_EXECUTORS: Record<string, Executor> = {
   create_snippet: createSnippetTool,
   apply_ai_tree_plan: applyAiTreePlanTool,
   propose_scene_body: proposeSceneBodyTool,
-  create_event: createEventTool,
-  update_event: updateEventTool,
-  delete_event: deleteEventTool,
-  stamp_scene_event: stampSceneEventTool,
-  unstamp_scene_event: unstampSceneEventTool,
-  set_event_participants: setEventParticipantsTool,
-  add_event_relation: addEventRelationTool,
-  remove_event_relation: removeEventRelationTool,
+  // 年表の書く道具。実装は初回の呼び出しで読む（起動時の JS の予算）。
+  create_event: async (params, requestId, authorization) =>
+    (await chronicleWrite()).createEventTool(params, requestId, authorization),
+  update_event: async (params, requestId, authorization) =>
+    (await chronicleWrite()).updateEventTool(params, requestId, authorization),
+  delete_event: async (params, requestId, authorization) =>
+    (await chronicleWrite()).deleteEventTool(params, requestId, authorization),
+  stamp_scene_event: async (params, requestId, authorization) =>
+    (await chronicleWrite()).stampSceneEventTool(
+      params,
+      requestId,
+      authorization,
+    ),
+  unstamp_scene_event: async (params, requestId, authorization) =>
+    (await chronicleWrite()).unstampSceneEventTool(
+      params,
+      requestId,
+      authorization,
+    ),
+  set_event_participants: async (params, requestId, authorization) =>
+    (await chronicleWrite()).setEventParticipantsTool(
+      params,
+      requestId,
+      authorization,
+    ),
+  add_event_relation: async (params, requestId, authorization) =>
+    (await chronicleWrite()).addEventRelationTool(
+      params,
+      requestId,
+      authorization,
+    ),
+  remove_event_relation: async (params, requestId, authorization) =>
+    (await chronicleWrite()).removeEventRelationTool(
+      params,
+      requestId,
+      authorization,
+    ),
   // アプリの UI 操作（view のみ）。実装（layout／tab の store）は初回の呼び出しで読む。
   run_app_command: async (params) =>
     (await import("./appUiTools")).runAppCommandTool(params),

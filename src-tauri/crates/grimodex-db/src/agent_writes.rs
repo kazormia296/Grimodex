@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use grimodex_core::chronicle_time::{
-    normalize_chronicle_timestamp, resolve_chronicle_granularity,
+    normalize_chronicle_timestamp, require_event_date, resolve_chronicle_granularity,
     validate_canonical_chronicle_date_range, validate_chronicle_date_range, ChronicleDateRange,
     ChronicleTimestamp,
 };
@@ -27,6 +27,9 @@ use crate::narrative_extraction::change_feed::{
     transaction_id_for_undo_journal, AppendCanonicalNarrativeChangeResult,
     AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeEventInput,
     NarrativeChangeOrigin,
+};
+use crate::narrative_extraction::{
+    append_event_existence_decisions_in_tx, EventExistenceChange, RemovedVia,
 };
 use crate::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
 use crate::{BatchStatement, Database};
@@ -7519,6 +7522,26 @@ pub(crate) fn delete_event_cascade(
     Ok(())
 }
 
+pub(crate) fn sync_replayed_event_removals(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    event_ids: &[String],
+) -> anyhow::Result<()> {
+    append_event_existence_decisions_in_tx(
+        conn,
+        project_id,
+        EventExistenceChange::Removed {
+            event_ids,
+            via: RemovedVia::UndoRedo,
+        },
+    )
+    .map_err(|error| {
+        tracing::error!("Failed to record replayed event removal: {error:#}");
+        anyhow::anyhow!("NEX_EXISTENCE_SYNC_FAILED: failed to record replayed event removal")
+    })?;
+    Ok(())
+}
+
 /// Undo path (global-history): invert the recorded op.
 fn revert_event_undo_in_tx(
     conn: &rusqlite::Connection,
@@ -7539,7 +7562,8 @@ fn revert_event_undo_in_tx(
             } else {
                 row.result_version
             };
-            delete_event_cascade(conn, project_id, &row.entity_id, Some(expected_version))
+            delete_event_cascade(conn, project_id, &row.entity_id, Some(expected_version))?;
+            sync_replayed_event_removals(conn, project_id, std::slice::from_ref(&row.entity_id))
         }
         "delete" => {
             let before = row
@@ -7651,7 +7675,8 @@ fn apply_event_redo_in_tx(
             } else {
                 row.base_version
             };
-            delete_event_cascade(conn, project_id, &row.entity_id, Some(expected_version))
+            delete_event_cascade(conn, project_id, &row.entity_id, Some(expected_version))?;
+            sync_replayed_event_removals(conn, project_id, std::slice::from_ref(&row.entity_id))
         }
         "update" => {
             let after = row
@@ -7986,6 +8011,8 @@ pub fn agent_event_create_with_authority_impl(
             )? {
                 return Ok(existing);
             }
+            // 再送は保存済みの結果を返す。日時の必須化（CED/1 の N3）は新しい作成にだけ当てる。
+            require_event_date(payload.start_time, &start_granularity)?;
 
             let created = apply_event_create_in_tx(
                 conn,
@@ -8215,23 +8242,17 @@ fn agent_event_update_with_request_and_authority_impl(
                     current_version
                 );
             }
-            let touches_chronicle_date = payload.start_time.is_some()
-                || payload.end_time.is_some()
-                || payload.start_minute.is_some()
-                || payload.end_minute.is_some()
-                || payload.start_granularity.is_some()
-                || payload.end_granularity.is_some();
             let start_granularity = resolve_chronicle_granularity(
                 payload.start_granularity.as_deref(),
                 &current_start_granularity,
-                payload.start_time.is_some(),
-                payload.start_minute.is_some(),
+                payload.start_time.is_some() && payload.start_time != current_start_time,
+                payload.start_minute.is_some() && payload.start_minute != current_start_minute,
             );
             let end_granularity = resolve_chronicle_granularity(
                 payload.end_granularity.as_deref(),
                 &current_end_granularity,
-                payload.end_time.is_some(),
-                payload.end_minute.is_some(),
+                payload.end_time.is_some() && payload.end_time != current_end_time,
+                payload.end_minute.is_some() && payload.end_minute != current_end_minute,
             );
             let merged_start = ChronicleTimestamp {
                 day: payload.start_time.or(current_start_time),
@@ -8243,7 +8264,14 @@ fn agent_event_update_with_request_and_authority_impl(
                 minute: payload.end_minute.or(current_end_minute),
                 granularity: end_granularity,
             };
+            let touches_chronicle_date = merged_start.day != current_start_time
+                || merged_start.minute != current_start_minute
+                || merged_start.granularity != current_start_granularity
+                || merged_end.day != current_end_time
+                || merged_end.minute != current_end_minute
+                || merged_end.granularity != current_end_granularity;
             let (canonical_start, canonical_end) = if touches_chronicle_date {
+                require_event_date(merged_start.day, merged_start.granularity)?;
                 let start = normalize_chronicle_timestamp(merged_start);
                 let end = normalize_chronicle_timestamp(merged_end);
                 validate_canonical_chronicle_date_range(ChronicleDateRange { start, end })?;
@@ -8252,10 +8280,12 @@ fn agent_event_update_with_request_and_authority_impl(
                 // Legacy rows may carry a minute at a coarse granularity. An
                 // unrelated update must not wedge them, but still retains the
                 // established range/minute safety checks.
-                validate_chronicle_date_range(ChronicleDateRange {
-                    start: merged_start,
-                    end: merged_end,
-                })?;
+                if require_event_date(merged_start.day, merged_start.granularity).is_ok() {
+                    validate_chronicle_date_range(ChronicleDateRange {
+                        start: merged_start,
+                        end: merged_end,
+                    })?;
+                }
                 (merged_start, merged_end)
             };
             let result_version = base_version + 1;
@@ -8593,7 +8623,9 @@ pub fn agent_event_delete_impl(
     db: &Database,
     payload: AgentEventIdPayload,
 ) -> anyhow::Result<Value> {
-    agent_event_delete_with_request_impl(db, payload, None)
+    agent_event_delete_with_request_and_authority_impl(
+        db, payload, None, None, RemovedVia::ScreenDelete,
+    )
 }
 
 pub fn agent_event_delete_with_request_impl(
@@ -8601,7 +8633,12 @@ pub fn agent_event_delete_with_request_impl(
     payload: AgentEventIdPayload,
     request_id: Option<&str>,
 ) -> anyhow::Result<Value> {
-    agent_event_delete_with_request_and_authority_impl(db, payload, request_id, None)
+    let via = if payload.surface.as_deref() == Some("mcp") {
+        RemovedVia::McpDelete
+    } else {
+        RemovedVia::ScreenDelete
+    };
+    agent_event_delete_with_request_and_authority_impl(db, payload, request_id, None, via)
 }
 
 pub fn agent_event_delete_with_authority_impl(
@@ -8610,11 +8647,17 @@ pub fn agent_event_delete_with_authority_impl(
     context: RendererCanonicalWriteContext,
 ) -> anyhow::Result<Value> {
     let request_id = context.request_id.clone();
+    let via = if context.authority_route == "interactive-agent-command" {
+        RemovedVia::AgentDelete
+    } else {
+        RemovedVia::ScreenDelete
+    };
     agent_event_delete_with_request_and_authority_impl(
         db,
         payload,
         Some(&request_id),
         Some(context),
+        via,
     )
 }
 
@@ -8623,6 +8666,7 @@ fn agent_event_delete_with_request_and_authority_impl(
     payload: AgentEventIdPayload,
     request_id: Option<&str>,
     renderer_context: Option<RendererCanonicalWriteContext>,
+    via: RemovedVia,
 ) -> anyhow::Result<Value> {
     if let Some(context) = renderer_context.as_ref() {
         let request_id = request_id.ok_or_else(|| anyhow::anyhow!("requestId is required"))?;
@@ -8734,6 +8778,15 @@ fn agent_event_delete_with_request_and_authority_impl(
                     base_version
                 );
             }
+
+            append_event_existence_decisions_in_tx(
+                conn,
+                &payload.project_id,
+                EventExistenceChange::Removed {
+                    event_ids: std::slice::from_ref(&payload.event_id),
+                    via,
+                },
+            )?;
 
             let after_feed = feed_event_ids
                 .iter()
@@ -14505,7 +14558,7 @@ mod tests {
             primary_codex_id: None,
             lane_group: None,
             location_codex_id: None,
-            start_time: None,
+            start_time: Some(0),
             end_time: None,
             start_minute: None,
             end_minute: None,
@@ -14543,7 +14596,7 @@ mod tests {
                 primary_codex_id: None,
                 lane_group: None,
                 location_codex_id: None,
-                start_time: None,
+                start_time: Some(0),
                 end_time: None,
                 start_minute: None,
                 end_minute: None,
@@ -14639,7 +14692,6 @@ mod tests {
         retry_payload.ordinal = Some("a0".to_string());
         retry_payload.precision = Some("exact".to_string());
         retry_payload.kind = Some("generic".to_string());
-        retry_payload.start_granularity = Some("none".to_string());
         retry_payload.end_granularity = Some("none".to_string());
         retry_payload.secret = Some(false);
         retry_payload.reveal_scene_id = Some(String::new());
@@ -15583,7 +15635,7 @@ mod tests {
                 primary_codex_id: None,
                 lane_group: None,
                 location_codex_id: None,
-                start_time: None,
+                start_time: Some(0),
                 end_time: None,
                 start_minute: None,
                 end_minute: None,
@@ -15616,7 +15668,7 @@ mod tests {
                 primary_codex_id: None,
                 lane_group: None,
                 location_codex_id: None,
-                start_time: None,
+                start_time: Some(0),
                 end_time: None,
                 start_minute: None,
                 end_minute: None,
@@ -16037,18 +16089,32 @@ mod tests {
         reversed.end_granularity = Some("time".to_string());
 
         let mut coarse_without_day = empty_create(&project_id, "coarse without day");
+        coarse_without_day.start_time = None;
         coarse_without_day.start_granularity = Some("day".to_string());
 
         let mut end_without_start = empty_create(&project_id, "end without start");
+        end_without_start.start_time = None;
         end_without_start.end_time = Some(10);
         end_without_start.end_granularity = Some("day".to_string());
 
+        let mut explicitly_undated = empty_create(&project_id, "day with none");
+        explicitly_undated.start_granularity = Some("none".into());
         for (payload, expected) in [
+            (
+                explicitly_undated,
+                grimodex_core::chronicle_time::CHRONICLE_EVENT_DATE_REQUIRED,
+            ),
             (negative_minute, "minute must be between 0 and 1439"),
             (overflow_minute, "minute must be between 0 and 1439"),
             (reversed, "must not precede start timestamp"),
-            (coarse_without_day, "granularity 'day' requires a day"),
-            (end_without_start, "end endpoint requires a start endpoint"),
+            (
+                coarse_without_day,
+                grimodex_core::chronicle_time::CHRONICLE_EVENT_DATE_REQUIRED,
+            ),
+            (
+                end_without_start,
+                grimodex_core::chronicle_time::CHRONICLE_EVENT_DATE_REQUIRED,
+            ),
         ] {
             let error = agent_event_create_impl(&db, payload).expect_err("invalid date must fail");
             assert!(error.to_string().contains(expected), "{error:#}");
@@ -16182,6 +16248,60 @@ mod tests {
                 version: 2,
             }
         );
+    }
+
+    #[test]
+    fn event_update_checks_date_changes_before_normalization() {
+        let db = test_db();
+        let project = insert_project(&db);
+        // 変更の記録の無い行を直接作る（作成の後に SQL で書き換えると、記録の連なりが切れる）。
+        let id = uuid::Uuid::new_v4().to_string();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO events
+                 (id, project_id, title, ordinal, start_time, start_granularity,
+                  precision, kind, created_at, updated_at, version)
+                 VALUES (?1, ?2, 'legacy', 'a0', 0, 'day', 'exact', 'generic',
+                         datetime('now'), datetime('now'), 1)",
+                rusqlite::params![id, project],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let mut clear = empty_update(&project, &id);
+        clear.start_granularity = Some("none".into());
+        assert_eq!(
+            agent_event_update_impl(&db, clear).unwrap_err().to_string(),
+            grimodex_core::chronicle_time::CHRONICLE_EVENT_DATE_REQUIRED
+        );
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE events SET start_time = NULL, start_granularity = 'none' WHERE id = ?1",
+                [&id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let mut patch = empty_update(&project, &id);
+        patch.start_time = Some(5);
+        patch.start_granularity = Some("none".into());
+        assert_eq!(
+            agent_event_update_impl(&db, patch.clone())
+                .unwrap_err()
+                .to_string(),
+            grimodex_core::chronicle_time::CHRONICLE_EVENT_DATE_REQUIRED
+        );
+        patch.start_time = None;
+        patch.title = Some("edited".into());
+        patch.precision = Some("unknown".into());
+        let updated = agent_event_update_impl(&db, patch).unwrap();
+        let journal = updated["undoJournalId"].as_str().unwrap();
+        for (direction, title) in [("undo", "legacy"), ("redo", "edited")] {
+            agent_undo_journal_impl(&db, undo_payload(&project, journal, direction)).unwrap();
+            assert_eq!(event_title(&db, &id).as_deref(), Some(title));
+            assert_eq!(event_start(&db, &id), None);
+        }
     }
 
     #[test]
@@ -18103,7 +18223,7 @@ mod tests {
                 primary_codex_id: None,
                 lane_group: None,
                 location_codex_id: None,
-                start_time: None,
+                start_time: Some(0),
                 end_time: None,
                 start_minute: None,
                 end_minute: None,
@@ -18172,7 +18292,7 @@ mod tests {
                 primary_codex_id: None,
                 lane_group: None,
                 location_codex_id: None,
-                start_time: None,
+                start_time: Some(0),
                 end_time: None,
                 start_minute: None,
                 end_minute: None,

@@ -63,6 +63,8 @@ revocation and separately inspect actual Apply/undo semantics. Applied status
 alone must not erase prior explicit approval. A new unreviewed child cannot
 inherit the parent's approval even when its embedding input digest is identical.
 
+**Addendum (2026-11-26, confirmation 138)** — `nir1-chronicle-scene-review-apply-delta/1#chronicle-event-existence-sync`. The post-Apply withdrawal restriction covers operations callable by an author, AI or MCP. When an imported event disappears, Native appends a rejection for each eligible proposal in the removal transaction. Tests can observe that product behavior through the existing removal operation.
+
 ## Backend context: persisted value found; resolver binding incomplete
 
 `projects.phase_resolution_mode` is persisted and constrained to reading/story/

@@ -324,7 +324,7 @@ export async function linkSceneToEvent(
 }
 
 /**
- * 1 event へ複数シーンを一括リンク（importExtractedEvents 用）。
+ * 1 event へ複数シーンを一括リンク。
  * linkSceneToEvent をシーンごとに呼ぶと検証 SELECT が 2×N 回走る（N+1）ため、
  * event 検証 1 回＋scene 検証を inArray で 1 回に畳み、native の一括書き込みへ渡す。
  * 挙動は per-scene 呼び出しと同じ（不正 id は黙ってスキップ / 既存リンクは

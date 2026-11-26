@@ -1239,6 +1239,9 @@ export interface NapiBackendLike {
   narrativeExtractionAppendDecision(payload: unknown): Promise<string>;
   narrativeExtractionAppendHumanDecision(payload: unknown): Promise<string>;
   narrativeExtractionChronicleBulkApprove(payload: unknown): Promise<string>;
+  narrativeExtractionReapproveAppliedProposals(
+    payload: unknown,
+  ): Promise<string>;
   narrativeExtractionReviseAndDecide(payload: unknown): Promise<string>;
   narrativeExtractionReviseAndDecideAsHuman(payload: unknown): Promise<string>;
   narrativeExtractionSetHumanFieldLock(payload: unknown): Promise<string>;
@@ -1251,7 +1254,9 @@ export interface NapiBackendLike {
   narrativeMaintenanceAttentionSet?(payload: unknown): Promise<string>;
   narrativeMaintenanceAttentionClear?(payload: unknown): Promise<string>;
   narrativeMaintenanceInboxList?(payload: unknown): Promise<string>;
+  narrativeMaintenanceHealthSummary?(payload: unknown): Promise<string>;
   narrativeMaintenanceStaleProposalCount?(payload: unknown): Promise<string>;
+  narrativeMaintenanceStaleProposalScenes?(payload: unknown): Promise<string>;
   // Gate C2 Run Kind Policy: the five named operations replacing the old
   // two-value rebuildNarrativeDependencyIndex(mode: verify|repair)
   verifyNarrativeDependencyGraph?(payload: unknown): Promise<string>;
@@ -1574,6 +1579,67 @@ function requireSceneProposalsPayload(args: CommandArgs): CommandArgs {
   return validated;
 }
 
+function requireReapproveAppliedProposalsPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "narrative_extraction_reapprove_applied_proposals";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId", "targets"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  const exactString = (
+    record: CommandArgs,
+    key: string,
+    path: string,
+  ): string => {
+    const value = requireNonEmptyString(record, key, command);
+    if (value.trim() !== value) {
+      throw new Error(
+        `invalid args \`${path}\` for command \`${command}\`: expected a non-empty exact string`,
+      );
+    }
+    return value;
+  };
+  const projectId = exactString(payload, "projectId", "projectId");
+  const rawTargets = requireArray(payload, "targets", command);
+  if (rawTargets.length < 1 || rawTargets.length > 4096) {
+    throw new Error(
+      `invalid args \`targets\` for command \`${command}\`: expected 1..4096 items`,
+    );
+  }
+  const seenProposalIds = new Set<string>();
+  const targets = rawTargets.map((value, index) => {
+    const path = `targets[${index}]`;
+    const target = requireRecord({ value }, "value", command);
+    if (
+      Object.keys(target).length !== 2 ||
+      !Object.hasOwn(target, "proposalId") ||
+      !Object.hasOwn(target, "revisionId")
+    ) {
+      throw new Error(
+        `invalid args \`${path}\` for command \`${command}\`: expected exactly proposalId and revisionId`,
+      );
+    }
+    const proposalId = exactString(target, "proposalId", `${path}.proposalId`);
+    if (seenProposalIds.has(proposalId)) {
+      throw new Error(
+        `invalid args \`${path}.proposalId\` for command \`${command}\`: duplicate proposalId`,
+      );
+    }
+    seenProposalIds.add(proposalId);
+    return {
+      proposalId,
+      revisionId: exactString(target, "revisionId", `${path}.revisionId`),
+    };
+  });
+  return { projectId, targets };
+}
+
 function requireReviewResumabilityPayload(args: CommandArgs): CommandArgs {
   const command = "narrative_extraction_is_run_resumable_for_review";
   const payload = requireRecord(args, "payload", command);
@@ -1894,6 +1960,23 @@ function requireNarrativeMaintenanceInboxListPayload(
   return payload;
 }
 
+function requireNarrativeMaintenanceHealthSummaryPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "narrative_maintenance_health_summary";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  requireNonEmptyString(payload, "projectId", command);
+  return payload;
+}
+
 function requireNarrativeMaintenanceStaleProposalCountPayload(
   args: CommandArgs,
 ): CommandArgs {
@@ -1909,6 +1992,47 @@ function requireNarrativeMaintenanceStaleProposalCountPayload(
   }
   requireNonEmptyString(payload, "projectId", command);
   return payload;
+}
+
+function requireNarrativeMaintenanceStaleProposalScenesPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "narrative_maintenance_stale_proposal_scenes";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId", "cursor", "limit"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  const validated: CommandArgs = {
+    projectId: requireNonEmptyString(payload, "projectId", command),
+  };
+  if (payload.cursor !== undefined) {
+    const cursor = requireNonEmptyString(payload, "cursor", command);
+    if (
+      cursor.trim().length === 0 ||
+      cursor.trim() !== cursor ||
+      new TextEncoder().encode(cursor).byteLength > SCENE_PROPOSALS_ID_MAX_BYTES
+    ) {
+      throw new Error(
+        `invalid args \`cursor\` for command \`${command}\`: expected a non-empty exact string of at most ${SCENE_PROPOSALS_ID_MAX_BYTES} bytes`,
+      );
+    }
+    validated.cursor = cursor;
+  }
+  if (payload.limit !== undefined) {
+    const limit = requireSafeInteger(payload, "limit", command);
+    if (limit < 1) {
+      throw new Error(
+        `invalid args \`limit\` for command \`${command}\`: expected a positive integer`,
+      );
+    }
+    validated.limit = limit;
+  }
+  return validated;
 }
 
 // Gate C2 Run Kind Policy: the five named operations replacing the old
@@ -11723,6 +11847,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
+  narrative_extraction_reapprove_applied_proposals: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeExtractionReapproveAppliedProposals,
+          "narrativeExtractionReapproveAppliedProposals",
+        )(requireReapproveAppliedProposalsPayload(a)),
+      ),
+  },
   narrative_extraction_revise_and_decide: {
     run: async (b, a) =>
       parseWire(
@@ -11840,6 +11974,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         )(requireNarrativeMaintenanceInboxListPayload(a)),
       ),
   },
+  narrative_maintenance_health_summary: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeMaintenanceHealthSummary,
+          "narrativeMaintenanceHealthSummary",
+        )(requireNarrativeMaintenanceHealthSummaryPayload(a)),
+      ),
+  },
   narrative_maintenance_stale_proposal_count: {
     run: async (b, a) =>
       parseWire(
@@ -11848,6 +11992,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b.narrativeMaintenanceStaleProposalCount,
           "narrativeMaintenanceStaleProposalCount",
         )(requireNarrativeMaintenanceStaleProposalCountPayload(a)),
+      ),
+  },
+  narrative_maintenance_stale_proposal_scenes: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeMaintenanceStaleProposalScenes,
+          "narrativeMaintenanceStaleProposalScenes",
+        )(requireNarrativeMaintenanceStaleProposalScenesPayload(a)),
       ),
   },
   // Gate C2 Run Kind Policy: the five named operations replacing the old

@@ -657,7 +657,7 @@ fn blank_test_items(lines: &[String], out: &mut Vec<String>) -> Vec<String> {
     test_modules
 }
 
-fn collect_rs_files(dir: &Path, files: &mut Vec<PathBuf>) {
+fn collect_source_files(dir: &Path, extension: &str, files: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -670,8 +670,11 @@ fn collect_rs_files(dir: &Path, files: &mut Vec<PathBuf>) {
             if name == "tests" || name == "target" || name == "node_modules" {
                 continue;
             }
-            collect_rs_files(&path, files);
-        } else if name.ends_with(".rs") && !name.ends_with("_tests.rs") && name != "tests.rs" {
+            collect_source_files(&path, extension, files);
+        } else if path.extension().and_then(|s| s.to_str()) == Some(extension)
+            && !name.ends_with("_tests.rs")
+            && name != "tests.rs"
+        {
             files.push(path);
         }
     }
@@ -703,7 +706,7 @@ fn scan_roots(root: &Path) -> Vec<PathBuf> {
 fn load_production_sources(root: &Path) -> Vec<Source> {
     let mut files = Vec::new();
     for scan_root in scan_roots(root) {
-        collect_rs_files(&scan_root, &mut files);
+        collect_source_files(&scan_root, "rs", &mut files);
     }
     let mut blanked: Vec<(PathBuf, Vec<String>)> = Vec::new();
     // (directory, module name) pairs for `#[cfg(test)] mod name;`.
@@ -791,11 +794,15 @@ fn previous_word(lower: &str, before: usize) -> (String, usize) {
 }
 
 fn scan_hits(sources: &[Source]) -> Vec<Hit> {
+    scan_table_hits(sources, TABLES)
+}
+
+fn scan_table_hits(sources: &[Source], tables: &[&str]) -> Vec<Hit> {
     let mut hits = Vec::new();
     for source in sources {
         let text = source.lines.join("\n");
         let lower = text.to_ascii_lowercase();
-        for table in TABLES {
+        for table in tables {
             let mut from = 0;
             while let Some(found) = lower[from..].find(table) {
                 let start = from + found;
@@ -997,6 +1004,68 @@ fn assert_restore_runs_inside_the_create_transaction(hit: &Hit, sources: &[Sourc
     assert!(
         gate < insert && insert < restore && restore < binding,
         "order in the create writer: the Undo gate, the INSERT, the restore, then the binding"
+    );
+}
+
+/// SRD/1 §5 0 (e): the closed set of entries that remove events. Outside X:
+/// `workspace.backup.restore` and `workspace.recovery.restore` (Safe Mode)
+/// replace the whole database file, so decisions revert together with events
+/// and neither appears below.
+#[test]
+fn event_removal_sql_and_cascade_callers_are_accounted_for() {
+    let sources = load_production_sources(&repo_root());
+    let mut actual = scan_table_hits(&sources, &["events"])
+        .into_iter()
+        .filter(|hit| hit.verb_table == "DELETE events")
+        .map(|hit| (hit.file, hit.function))
+        .collect::<Vec<_>>();
+    let mut expected = vec![
+        ("grimodex-db/src/agent_writes.rs", "delete_event_cascade"),
+        ("grimodex-db/src/agent_writes.rs", "delete_event_cascade"),
+        (
+            "grimodex-db/src/agent_writes.rs",
+            "agent_event_delete_with_request_and_authority_impl",
+        ),
+        (
+            "grimodex-db/src/project_snapshots.rs",
+            "apply_project_snapshot_restore",
+        ),
+        // Legacy MCP helper. The standalone tool dispatches to the shared single delete.
+        ("grimodex-mcp/src/db.rs", "chronicle_delete_event"),
+    ]
+    .into_iter()
+    .map(|(path, name)| (format!("src-tauri/crates/{path}"), name.to_owned()))
+    .collect::<Vec<_>>();
+    expected.sort();
+    actual.sort();
+    assert_eq!(actual, expected);
+
+    let mut callers = Vec::new();
+    for source in &sources {
+        for (index, line) in source.lines.iter().enumerate() {
+            assert!(
+                !line.contains("chronicle_delete_event(")
+                    || line.contains("fn chronicle_delete_event("),
+                "legacy MCP deletion bypasses existence sync at {}:{}",
+                source.path,
+                index + 1
+            );
+            if line.contains("delete_event_cascade(") && !line.contains("fn delete_event_cascade(")
+            {
+                callers.push(enclosing_function(&source.lines, index).unwrap().1);
+            }
+        }
+    }
+    callers.sort();
+    assert_eq!(
+        callers,
+        [
+            "agent_chronicle_bulk_mutate_with_authority_impl",
+            "apply_event_redo_in_tx",
+            "replay_chronicle_bulk_in_tx",
+            "revert_event_undo_in_tx",
+            "undo_one_entity",
+        ]
     );
 }
 
@@ -1368,6 +1437,122 @@ fn foreign_key_actions_that_change_scope_columns_are_pinned() {
         2,
         "unexpected binding foreign keys: {bindings:?}"
     );
+}
+
+/// CED/1. Inventory forward date writes and unchanged snapshot replay paths.
+#[test]
+fn chronicle_event_write_inventory() {
+    let root = repo_root();
+    let mut sources = load_production_sources(&root);
+    let mut sql_files = Vec::new();
+    for dir in scan_roots(&root)
+        .into_iter()
+        .chain([root.join("src-tauri/resources")])
+    {
+        collect_source_files(&dir, "sql", &mut sql_files);
+    }
+    for file in sql_files {
+        sources.push(Source {
+            path: file
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/"),
+            lines: fs::read_to_string(file)
+                .unwrap()
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("--"))
+                .map(str::to_owned)
+                .collect(),
+        });
+    }
+
+    let mut actual = BTreeMap::new();
+    for hit in scan_table_hits(&sources, &["events"]) {
+        // Exclude prose such as "update events require before and after states".
+        if hit.verb_table == "INSERT events"
+            || (hit.verb_table == "UPDATE events"
+                && hit.set_text.split_whitespace().next() == Some("set"))
+        {
+            *actual
+                .entry((hit.file, hit.function, hit.verb_table))
+                .or_insert(0) += 1;
+        }
+    }
+    // (SQL owner, operation, count). Replay and forward bulk share the field writer.
+    #[rustfmt::skip]
+    let manifest = [
+        // Checked public writes (participant and lane writes leave all six fields alone).
+        ("grimodex-db/src/agent_writes.rs", "agent_event_update_with_request_and_authority_impl", "UPDATE", 1),
+        ("grimodex-db/src/agent_writes.rs", "agent_event_set_participants_with_request_and_authority_impl", "UPDATE", 1),
+        ("grimodex-db/src/chronicle.rs", "set_event_participants", "UPDATE", 1),
+        ("grimodex-db/src/chronicle_bulk.rs", "update_event_to_fields", "UPDATE", 2),
+        ("grimodex-db/src/narrative_extraction/temporal_operations.rs", "apply_event_metadata_patch_in_tx", "UPDATE", 1),
+        ("grimodex-mcp/src/db.rs", "chronicle_create_event", "INSERT", 1),
+        ("grimodex-mcp/src/db.rs", "chronicle_update_event", "UPDATE", 1),
+        ("grimodex-mcp/src/db.rs", "chronicle_set_participants", "UPDATE", 1),
+        // Shared by checked create and extraction approval (Native resolves missing dates before insert).
+        ("grimodex-db/src/agent_writes.rs", "apply_event_create_in_tx", "INSERT", 1),
+        // Explicit replay and restore exclusions.
+        ("grimodex-db/src/agent_writes.rs", "apply_event_snapshot", "INSERT", 1),
+        ("grimodex-db/src/agent_writes.rs", "restore_event_update_snapshot", "UPDATE", 1),
+        ("grimodex-db/src/narrative_extraction/temporal_operations.rs", "restore_event_chronicle_patch", "UPDATE", 1),
+        // Seed and migration.
+        ("grimodex-db/src/runtime_performance_seed.rs", "seed_runtime_performance_fixture", "INSERT", 1),
+    ];
+    let mut expected: BTreeMap<_, _> = manifest
+        .into_iter()
+        .map(|(file, function, verb, count)| {
+            (
+                (
+                    format!("src-tauri/crates/{file}"),
+                    function.to_string(),
+                    format!("{verb} events"),
+                ),
+                count,
+            )
+        })
+        .collect();
+    for sample in ["v2.sql", "v2_en.sql"] {
+        expected.insert(
+            (
+                format!("src-tauri/resources/sample_project/{sample}"),
+                "<none>".into(),
+                "INSERT events".into(),
+            ),
+            8,
+        );
+    }
+    assert_eq!(actual, expected);
+}
+
+/// SRD/1 X3: Proposal decisions are appended only by these functions. Of them,
+/// only `append_event_existence_decisions_in_tx` may append after an Application.
+#[test]
+fn proposal_decision_writer_inventory() {
+    let sources = load_production_sources(&repo_root());
+    let mut actual = count_hits(&scan_table_hits(
+        &sources,
+        &["narrative_proposal_decisions"],
+    ));
+    actual.retain(|(_, _, verb_table), _| verb_table.starts_with("INSERT "));
+    let expected: BTreeMap<_, _> = [
+        "append_decision_on_conn_with_reuse",
+        "append_event_existence_decisions_in_tx",
+    ]
+    .into_iter()
+    .map(|function| {
+        (
+            (
+                "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs".to_string(),
+                function.to_string(),
+                "INSERT narrative_proposal_decisions".to_string(),
+            ),
+            1,
+        )
+    })
+    .collect();
+    assert_eq!(actual, expected, "{}", describe(&actual));
 }
 
 #[test]

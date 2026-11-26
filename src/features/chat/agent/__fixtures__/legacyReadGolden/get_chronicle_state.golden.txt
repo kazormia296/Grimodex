@@ -13,7 +13,7 @@
       "result": {
         "name": "get_chronicle_state",
         "summary": "Chronicle state at scene (stamped)",
-        "tokensUsed": 518,
+        "tokensUsed": 629,
         "content": {
           "time": {
             "source": "stamped",
@@ -58,10 +58,17 @@
               "effectTitle": "老魔術師の死"
             }
           ],
-          "offpage": []
+          "offpage": [],
+          "calendar": {
+            "daysPerYear": 360,
+            "startYear": 1000,
+            "months": "[]",
+            "leapRule": "{\"kind\":\"none\"}",
+            "reform": "null"
+          }
         }
       },
-      "contentJson": "{\"time\":{\"source\":\"stamped\",\"startTime\":5400,\"season\":null,\"precision\":\"exact\",\"formattedDate\":\"1015年第1日\"},\"characters\":[{\"codexId\":\"c-aria\",\"name\":\"アリア\",\"status\":\"alive\",\"age\":15,\"location\":\"古い塔\"},{\"codexId\":\"c-mage\",\"name\":\"老魔術師\",\"status\":\"unknown\",\"age\":null,\"location\":\"古い塔\"}],\"recentEvents\":[{\"eventId\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"note\":null,\"relTime\":\"同日\"},{\"eventId\":\"ev-war\",\"title\":\"魔術戦争\",\"note\":\"昔の戦争\",\"relTime\":\"約5年前\"}],\"unresolvedCausal\":[{\"causeTitle\":\"老魔術師との出会い\",\"effectTitle\":\"老魔術師の死\"}],\"offpage\":[]}"
+      "contentJson": "{\"time\":{\"source\":\"stamped\",\"startTime\":5400,\"season\":null,\"precision\":\"exact\",\"formattedDate\":\"1015年第1日\"},\"characters\":[{\"codexId\":\"c-aria\",\"name\":\"アリア\",\"status\":\"alive\",\"age\":15,\"location\":\"古い塔\"},{\"codexId\":\"c-mage\",\"name\":\"老魔術師\",\"status\":\"unknown\",\"age\":null,\"location\":\"古い塔\"}],\"recentEvents\":[{\"eventId\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"note\":null,\"relTime\":\"同日\"},{\"eventId\":\"ev-war\",\"title\":\"魔術戦争\",\"note\":\"昔の戦争\",\"relTime\":\"約5年前\"}],\"unresolvedCausal\":[{\"causeTitle\":\"老魔術師との出会い\",\"effectTitle\":\"老魔術師の死\"}],\"offpage\":[],\"calendar\":{\"daysPerYear\":360,\"startYear\":1000,\"months\":\"[]\",\"leapRule\":\"{\\\"kind\\\":\\\"none\\\"}\",\"reform\":\"null\"}}"
     },
     {
       "case": "rows: sceneId 省略は activeSceneId（S3）",
@@ -73,7 +80,7 @@
       "result": {
         "name": "get_chronicle_state",
         "summary": "Chronicle state at scene (stamped)",
-        "tokensUsed": 440,
+        "tokensUsed": 551,
         "content": {
           "time": {
             "source": "stamped",
@@ -112,10 +119,17 @@
               "effectTitle": "老魔術師との出会い"
             }
           ],
-          "offpage": []
+          "offpage": [],
+          "calendar": {
+            "daysPerYear": 360,
+            "startYear": 1000,
+            "months": "[]",
+            "leapRule": "{\"kind\":\"none\"}",
+            "reform": "null"
+          }
         }
       },
-      "contentJson": "{\"time\":{\"source\":\"stamped\",\"startTime\":3600,\"season\":null,\"precision\":\"exact\",\"formattedDate\":\"1010年\"},\"characters\":[{\"codexId\":\"c-aria\",\"name\":\"アリア\",\"status\":\"alive\",\"age\":10,\"location\":null},{\"codexId\":\"c-mage\",\"name\":\"老魔術師\",\"status\":\"unknown\",\"age\":null,\"location\":null}],\"recentEvents\":[{\"eventId\":\"ev-war\",\"title\":\"魔術戦争\",\"note\":\"昔の戦争\",\"relTime\":\"同日\"}],\"unresolvedCausal\":[{\"causeTitle\":\"魔術戦争\",\"effectTitle\":\"老魔術師との出会い\"}],\"offpage\":[]}"
+      "contentJson": "{\"time\":{\"source\":\"stamped\",\"startTime\":3600,\"season\":null,\"precision\":\"exact\",\"formattedDate\":\"1010年\"},\"characters\":[{\"codexId\":\"c-aria\",\"name\":\"アリア\",\"status\":\"alive\",\"age\":10,\"location\":null},{\"codexId\":\"c-mage\",\"name\":\"老魔術師\",\"status\":\"unknown\",\"age\":null,\"location\":null}],\"recentEvents\":[{\"eventId\":\"ev-war\",\"title\":\"魔術戦争\",\"note\":\"昔の戦争\",\"relTime\":\"同日\"}],\"unresolvedCausal\":[{\"causeTitle\":\"魔術戦争\",\"effectTitle\":\"老魔術師との出会い\"}],\"offpage\":[],\"calendar\":{\"daysPerYear\":360,\"startYear\":1000,\"months\":\"[]\",\"leapRule\":\"{\\\"kind\\\":\\\"none\\\"}\",\"reform\":\"null\"}}"
     },
     {
       "case": "rows: sceneId 指定は activeSceneId より優先",
@@ -129,7 +143,7 @@
       "result": {
         "name": "get_chronicle_state",
         "summary": "Chronicle state at scene (stamped)",
-        "tokensUsed": 518,
+        "tokensUsed": 629,
         "content": {
           "time": {
             "source": "stamped",
@@ -174,10 +188,17 @@
               "effectTitle": "老魔術師の死"
             }
           ],
-          "offpage": []
+          "offpage": [],
+          "calendar": {
+            "daysPerYear": 360,
+            "startYear": 1000,
+            "months": "[]",
+            "leapRule": "{\"kind\":\"none\"}",
+            "reform": "null"
+          }
         }
       },
-      "contentJson": "{\"time\":{\"source\":\"stamped\",\"startTime\":5400,\"season\":null,\"precision\":\"exact\",\"formattedDate\":\"1015年第1日\"},\"characters\":[{\"codexId\":\"c-aria\",\"name\":\"アリア\",\"status\":\"alive\",\"age\":15,\"location\":\"古い塔\"},{\"codexId\":\"c-mage\",\"name\":\"老魔術師\",\"status\":\"unknown\",\"age\":null,\"location\":\"古い塔\"}],\"recentEvents\":[{\"eventId\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"note\":null,\"relTime\":\"同日\"},{\"eventId\":\"ev-war\",\"title\":\"魔術戦争\",\"note\":\"昔の戦争\",\"relTime\":\"約5年前\"}],\"unresolvedCausal\":[{\"causeTitle\":\"老魔術師との出会い\",\"effectTitle\":\"老魔術師の死\"}],\"offpage\":[]}"
+      "contentJson": "{\"time\":{\"source\":\"stamped\",\"startTime\":5400,\"season\":null,\"precision\":\"exact\",\"formattedDate\":\"1015年第1日\"},\"characters\":[{\"codexId\":\"c-aria\",\"name\":\"アリア\",\"status\":\"alive\",\"age\":15,\"location\":\"古い塔\"},{\"codexId\":\"c-mage\",\"name\":\"老魔術師\",\"status\":\"unknown\",\"age\":null,\"location\":\"古い塔\"}],\"recentEvents\":[{\"eventId\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"note\":null,\"relTime\":\"同日\"},{\"eventId\":\"ev-war\",\"title\":\"魔術戦争\",\"note\":\"昔の戦争\",\"relTime\":\"約5年前\"}],\"unresolvedCausal\":[{\"causeTitle\":\"老魔術師との出会い\",\"effectTitle\":\"老魔術師の死\"}],\"offpage\":[],\"calendar\":{\"daysPerYear\":360,\"startYear\":1000,\"months\":\"[]\",\"leapRule\":\"{\\\"kind\\\":\\\"none\\\"}\",\"reform\":\"null\"}}"
     },
     {
       "case": "rows: UI 言語が en",
@@ -190,7 +211,7 @@
       "result": {
         "name": "get_chronicle_state",
         "summary": "Chronicle state at scene (stamped)",
-        "tokensUsed": 450,
+        "tokensUsed": 561,
         "content": {
           "time": {
             "source": "stamped",
@@ -229,10 +250,17 @@
               "effectTitle": "老魔術師との出会い"
             }
           ],
-          "offpage": []
+          "offpage": [],
+          "calendar": {
+            "daysPerYear": 360,
+            "startYear": 1000,
+            "months": "[]",
+            "leapRule": "{\"kind\":\"none\"}",
+            "reform": "null"
+          }
         }
       },
-      "contentJson": "{\"time\":{\"source\":\"stamped\",\"startTime\":3600,\"season\":null,\"precision\":\"exact\",\"formattedDate\":\"Year 1010\"},\"characters\":[{\"codexId\":\"c-aria\",\"name\":\"アリア\",\"status\":\"alive\",\"age\":10,\"location\":null},{\"codexId\":\"c-mage\",\"name\":\"老魔術師\",\"status\":\"unknown\",\"age\":null,\"location\":null}],\"recentEvents\":[{\"eventId\":\"ev-war\",\"title\":\"魔術戦争\",\"note\":\"昔の戦争\",\"relTime\":\"same day\"}],\"unresolvedCausal\":[{\"causeTitle\":\"魔術戦争\",\"effectTitle\":\"老魔術師との出会い\"}],\"offpage\":[]}"
+      "contentJson": "{\"time\":{\"source\":\"stamped\",\"startTime\":3600,\"season\":null,\"precision\":\"exact\",\"formattedDate\":\"Year 1010\"},\"characters\":[{\"codexId\":\"c-aria\",\"name\":\"アリア\",\"status\":\"alive\",\"age\":10,\"location\":null},{\"codexId\":\"c-mage\",\"name\":\"老魔術師\",\"status\":\"unknown\",\"age\":null,\"location\":null}],\"recentEvents\":[{\"eventId\":\"ev-war\",\"title\":\"魔術戦争\",\"note\":\"昔の戦争\",\"relTime\":\"same day\"}],\"unresolvedCausal\":[{\"causeTitle\":\"魔術戦争\",\"effectTitle\":\"老魔術師との出会い\"}],\"offpage\":[],\"calendar\":{\"daysPerYear\":360,\"startYear\":1000,\"months\":\"[]\",\"leapRule\":\"{\\\"kind\\\":\\\"none\\\"}\",\"reform\":\"null\"}}"
     },
     {
       "case": "empty: 場面なし・sceneId なし",
@@ -276,7 +304,7 @@
       "result": {
         "name": "get_chronicle_state",
         "summary": "Chronicle state at scene (none)",
-        "tokensUsed": 234,
+        "tokensUsed": 345,
         "content": {
           "time": {
             "source": "none",
@@ -295,10 +323,17 @@
               "note": "恒久的に秘匿",
               "relTime": null
             }
-          ]
+          ],
+          "calendar": {
+            "daysPerYear": 360,
+            "startYear": 1000,
+            "months": "[]",
+            "leapRule": "{\"kind\":\"none\"}",
+            "reform": "null"
+          }
         }
       },
-      "contentJson": "{\"time\":{\"source\":\"none\",\"startTime\":null,\"season\":null,\"precision\":null,\"formattedDate\":null},\"characters\":[],\"recentEvents\":[],\"unresolvedCausal\":[],\"offpage\":[{\"eventId\":\"ev-death\",\"title\":\"老魔術師の死\",\"note\":\"恒久的に秘匿\",\"relTime\":null}]}"
+      "contentJson": "{\"time\":{\"source\":\"none\",\"startTime\":null,\"season\":null,\"precision\":null,\"formattedDate\":null},\"characters\":[],\"recentEvents\":[],\"unresolvedCausal\":[],\"offpage\":[{\"eventId\":\"ev-death\",\"title\":\"老魔術師の死\",\"note\":\"恒久的に秘匿\",\"relTime\":null}],\"calendar\":{\"daysPerYear\":360,\"startYear\":1000,\"months\":\"[]\",\"leapRule\":\"{\\\"kind\\\":\\\"none\\\"}\",\"reform\":\"null\"}}"
     },
     {
       "case": "XPROJ: 他 project では他 project の年表",

@@ -17,6 +17,8 @@ import {
   type AiAuditTransportContext,
   profileActivationStopAuditMetadata,
 } from "@/features/ai-audit/transportContext";
+import type { AiAuditExecutionHandle } from "@/features/ai-audit/types";
+import { debugLog } from "@/lib/debugLog";
 import { invoke, listen } from "@/lib/tauri";
 import type { ThinkingParams } from "./agent/modelLimits";
 import {
@@ -410,5 +412,62 @@ export async function abortChatStream(
       abortCommandAcknowledged: false,
       transportTerminationObserved: false,
     };
+  }
+}
+
+/**
+ * agent の送信を行い、失敗を監査に記録する。「停止」（signal）で中断する。中断の入口は
+ * stream と同じ abort_chat_stream。起動時の chunk に入れないため、この遅延の module に置く。
+ * Native が停止の印を返した失敗だけを cancelled にし、停止の後の別の失敗は failed。
+ */
+export async function runStoppableAgentSend<T>(
+  signal: AbortSignal | undefined,
+  audit: AiAuditExecutionHandle,
+  send: () => Promise<T>,
+): Promise<T> {
+  let aborting: ReturnType<typeof abortChatStream> | undefined;
+  const requestAbort = (): void => {
+    aborting ??= abortChatStream(audit.executionId).then((receipt) => {
+      if (!receipt.abortCommandAcknowledged) {
+        debugLog.warn(
+          "ChatApi",
+          "abort agent send",
+          "abort command was not acknowledged",
+        );
+      }
+      return receipt;
+    });
+  };
+  signal?.addEventListener("abort", requestAbort);
+  try {
+    // 送る前に停止済みなら、先に中断を届ける（Native は通信しない）。
+    if (signal?.aborted) {
+      requestAbort();
+      await aborting;
+    }
+    return await send();
+  } catch (error) {
+    // Native の停止の失敗は本文が印だけ。provider の本文が同じ語を含んでも停止にしない。
+    if (
+      signal?.aborted &&
+      error instanceof Error &&
+      error.message === "AI_REQUEST_STOPPED_BY_USER"
+    ) {
+      const receipt = await aborting;
+      await cancelAiAuditExecution(audit, {
+        reason: "stopped",
+        metadata: {
+          transportAbortRequested: true,
+          abortCommandAcknowledged: receipt?.abortCommandAcknowledged ?? false,
+          transportTerminationObserved: true,
+          providerAbortReceiptObserved: false,
+        },
+      });
+    } else {
+      await failAiAuditExecution(audit, { error: auditErrorSnapshot(error) });
+    }
+    throw error;
+  } finally {
+    signal?.removeEventListener("abort", requestAbort);
   }
 }

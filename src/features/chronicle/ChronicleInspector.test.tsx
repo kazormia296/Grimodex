@@ -557,3 +557,22 @@ describe("ChronicleInspector — 下部アクションの narrow 縮退", () => 
     expect(btn.getAttribute("title")).toBeTruthy();
   });
 });
+
+describe("ChronicleInspector の開始の粒度（CED/1 の N6）", () => {
+  const hasNone = (isScene: boolean) => {
+    const { getByRole } = renderInspector({ isScene });
+    const select = getByRole("combobox", { name: "開始の粒度" });
+    return Array.from(
+      select.querySelectorAll("option"),
+      (o) => o.value,
+    ).includes("none");
+  };
+
+  it("出来事の欄には「なし」が無い", () => {
+    expect(hasNone(false)).toBe(false);
+  });
+
+  it("場面の欄には「なし」が残る", () => {
+    expect(hasNone(true)).toBe(true);
+  });
+});

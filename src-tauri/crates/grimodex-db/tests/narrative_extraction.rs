@@ -1762,6 +1762,170 @@ fn cancel_run_rolls_back_run_and_task_when_attempt_terminalization_fails() {
     );
 }
 
+fn approved_event_date(db: &Database, id: &str) -> Value {
+    db.with_conn(|conn| {
+        let raw: String = conn.query_row(
+            "SELECT json_array(start_time, start_minute, start_granularity,
+                               end_time, end_minute, end_granularity, precision)
+               FROM events WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )?;
+        Ok(serde_json::from_str(&raw)?)
+    })
+    .unwrap()
+}
+
+#[test]
+fn approval_copies_first_live_dated_evidence_and_records_only_assigned_fields_as_system() {
+    let db = migrated_db();
+    for id in ["archived", "child", "first", "last"] {
+        insert_scene(&db, id, 0);
+    }
+    db.with_conn(|conn| {
+        conn.execute_batch(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order, archived_at)
+             VALUES ('folder', 'project-1', 'folder', 'Archived folder', 'a0', '2026-01-01');
+             UPDATE tree_nodes SET parent_id = 'folder' WHERE id = 'child';
+             UPDATE tree_nodes SET archived_at = '2026-01-01' WHERE id = 'archived';
+             UPDATE tree_nodes SET chronicle_start_time = 99, chronicle_start_granularity = 'day';
+             UPDATE tree_nodes SET sort_order = 'a1', chronicle_start_time = 5,
+                    chronicle_start_granularity = 'time', chronicle_start_minute = 61,
+                    chronicle_end_time = 7, chronicle_end_granularity = 'day',
+                    chronicle_end_minute = 23 WHERE id = 'first';
+             UPDATE tree_nodes SET sort_order = 'a2' WHERE id = 'last';",
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let mut copied = event_create_payload("copied", "Copied", "last", 0);
+    copied["evidenceSceneLinks"] =
+        json!(["last", "child", "archived", "first"].map(|id|
+        json!({"sceneId": id, "expectedSceneVersion": 0, "evidenceAnchorIds": ["anchor:one"]})
+    ));
+    let mut supplied = event_create_payload("supplied", "Supplied", "last", 0);
+    supplied["startTime"] = json!(17);
+    supplied["startGranularity"] = json!("month");
+    supplied["precision"] = json!("approx");
+    let payloads = [copied, supplied];
+    let pairs = seed_approved_proposals(&db, "run-date", "set-date", &payloads);
+    let ops = pairs
+        .into_iter()
+        .zip(payloads)
+        .map(|((p, r), op)| (p, r, op))
+        .collect();
+    prepare_and_apply(
+        &db,
+        build_prepare("req-date", "digest-date", "set-date", "run-date", ops),
+    );
+    assert_eq!(
+        approved_event_date(&db, "copied"),
+        json!([5, 61, "time", 7, null, "day", "unknown"])
+    );
+    assert_eq!(
+        approved_event_date(&db, "supplied"),
+        json!([17, null, "month", null, null, "none", "approx"])
+    );
+    db.with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT field_path, owner_kind FROM narrative_field_authority
+              WHERE project_id = 'project-1' AND entity_kind = 'event' AND entity_id = ?1",
+        )?;
+        for id in ["copied", "supplied"] {
+            let mut rows = stmt.query([id])?;
+            let mut system_count = 0;
+            let mut title_found = false;
+            while let Some(row) = rows.next()? {
+                let path: String = row.get(0)?;
+                let owner: String = row.get(1)?;
+                let assigned = id == "copied"
+                    && matches!(
+                        path.as_str(),
+                        "/startTime"
+                            | "/startMinute"
+                            | "/startGranularity"
+                            | "/endTime"
+                            | "/endMinute"
+                            | "/endGranularity"
+                            | "/precision"
+                    );
+                assert_eq!(
+                    owner,
+                    if assigned { "system" } else { "human" },
+                    "{id}{path}"
+                );
+                system_count += usize::from(assigned);
+                title_found |= path == "/title";
+            }
+            assert!(title_found);
+            assert_eq!(system_count, if id == "copied" { 7 } else { 0 });
+        }
+        Ok(())
+    })
+    .unwrap();
+    let update = serde_json::from_value(json!({
+        "projectId": "project-1", "sessionId": "sess", "eventId": "copied",
+        "baseVersion": 1, "startTime": 6
+    }))
+    .unwrap();
+    grimodex_db::agent_writes::agent_event_update_impl(&db, update)
+        .expect("AI can revise the date");
+    assert_eq!(approved_event_date(&db, "copied")[0], 6);
+}
+
+#[test]
+fn approval_uses_the_first_evidence_scenes_anchor_before_the_provisional_day() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    insert_scene(&db, "prior", 0);
+    insert_scene(&db, "later", 0);
+    db.execute(
+        "UPDATE tree_nodes SET sort_order = 'Zz', chronicle_start_time = 15,
+                chronicle_start_granularity = 'month' WHERE id = 'prior'",
+        &[],
+        "run",
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE tree_nodes SET sort_order = 'a2' WHERE id = 'later'",
+        &[],
+        "run",
+    )
+    .unwrap();
+    let mut later = event_create_payload("stamped", "Stamped", "later", 0);
+    later["startTime"] = json!(99);
+    later["startGranularity"] = json!("day");
+    later["precision"] = json!("exact");
+    let mut borrowed = event_create_payload("borrowed", "Borrowed", "later", 0);
+    borrowed["evidenceSceneLinks"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "sceneId": "scene-1", "expectedSceneVersion": 0
+        }));
+    let payloads = [later, borrowed];
+    let pairs = seed_approved_proposals(&db, "run-anchor", "set-anchor", &payloads);
+    let ops = pairs
+        .into_iter()
+        .zip(payloads)
+        .map(|((p, r), op)| (p, r, op))
+        .collect();
+    prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-anchor",
+            "digest-anchor",
+            "set-anchor",
+            "run-anchor",
+            ops,
+        ),
+    );
+    assert_eq!(
+        approved_event_date(&db, "borrowed"),
+        json!([15, null, "day", null, null, "none", "unknown"])
+    );
+}
+
 #[test]
 fn apply_commit_creates_three_events_atomically() {
     let db = migrated_db();
@@ -3726,8 +3890,17 @@ fn apply_commit_rejects_same_request_with_different_digest() {
 fn undo_commit_removes_all_events_and_refuses_edited() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 0);
+    // Apply in reverse reading order so neither evidence scene has a C4 anchor.
+    insert_scene(&db, "scene-2", 0);
+    db.execute("UPDATE tree_nodes SET sort_order = 'a1' WHERE id = 'scene-2'", &[], "run").unwrap();
+    insert_scene(&db, "stored", 0);
+    db.execute(
+        "UPDATE tree_nodes SET archived_at = '2026-01-01', chronicle_start_time = 100,
+                chronicle_start_granularity = 'day' WHERE id = 'stored'",
+        &[], "run",
+    ).unwrap();
     let payloads = [
-        event_create_payload("event-u1", "A", "scene-1", 0),
+        event_create_payload("event-u1", "A", "scene-2", 0),
         event_create_payload("event-u2", "B", "scene-1", 0),
     ];
     let pairs = seed_approved_proposals(&db, "run-commit-5", "set-5", &payloads);
@@ -3738,6 +3911,13 @@ fn undo_commit_removes_all_events_and_refuses_edited() {
     let payload = build_prepare("req-undo-1", "digest-undo-1", "set-5", "run-commit-5", ops);
     let applied = prepare_and_apply(&db, payload);
     let commit_id = applied["commitId"].as_str().unwrap().to_string();
+
+    let assert_dates = || {
+        for (id, day) in [("event-u1", 0), ("event-u2", 1)] {
+            assert_eq!(approved_event_date(&db, id), json!([day, null, "day", null, null, "none", "unknown"]));
+        }
+    };
+    assert_dates();
 
     let undone = narrative_extraction::narrative_extraction_undo_commit(
         &db,
@@ -3757,6 +3937,11 @@ fn undo_commit_removes_all_events_and_refuses_edited() {
         .unwrap();
     assert_eq!(event_count, 0);
 
+    db.execute(
+        "UPDATE tree_nodes SET chronicle_start_time = 42, chronicle_start_granularity = 'day'",
+        &[], "run",
+    ).unwrap();
+
     // Redo then edit one event → undo must refuse.
     narrative_extraction::narrative_extraction_redo_commit(
         &db,
@@ -3769,6 +3954,7 @@ fn undo_commit_removes_all_events_and_refuses_edited() {
         },
     )
     .expect("redo");
+    assert_dates();
 
     db.execute(
         "UPDATE events SET title = 'edited by human', version = version + 1 WHERE id = 'event-u1'",
@@ -3835,6 +4021,11 @@ fn legacy_null_run_commit_supports_status_undo_redo_and_idempotent_replay() {
     .expect("legacy NULL run Commit must remain readable");
     assert_eq!(status["status"], "applied");
 
+    db.execute(
+        "UPDATE tree_nodes SET chronicle_start_time = 42, chronicle_start_granularity = 'day'
+          WHERE id = 'scene-1'",
+        &[], "run",
+    ).unwrap();
     let apply_replay = narrative_extraction::narrative_extraction_apply_commit(
         &db,
         ApplyCommitPayload {
@@ -3847,6 +4038,7 @@ fn legacy_null_run_commit_supports_status_undo_redo_and_idempotent_replay() {
     )
     .expect("legacy NULL run Apply lost-response replay must decode");
     assert_eq!(apply_replay["idempotentReplay"], true);
+    assert_eq!(approved_event_date(&db, "event-legacy-null-run"), json!([0, null, "day", null, null, "none", "unknown"]));
 
     let undo_payload = UndoCommitPayload {
         project_id: "project-1".to_string(),
@@ -5889,7 +6081,23 @@ fn current_chronicle_unmarked_event_survives_undo_and_redo() {
         (0, None),
         "Redo must restore the Event without a secret mark or reveal scene"
     );
-    assert_eq!(retrieval_gate_state(&db, &pair.0), gate_after_apply);
+    // SRD/1 X (確認 138): undo removes the Event, so Native revokes the approval.
+    // Redo restores the Event, never the approval; the revision is untouched.
+    let gate = retrieval_gate_state(&db, &pair.0);
+    assert_eq!(gate["status"], json!("rejected"));
+    assert_eq!(gate["latestDecision"][2], json!("rejected"));
+    let detail: Value = serde_json::from_str(gate["latestDecision"][3].as_str().expect("detail"))
+        .expect("decision detail");
+    assert_eq!(detail["cause"], json!("event-removed"));
+    assert_eq!(detail["removedVia"], json!("commit-undo"));
+    for unchanged in [
+        "currentRevisionId",
+        "payloadJson",
+        "envelopeDigest",
+        "envelopeJson",
+    ] {
+        assert_eq!(gate[unchanged], gate_after_apply[unchanged], "{unchanged}");
+    }
 }
 
 #[test]

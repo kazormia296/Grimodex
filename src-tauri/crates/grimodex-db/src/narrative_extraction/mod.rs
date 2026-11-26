@@ -3,12 +3,14 @@
 pub(crate) mod application_contributions;
 mod attention;
 mod bulk_approval;
+mod reapproval;
 mod c2z_preparation;
 pub(crate) mod c2zb_application_rekey;
 mod c2zc_canonical_cutover;
 #[cfg(feature = "c2zc-fixture-builder")]
 pub mod c2zc_restore_fixture;
 pub mod change_feed;
+mod chronicle_approval_date;
 mod chronicle_operations;
 mod codex_operations;
 mod codex_snapshots;
@@ -48,6 +50,9 @@ pub use nir1_graph_index_maintenance::Nir1GraphProductPublication;
 pub use bulk_approval::{
     BulkApprovalReason, BulkApprovalVerdict,
     ChronicleBulkApprovePayload, ChronicleBulkApproveTarget, BULK_APPROVE_MAX_TARGETS,
+};
+pub use reapproval::{
+    narrative_extraction_reapprove_applied_proposals, ReapproveAppliedProposalsPayload,
 };
 pub use declaration_storage::{
     read_active_dependency_declaration_set, verify_dependency_declaration_storage,
@@ -112,6 +117,9 @@ pub use nir1_graph::{
 pub use reconciliation_envelope::SourceBasisRow;
 pub use repository::project_lifecycle_namespace_for_database;
 pub use repository::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
+pub(crate) use repository::{
+    append_event_existence_decisions_in_tx, EventExistenceChange, RemovedVia,
+};
 pub(crate) use repository::{
     project_creation_reservation_active_for_database,
     release_project_destructive_permit_in_namespace,
@@ -370,7 +378,9 @@ pub(crate) use c2zc_canonical_cutover::{
     mint_c2zc_scan_publish_project_birth_epoch_in_tx,
 };
 pub use inbox_read_model::{
-    build_maintenance_inbox, count_stale_proposals, InboxEntry, InboxEntryKind,
+    build_maintenance_inbox, count_stale_proposals, maintenance_health_summary,
+    stale_proposal_scenes, InboxEntry, InboxEntryKind, MaintenanceHealthSummary,
+    StaleProposalBreakdown, StaleProposalSceneCount, StaleProposalScenesPage,
 };
 #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
 pub use incremental_freshness::publish_race_for_test as incremental_freshness_publish_race_for_test;
@@ -522,13 +532,15 @@ pub use models::{
     HumanFieldLockPayload, IsRunResumableForReviewPayload, IsRunResumableForReviewResult,
     ListChronicleTaskResumeCandidatesPayload, ListResumableRunsPayload, NarrativeAdapterIdentity,
     NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
-    NarrativeMaintenanceInboxListPayload, PrepareCommitPayload, ProposalSeed,
-    RebuildNarrativeDerivedStatePayload, ReconciliationEnvelopeInheritance,
-    RepairNarrativeDependencyDeclarationsPayload, ResolveCodexCatalogRevisionPayload,
-    ResolveCodexCatalogRevisionResult, RetryNarrativeLegacyBackfillPayload,
-    ReviseAndDecidePayload, RunRefPayload, SaveProposalSetPayload, TrustedHumanDerivationScope,
-    TrustedRevealBasis, TrustedScopeBoundary, TrustedScopeInterval, TrustedUnresolvedConstraint,
-    UndoCommitPayload, VerifyNarrativeDependencyGraphPayload,
+    NarrativeMaintenanceHealthSummaryPayload, NarrativeMaintenanceInboxListPayload,
+    NarrativeMaintenanceStaleProposalScenesPayload,
+    PrepareCommitPayload, ProposalSeed, RebuildNarrativeDerivedStatePayload,
+    ReconciliationEnvelopeInheritance, RepairNarrativeDependencyDeclarationsPayload,
+    ResolveCodexCatalogRevisionPayload, ResolveCodexCatalogRevisionResult,
+    RetryNarrativeLegacyBackfillPayload, ReviseAndDecidePayload, RunRefPayload,
+    SaveProposalSetPayload, TrustedHumanDerivationScope, TrustedRevealBasis, TrustedScopeBoundary,
+    TrustedScopeInterval, TrustedUnresolvedConstraint, UndoCommitPayload,
+    VerifyNarrativeDependencyGraphPayload,
 };
 pub use repository::ensure_test_schema;
 pub use scope_authority_runtime::{

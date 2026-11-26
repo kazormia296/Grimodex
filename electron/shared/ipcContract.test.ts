@@ -788,6 +788,12 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
         '{"approved":[],"skipped":[],"failed":[],"stopped":false}',
       ),
     ) as never,
+    narrativeExtractionReapproveAppliedProposals: record(
+      "narrativeExtractionReapproveAppliedProposals",
+      Promise.resolve(
+        '{"approved":[],"skipped":[],"failed":[],"stopped":false}',
+      ),
+    ) as never,
     narrativeExtractionReviseAndDecide: record(
       "narrativeExtractionReviseAndDecide",
       Promise.resolve(
@@ -2195,6 +2201,167 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(env).toMatchObject({
       ok: false,
       error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionChronicleBulkApprove`,
+    });
+  });
+
+  it("取り込み済み提案の再承認はpayloadをN-APIへ渡し、結果を返す", async () => {
+    const method = vi
+      .fn()
+      .mockResolvedValue(
+        '{"approved":[{"proposalId":"p1","revisionId":"rv1","decisionId":"d1"}],"skipped":[{"proposalId":"p2","reasons":["event-missing"]}],"failed":[],"stopped":false}',
+      );
+    const { backend } = fakeBackend({
+      narrativeExtractionReapproveAppliedProposals: method,
+    });
+    const payload = {
+      projectId: "project-1",
+      targets: [{ proposalId: "p1", revisionId: "rv1" }],
+    };
+
+    const env = await dispatchInvoke(
+      "narrative_extraction_reapprove_applied_proposals",
+      { payload },
+      { backend, shell: noShell },
+    );
+
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        approved: [{ proposalId: "p1", revisionId: "rv1", decisionId: "d1" }],
+        skipped: [{ proposalId: "p2", reasons: ["event-missing"] }],
+        failed: [],
+        stopped: false,
+      },
+    });
+    expect(method).toHaveBeenCalledExactlyOnceWith(payload);
+  });
+
+  it.each([
+    null,
+    42,
+    {},
+    {
+      projectId: 42,
+      targets: [{ proposalId: "p1", revisionId: "v1" }],
+    },
+    {
+      projectId: "p1",
+      targets: [{ proposalId: "p1", revisionId: "v1" }],
+      runId: "r1",
+    },
+    { projectId: " ", targets: [{ proposalId: "p1", revisionId: "v1" }] },
+    { projectId: " p1", targets: [{ proposalId: "p1", revisionId: "v1" }] },
+    { projectId: "p1 ", targets: [{ proposalId: "p1", revisionId: "v1" }] },
+    { projectId: "p1", targets: null },
+    { projectId: "p1", targets: "not-an-array" },
+    { projectId: "p1", targets: [] },
+    { projectId: "p1", targets: [null] },
+    { projectId: "p1", targets: [{ proposalId: "p1" }] },
+    { projectId: "p1", targets: [{ revisionId: "v1" }] },
+    {
+      projectId: "p1",
+      targets: [{ proposalId: "p1", revisionId: "v1", extra: true }],
+    },
+    { projectId: "p1", targets: [{ proposalId: "", revisionId: "v1" }] },
+    { projectId: "p1", targets: [{ proposalId: 1, revisionId: "v1" }] },
+    { projectId: "p1", targets: [{ proposalId: " p1", revisionId: "v1" }] },
+    { projectId: "p1", targets: [{ proposalId: "p1 ", revisionId: "v1" }] },
+    { projectId: "p1", targets: [{ proposalId: "p1", revisionId: "" }] },
+    { projectId: "p1", targets: [{ proposalId: "p1", revisionId: 1 }] },
+    { projectId: "p1", targets: [{ proposalId: "p1", revisionId: " v1" }] },
+    { projectId: "p1", targets: [{ proposalId: "p1", revisionId: "v1 " }] },
+    {
+      projectId: "p1",
+      targets: [
+        { proposalId: "p1", revisionId: "v1" },
+        { proposalId: "p1", revisionId: "v2" },
+      ],
+    },
+  ])(
+    "取り込み済み提案の再承認は不正payloadをN-APIへ渡さない: %j",
+    async (payload) => {
+      const method = vi.fn();
+      const { backend } = fakeBackend({
+        narrativeExtractionReapproveAppliedProposals: method,
+      });
+      const env = await dispatchInvoke(
+        "narrative_extraction_reapprove_applied_proposals",
+        { payload },
+        { backend, shell: noShell },
+      );
+
+      expect(env.ok).toBe(false);
+      expect(method).not.toHaveBeenCalled();
+    },
+  );
+
+  it("取り込み済み提案の再承認は最大4096件を受け付ける", async () => {
+    const method = vi
+      .fn()
+      .mockResolvedValue(
+        '{"approved":[],"skipped":[],"failed":[],"stopped":false}',
+      );
+    const { backend } = fakeBackend({
+      narrativeExtractionReapproveAppliedProposals: method,
+    });
+    const payload = {
+      projectId: "p1",
+      targets: Array.from({ length: 4096 }, (_, index) => ({
+        proposalId: `p${index}`,
+        revisionId: `v${index}`,
+      })),
+    };
+    const env = await dispatchInvoke(
+      "narrative_extraction_reapprove_applied_proposals",
+      { payload },
+      { backend, shell: noShell },
+    );
+
+    expect(env.ok).toBe(true);
+    expect(method).toHaveBeenCalledExactlyOnceWith(payload);
+  });
+
+  it("取り込み済み提案の再承認は4096件を超えるpayloadをN-APIへ渡さない", async () => {
+    const method = vi.fn();
+    const { backend } = fakeBackend({
+      narrativeExtractionReapproveAppliedProposals: method,
+    });
+    const payload = {
+      projectId: "p1",
+      targets: Array.from({ length: 4097 }, (_, index) => ({
+        proposalId: `p${index}`,
+        revisionId: `v${index}`,
+      })),
+    };
+    const env = await dispatchInvoke(
+      "narrative_extraction_reapprove_applied_proposals",
+      { payload },
+      { backend, shell: noShell },
+    );
+
+    expect(env.ok).toBe(false);
+    expect(method).not.toHaveBeenCalled();
+  });
+
+  it("取り込み済み提案の再承認は旧native bindingでbackend unavailableを返す", async () => {
+    const { backend } = fakeBackend();
+    delete (backend as Partial<NapiBackendLike>)
+      .narrativeExtractionReapproveAppliedProposals;
+
+    const env = await dispatchInvoke(
+      "narrative_extraction_reapprove_applied_proposals",
+      {
+        payload: {
+          projectId: "p1",
+          targets: [{ proposalId: "p1", revisionId: "v1" }],
+        },
+      },
+      { backend, shell: noShell },
+    );
+
+    expect(env).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionReapproveAppliedProposals`,
     });
   });
 
@@ -7123,6 +7290,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_extraction_list_resumable_runs",
       "narrative_extraction_list_scene_proposals",
       "narrative_extraction_prepare_commit",
+      "narrative_extraction_reapprove_applied_proposals",
       "narrative_extraction_redo_commit",
       "narrative_extraction_resolve_codex_catalog_revision",
       "narrative_extraction_revise_and_decide",
@@ -7132,8 +7300,10 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_extraction_undo_commit",
       "narrative_maintenance_attention_clear",
       "narrative_maintenance_attention_set",
+      "narrative_maintenance_health_summary",
       "narrative_maintenance_inbox_list",
       "narrative_maintenance_stale_proposal_count",
+      "narrative_maintenance_stale_proposal_scenes",
       "narrative_runtime_policy_get",
       "narrative_runtime_policy_set",
       "narrative_scene_body_declaration_declare",
@@ -7684,6 +7854,74 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     });
   });
 
+  describe("maintenance health summary", () => {
+    it("passes only projectId to native and parses the response", async () => {
+      const summary = {
+        proposalsChecked: 2,
+        proposalsStale: 1,
+        staleBreakdown: {
+          stale: 1,
+          "source-missing": 0,
+          "anchor-mismatch": 0,
+          "read-set-drift": 0,
+          unknown: 0,
+        },
+        maintenanceStopped: 3,
+        unrecognized: 0,
+      };
+      const method = vi.fn().mockResolvedValue(JSON.stringify(summary));
+      const { backend } = fakeBackend({
+        narrativeMaintenanceHealthSummary: method,
+      });
+      const env = await dispatchInvoke(
+        "narrative_maintenance_health_summary",
+        { payload: { projectId: "project-1" } },
+        { backend, shell: noShell },
+      );
+      expect(env).toEqual({ ok: true, value: summary });
+      expect(method).toHaveBeenCalledExactlyOnceWith({
+        projectId: "project-1",
+      });
+    });
+
+    it.each([
+      {},
+      { payload: {} },
+      { payload: { projectId: "" } },
+      { payload: { projectId: 7 } },
+      { payload: { projectId: "p", extra: true } },
+    ])("rejects invalid args before native call: %j", async (args) => {
+      const method = vi.fn();
+      const { backend } = fakeBackend({
+        narrativeMaintenanceHealthSummary: method,
+      });
+      const env = await dispatchInvoke(
+        "narrative_maintenance_health_summary",
+        args,
+        { backend, shell: noShell },
+      );
+      expect(env.ok).toBe(false);
+      expect(method).not.toHaveBeenCalled();
+    });
+
+    it("returns backend unavailable for an older native binding", async () => {
+      const { backend } = fakeBackend();
+      delete (backend as Partial<NapiBackendLike>)
+        .narrativeMaintenanceHealthSummary;
+      const env = await dispatchInvoke(
+        "narrative_maintenance_health_summary",
+        { payload: { projectId: "p" } },
+        { backend, shell: noShell },
+      );
+      expect(env).toMatchObject({
+        ok: false,
+        error: expect.stringContaining(
+          "native method narrativeMaintenanceHealthSummary",
+        ),
+      });
+    });
+  });
+
   describe("maintenance stale proposal count", () => {
     it("projectId を渡し count を parse する", async () => {
       const method = vi.fn().mockResolvedValue('{"count":7}');
@@ -7733,6 +7971,101 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
         ok: false,
         error: expect.stringContaining(
           "native method narrativeMaintenanceStaleProposalCount",
+        ),
+      });
+    });
+  });
+
+  describe("maintenance stale proposal scenes", () => {
+    it("passes the bounded page arguments to native and parses the response", async () => {
+      const method = vi
+        .fn()
+        .mockResolvedValue('{"scenes":[],"withoutSceneCount":2}');
+      const { backend } = fakeBackend({
+        narrativeMaintenanceStaleProposalScenes: method,
+      });
+      const env = await dispatchInvoke(
+        "narrative_maintenance_stale_proposal_scenes",
+        {
+          payload: {
+            projectId: "project-1",
+            cursor: "scene-100",
+            limit: 201,
+          },
+        },
+        { backend, shell: noShell },
+      );
+      expect(env).toEqual({
+        ok: true,
+        value: { scenes: [], withoutSceneCount: 2 },
+      });
+      expect(method).toHaveBeenCalledExactlyOnceWith({
+        projectId: "project-1",
+        cursor: "scene-100",
+        limit: 201,
+      });
+    });
+
+    it.each([
+      {},
+      { payload: {} },
+      { payload: { projectId: "" } },
+      { payload: { projectId: 7 } },
+      { payload: { projectId: "p", cursor: "" } },
+      { payload: { projectId: "p", cursor: " " } },
+      { payload: { projectId: "p", cursor: "x".repeat(257) } },
+      { payload: { projectId: "p", limit: 0 } },
+      { payload: { projectId: "p", limit: -1 } },
+      { payload: { projectId: "p", limit: 1.5 } },
+      { payload: { projectId: "p", limit: "10" } },
+      { payload: { projectId: "p", extra: true } },
+    ])("rejects invalid args before native call: %j", async (args) => {
+      const method = vi.fn();
+      const { backend } = fakeBackend({
+        narrativeMaintenanceStaleProposalScenes: method,
+      });
+      const env = await dispatchInvoke(
+        "narrative_maintenance_stale_proposal_scenes",
+        args,
+        { backend, shell: noShell },
+      );
+      expect(env.ok).toBe(false);
+      expect(method).not.toHaveBeenCalled();
+    });
+
+    it("accepts a cursor at the UTF-8 byte limit", async () => {
+      const method = vi
+        .fn()
+        .mockResolvedValue('{"scenes":[],"withoutSceneCount":0}');
+      const { backend } = fakeBackend({
+        narrativeMaintenanceStaleProposalScenes: method,
+      });
+      const cursor = "x".repeat(256);
+      const env = await dispatchInvoke(
+        "narrative_maintenance_stale_proposal_scenes",
+        { payload: { projectId: "p", cursor } },
+        { backend, shell: noShell },
+      );
+      expect(env.ok).toBe(true);
+      expect(method).toHaveBeenCalledExactlyOnceWith({
+        projectId: "p",
+        cursor,
+      });
+    });
+
+    it("returns backend unavailable for an older native binding", async () => {
+      const { backend } = fakeBackend();
+      delete (backend as Partial<NapiBackendLike>)
+        .narrativeMaintenanceStaleProposalScenes;
+      const env = await dispatchInvoke(
+        "narrative_maintenance_stale_proposal_scenes",
+        { payload: { projectId: "p" } },
+        { backend, shell: noShell },
+      );
+      expect(env).toMatchObject({
+        ok: false,
+        error: expect.stringContaining(
+          "native method narrativeMaintenanceStaleProposalScenes",
         ),
       });
     });

@@ -39,7 +39,7 @@ use rusqlite::{params_from_iter, types::Value as SqlValue, Connection};
 use serde_json::Value;
 
 use super::restore_links::{RestoreShape, ID_CHUNK};
-use super::{RestoreScope, SnapshotInsertPlan, SnapshotRestoreTable};
+use super::{maybe_aux_snapshot_rows, RestoreScope, SnapshotInsertPlan, SnapshotRestoreTable};
 
 /// The parents a missing-parent edge can point at, and how to tell whether one
 /// exists after the restore.
@@ -52,6 +52,7 @@ pub(super) enum ParentRef {
     /// project (as `integrity.rs` does for an orphaned source).
     ChatMessages,
     ChatSessions,
+    Events,
     PostEffectRuns,
     /// Replaced by Body, but the snapshot does not hold every row: an
     /// annotation without a scene is not captured, and the restore does not
@@ -64,7 +65,9 @@ impl ParentRef {
     /// scope does (the rows of the live database are the ones that exist).
     pub(super) fn replaced_by(self) -> Option<RestoreScope> {
         match self {
-            Self::TreeNodes | Self::PostEffectAnnotations => Some(RestoreScope::Body),
+            Self::TreeNodes | Self::Events | Self::PostEffectAnnotations => {
+                Some(RestoreScope::Body)
+            }
             Self::CodexEntries => Some(RestoreScope::Codex),
             Self::Snippets => Some(RestoreScope::Snippet),
             Self::ChatMessages | Self::ChatSessions | Self::PostEffectRuns => None,
@@ -75,6 +78,7 @@ impl ParentRef {
     fn plan_table(self) -> Option<SnapshotRestoreTable> {
         match self {
             Self::TreeNodes => Some(SnapshotRestoreTable::TreeNodes),
+            Self::Events => Some(SnapshotRestoreTable::Events),
             Self::CodexEntries => Some(SnapshotRestoreTable::CodexEntries),
             Self::Snippets => Some(SnapshotRestoreTable::Snippets),
             Self::PostEffectAnnotations => Some(SnapshotRestoreTable::PostEffectAnnotations),
@@ -105,6 +109,7 @@ impl ParentRef {
             Self::ChatSessions => {
                 "SELECT id FROM chat_sessions WHERE project_id = ?1 AND id IN ({ids})"
             }
+            Self::Events => "SELECT id FROM events WHERE project_id = ?1 AND id IN ({ids})",
             Self::PostEffectRuns => {
                 "SELECT id FROM post_effect_runs WHERE project_id = ?1 AND id IN ({ids})"
             }
@@ -164,16 +169,13 @@ const fn edge(
 
 use Action::{DropRow, SetNull};
 use ParentRef::{
-    ChatMessages as Msg, ChatSessions as Sess, CodexEntries as Cx, PostEffectAnnotations as Ann,
-    PostEffectRuns as Run, Snippets as Sn, TreeNodes as Tn,
+    ChatMessages as Msg, ChatSessions as Sess, CodexEntries as Cx, Events as Ev,
+    PostEffectAnnotations as Ann, PostEffectRuns as Run, Snippets as Sn, TreeNodes as Tn,
 };
 use RestoreScope::{Body, Codex, Map, Snippet};
 use SnapshotRestoreTable as T;
 
-/// Every column of a table the restore replaces whose parent may be missing
-/// after the restore and that no filter of the canonical plan covers. The
-/// canonical plan's own filters (`CANONICAL_FILTERED` in the guard test) are
-/// older and say nothing to the author (DR-SRX-30).
+/// 復元後に親が無くなりうる列。canonical filter で除外される分も別途通知件数へ加える。
 pub(super) const MISSING_PARENT_EDGES: &[MissingParentEdge] = &[
     edge(
         T::CodexEntryPhases,
@@ -214,6 +216,14 @@ pub(super) const MISSING_PARENT_EDGES: &[MissingParentEdge] = &[
         SetNull,
         Map,
         "map_source_links",
+    ),
+    edge(
+        T::EditorStickies,
+        "chronicle_event_id",
+        Ev,
+        DropRow,
+        Map,
+        "editor_stickies",
     ),
     edge(
         T::MapAiBranches,
@@ -359,7 +369,8 @@ fn existing_ids(
     let mut found = HashSet::new();
     let replaced = parent
         .replaced_by()
-        .is_some_and(|scope| shape.scopes.contains(&scope));
+        .is_some_and(|scope| shape.scopes.contains(&scope))
+        && (parent != ParentRef::Events || shape.events_aux);
     if replaced {
         // The restore deletes this parent's rows and inserts the plan's.
         if let Some(table) = parent.plan_table() {
@@ -384,20 +395,175 @@ fn existing_ids(
         "a partial parent whose scope is not selected needs its own live lookup"
     );
     let ids: Vec<&String> = wanted.iter().collect();
+    let restored_tree_node_ids: HashSet<String> = plan
+        .iter()
+        .filter(|insert| insert.table == SnapshotRestoreTable::TreeNodes)
+        .filter_map(|insert| text(&insert.row, "id").map(str::to_string))
+        .collect();
     for chunk in ids.chunks(ID_CHUNK) {
         let placeholders = vec!["?"; chunk.len()].join(",");
-        let sql = parent.live_sql().replace("{ids}", &placeholders);
         let mut values = vec![SqlValue::Text(shape.project_id.to_string())];
         values.extend(chunk.iter().map(|id| SqlValue::Text((*id).clone())));
-        let mut statement = conn.prepare(&sql)?;
-        let rows = statement
-            .query_map(params_from_iter(values.iter()), |row| {
-                row.get::<_, String>(0)
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        found.extend(rows);
+        if parent == ParentRef::PostEffectRuns && shape.scopes.contains(&RestoreScope::Body) {
+            let sql = format!(
+                "SELECT r.id, r.scope_target_id,
+                        EXISTS(SELECT 1 FROM tree_nodes n
+                                WHERE n.project_id = ?1 AND n.id = r.scope_target_id)
+                   FROM post_effect_runs r
+                  WHERE r.project_id = ?1 AND r.id IN ({placeholders})"
+            );
+            let mut statement = conn.prepare(&sql)?;
+            let rows = statement
+                .query_map(params_from_iter(values.iter()), |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, bool>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            found.extend(rows.into_iter().filter_map(|(id, target, target_is_live_scene)| {
+                (!target_is_live_scene
+                    || target
+                        .as_ref()
+                        .is_some_and(|target| restored_tree_node_ids.contains(target)))
+                .then_some(id)
+            }));
+        } else {
+            let sql = parent.live_sql().replace("{ids}", &placeholders);
+            let mut statement = conn.prepare(&sql)?;
+            let rows = statement
+                .query_map(params_from_iter(values.iter()), |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            found.extend(rows);
+        }
     }
     Ok(found)
+}
+
+fn count_uncaptured_body_losses(
+    conn: &Connection,
+    shape: &RestoreShape<'_>,
+    plan: &[SnapshotInsertPlan],
+) -> anyhow::Result<(i64, i64)> {
+    if !shape.scopes.contains(&RestoreScope::Body) {
+        return Ok((0, 0));
+    }
+    let captured: HashSet<String> = maybe_aux_snapshot_rows(
+        conn,
+        shape.snapshot_id,
+        "post_effect_annotation_relations",
+    )?
+    .into_iter()
+    .filter_map(|row| text(&row, "id").map(str::to_string))
+    .collect();
+    let mut statement = conn.prepare(
+        "WITH RECURSIVE doomed_annotations(id) AS (
+             SELECT a.id
+               FROM post_effect_annotations a
+               JOIN tree_nodes n ON n.id = a.scene_id
+              WHERE a.project_id = ?1 AND n.project_id = ?1
+             UNION
+             SELECT child.id
+               FROM post_effect_annotations child
+               JOIN doomed_annotations parent ON parent.id = child.parent_id
+              WHERE child.project_id = ?1
+         )
+         SELECT id FROM doomed_annotations",
+    )?;
+    let doomed_annotations: HashSet<String> = statement
+        .query_map([shape.project_id], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    let restored_scenes: HashSet<String> = plan
+        .iter()
+        .filter(|insert| insert.table == SnapshotRestoreTable::TreeNodes)
+        .filter_map(|insert| text(&insert.row, "id").map(str::to_string))
+        .collect();
+    let mut statement = conn.prepare(
+        "SELECT r.id, r.scope_target_id,
+                EXISTS(SELECT 1 FROM tree_nodes n
+                        WHERE n.project_id = ?1 AND n.id = r.scope_target_id)
+           FROM post_effect_runs r
+          WHERE r.project_id = ?1
+            AND r.id IN (
+                SELECT run_id FROM post_effect_annotations
+                 WHERE project_id = ?1 AND run_id IS NOT NULL
+                UNION
+                SELECT run_id FROM post_effect_annotation_relations
+                 WHERE project_id = ?1 AND run_id IS NOT NULL
+            )",
+    )?;
+    let runs = statement
+        .query_map([shape.project_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, bool>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let vanished_runs: HashSet<String> = runs
+        .into_iter()
+        .filter_map(|(id, target, is_project_scene)| {
+            (is_project_scene
+                && target
+                    .as_ref()
+                    .is_some_and(|target| !restored_scenes.contains(target)))
+            .then_some(id)
+        })
+        .collect();
+
+    let mut lost_run_links = 0;
+    if !vanished_runs.is_empty() {
+        let mut statement = conn.prepare(
+            "SELECT id, run_id FROM post_effect_annotations
+              WHERE project_id = ?1 AND scene_id IS NULL AND run_id IS NOT NULL",
+        )?;
+        let links = statement
+            .query_map([shape.project_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        lost_run_links += links
+            .into_iter()
+            .filter(|(id, run_id)| {
+                !doomed_annotations.contains(id) && vanished_runs.contains(run_id)
+            })
+            .count() as i64;
+    }
+
+    let mut statement = conn.prepare(
+        "SELECT id, annotation_a_id, annotation_b_id, run_id
+           FROM post_effect_annotation_relations
+          WHERE project_id = ?1",
+    )?;
+    let relations = statement
+        .query_map([shape.project_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut lost_annotations = 0;
+    for (id, a_id, b_id, run_id) in relations {
+        let endpoint_disappears =
+            doomed_annotations.contains(&a_id) || doomed_annotations.contains(&b_id);
+        if !captured.contains(&id) && endpoint_disappears {
+            lost_annotations += 1;
+        } else if !captured.contains(&id)
+            && run_id
+                .as_ref()
+                .is_some_and(|run_id| vanished_runs.contains(run_id))
+        {
+            lost_run_links += 1;
+        }
+    }
+    Ok((lost_annotations, lost_run_links))
 }
 
 /// The rows of the plan that fall away: by position in the plan (with the kind
@@ -424,14 +590,24 @@ impl LeftOut {
     }
 }
 
+#[cfg(test)]
+pub(super) fn resolve(
+    conn: &Connection,
+    shape: &RestoreShape<'_>,
+    plan: Vec<SnapshotInsertPlan>,
+) -> anyhow::Result<Resolved> {
+    resolve_with_dropped(conn, shape, plan, BTreeMap::new())
+}
+
 /// Deals with every snapshot row of `plan` whose parent is missing after the
 /// restore, as described in the module documentation. The input is the plan
 /// that was compared with the renderer's; nothing in it comes from the
 /// renderer's judgement.
-pub(super) fn resolve(
+pub(super) fn resolve_with_dropped(
     conn: &Connection,
     shape: &RestoreShape<'_>,
     mut plan: Vec<SnapshotInsertPlan>,
+    mut dropped: BTreeMap<&'static str, i64>,
 ) -> anyhow::Result<Resolved> {
     let edges: Vec<&MissingParentEdge> = MISSING_PARENT_EDGES
         .iter()
@@ -514,12 +690,18 @@ pub(super) fn resolve(
         }
     }
 
-    let mut dropped: BTreeMap<&'static str, i64> = BTreeMap::new();
     for kind in left_out.kinds.values() {
         *dropped.entry(kind).or_default() += 1;
     }
     for (_, kind) in &cleared {
         *dropped.entry(kind).or_default() += 1;
+    }
+    let (uncaptured_relations, live_run_links) = count_uncaptured_body_losses(conn, shape, &plan)?;
+    if uncaptured_relations > 0 {
+        *dropped.entry("analysis_annotations").or_default() += uncaptured_relations;
+    }
+    if live_run_links > 0 {
+        *dropped.entry("analysis_run_links").or_default() += live_run_links;
     }
     let plan = plan
         .into_iter()

@@ -6,7 +6,7 @@ import {
   createQuiescenceProviderId,
   registerQuiescenceProvider,
 } from "@/lib/quiescenceProviders";
-import { isUnknownIpcOutcomeError } from "@/lib/ipcOutcome";
+import { hasIpcErrorCode, isUnknownIpcOutcomeError } from "@/lib/ipcOutcome";
 import { isChatNavigationBlocked } from "@/lib/chatNavigationGuard";
 
 type AsyncFn = () => Promise<void>;
@@ -267,17 +267,22 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
     const cmd = past[past.length - 1];
     set({ isReplaying: true });
     let versionConflict = false;
-    let unknownOutcome = false;
+    let keepEntry = false;
     try {
       await runTrackedHistoryReplay(cmd.undo);
     } catch (err) {
-      if (isVersionConflictError(err)) {
+      if (hasIpcErrorCode(err, "NEX_EXISTENCE_SYNC_FAILED")) {
+        // Native rolled the whole replay back (SRD/1 HK3). Checked before the
+        // version-conflict wording; the entry keeps its requestId for a retry.
+        keepEntry = true;
+        throw err;
+      } else if (isVersionConflictError(err)) {
         versionConflict = true;
         surfaceUndoConflict(cmd);
       } else if (isUnknownIpcOutcomeError(err)) {
         // The native write may already have committed. Keep the exact command
         // closure reachable so the user can retry with its retained requestId.
-        unknownOutcome = true;
+        keepEntry = true;
         throw err;
       } else {
         get().clear();
@@ -286,7 +291,7 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
     } finally {
       set((state) => {
         if (state.isReplaying === false) return state;
-        if (unknownOutcome) {
+        if (keepEntry) {
           return { ...state, isReplaying: false };
         }
         if (versionConflict) {
@@ -340,17 +345,22 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
     const cmd = future[0];
     set({ isReplaying: true });
     let versionConflict = false;
-    let unknownOutcome = false;
+    let keepEntry = false;
     try {
       await runTrackedHistoryReplay(cmd.redo);
     } catch (err) {
-      if (isVersionConflictError(err)) {
+      if (hasIpcErrorCode(err, "NEX_EXISTENCE_SYNC_FAILED")) {
+        // Native rolled the whole replay back (SRD/1 HK3). Checked before the
+        // version-conflict wording; the entry keeps its requestId for a retry.
+        keepEntry = true;
+        throw err;
+      } else if (isVersionConflictError(err)) {
         versionConflict = true;
         surfaceUndoConflict(cmd);
       } else if (isUnknownIpcOutcomeError(err)) {
         // See undo: preserving the source stack preserves the idempotency
         // request identity captured by this history command.
-        unknownOutcome = true;
+        keepEntry = true;
         throw err;
       } else {
         get().clear();
@@ -359,7 +369,7 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
     } finally {
       set((state) => {
         if (state.isReplaying === false) return state;
-        if (unknownOutcome) {
+        if (keepEntry) {
           return { ...state, isReplaying: false };
         }
         if (versionConflict) {

@@ -4,6 +4,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 use serde_json::Value;
 
+use super::chronicle_approval_date::{resolve_approval_date, EventDate};
 use crate::agent_writes::{apply_event_create_in_tx, EventCreateTxInput, EventCreateTxResult};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -51,18 +52,8 @@ pub(crate) struct ChronicleEventCreatePayload {
     pub location_codex_id: Option<String>,
     #[serde(default)]
     pub participants: Vec<String>,
-    #[serde(default)]
-    pub start_time: Option<i64>,
-    #[serde(default)]
-    pub end_time: Option<i64>,
-    #[serde(default)]
-    pub start_minute: Option<i64>,
-    #[serde(default)]
-    pub end_minute: Option<i64>,
-    #[serde(default)]
-    pub start_granularity: Option<String>,
-    #[serde(default)]
-    pub end_granularity: Option<String>,
+    #[serde(flatten)]
+    date: EventDate,
 }
 
 pub(crate) fn parse_event_create_payload(
@@ -273,7 +264,7 @@ pub(crate) struct ChronicleEventCreateContext<'a> {
 
 pub(crate) fn apply_chronicle_event_create(
     ctx: ChronicleEventCreateContext<'_>,
-) -> anyhow::Result<EventCreateTxResult> {
+) -> anyhow::Result<(EventCreateTxResult, bool)> {
     anyhow::ensure!(
         ctx.payload.placement.mode == "append-tail",
         "unsupported placement mode: {}",
@@ -292,21 +283,16 @@ pub(crate) fn apply_chronicle_event_create(
         .clone()
         .filter(|value| !value.is_empty());
 
-    let start_granularity = ctx
-        .payload
-        .start_granularity
-        .clone()
-        .unwrap_or_else(|| "none".to_string());
-    let end_granularity = ctx
-        .payload
-        .end_granularity
-        .clone()
-        .unwrap_or_else(|| "none".to_string());
-    let precision = ctx
-        .payload
-        .precision
-        .clone()
-        .unwrap_or_else(|| "unknown".to_string());
+    let supplied = &ctx.payload.date;
+    let assign_date = supplied.start_time.is_none()
+        || supplied.start_granularity.as_deref().unwrap_or("none") == "none";
+    let assigned;
+    let (date, precision) = if assign_date {
+        assigned = resolve_approval_date(ctx.conn, ctx.project_id, &scene_ids)?;
+        (&assigned, "unknown")
+    } else {
+        (supplied, ctx.payload.precision.as_deref().unwrap_or("unknown"))
+    };
     let kind = ctx
         .payload
         .kind
@@ -315,7 +301,7 @@ pub(crate) fn apply_chronicle_event_create(
     let undo_id = uuid::Uuid::new_v4().to_string();
     let event_uid = uuid::Uuid::new_v4().to_string();
 
-    apply_event_create_in_tx(
+    let result = apply_event_create_in_tx(
         ctx.conn,
         EventCreateTxInput {
             project_id: ctx.project_id,
@@ -331,13 +317,13 @@ pub(crate) fn apply_chronicle_event_create(
             primary_codex_id: ctx.payload.primary_codex_id.as_deref(),
             lane_group: None,
             location_codex_id: ctx.payload.location_codex_id.as_deref(),
-            start_time: ctx.payload.start_time,
-            end_time: ctx.payload.end_time,
-            start_minute: ctx.payload.start_minute,
-            end_minute: ctx.payload.end_minute,
-            start_granularity: &start_granularity,
-            end_granularity: &end_granularity,
-            precision: &precision,
+            start_time: date.start_time,
+            end_time: date.end_time,
+            start_minute: date.start_minute,
+            end_minute: date.end_minute,
+            start_granularity: date.start_granularity.as_deref().unwrap_or("none"),
+            end_granularity: date.end_granularity.as_deref().unwrap_or("none"),
+            precision,
             kind: &kind,
             secret: ctx.payload.secret,
             reveal_scene_id: reveal_scene_id.as_deref(),
@@ -349,7 +335,8 @@ pub(crate) fn apply_chronicle_event_create(
             write_undo_journal: false,
             write_change_event: false,
         },
-    )
+    )?;
+    Ok((result, assign_date))
 }
 
 #[cfg(test)]

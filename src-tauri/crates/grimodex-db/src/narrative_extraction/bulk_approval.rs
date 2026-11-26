@@ -144,7 +144,7 @@ impl BulkApprovalVerdict {
     pub fn to_value(&self) -> Value {
         json!({
             "eligible": self.eligible,
-            "reasons": self.reasons.iter().map(|reason| reason.code()).collect::<Vec<_>>(),
+            "reasons": self.reasons,
         })
     }
 }
@@ -1033,13 +1033,13 @@ fn validate_payload(payload: &ChronicleBulkApprovePayload) -> anyhow::Result<()>
     Ok(())
 }
 
-enum Outcome {
+pub(super) enum Outcome<R = BulkApprovalReason> {
     Approved {
         proposal_id: String,
         revision_id: String,
         decision_id: String,
     },
-    Skipped(Vec<BulkApprovalReason>),
+    Skipped(Vec<R>),
 }
 
 /// One proposal, inside the caller's transaction: re-judge, build the child
@@ -1144,7 +1144,7 @@ fn approve_one(
 }
 
 /// The stable `NEX_...` code at the head of an error chain.
-fn failure_code(error: &anyhow::Error) -> String {
+pub(super) fn failure_code(error: &anyhow::Error, fallback: &str) -> String {
     for cause in error.chain() {
         let text = cause.to_string();
         let head = text.split(':').next().unwrap_or("");
@@ -1156,7 +1156,7 @@ fn failure_code(error: &anyhow::Error) -> String {
             return head.to_owned();
         }
     }
-    "NEX_BULK_APPROVE_FAILED".to_owned()
+    fallback.to_owned()
 }
 
 /// Bulk approval. One transaction per proposal; a failed proposal is rolled
@@ -1210,6 +1210,19 @@ fn run_targets(
     should_stop: &mut dyn FnMut() -> bool,
     attempt: &mut dyn FnMut(&ChronicleBulkApproveTarget) -> anyhow::Result<anyhow::Result<Outcome>>,
 ) -> anyhow::Result<Value> {
+    run_approval_targets(targets, should_stop, attempt, |error| {
+        failure_code(error, "NEX_BULK_APPROVE_FAILED")
+    })
+}
+
+pub(super) fn run_approval_targets<R: Serialize>(
+    targets: &[ChronicleBulkApproveTarget],
+    should_stop: &mut dyn FnMut() -> bool,
+    attempt: &mut dyn FnMut(
+        &ChronicleBulkApproveTarget,
+    ) -> anyhow::Result<anyhow::Result<Outcome<R>>>,
+    code: impl Fn(&anyhow::Error) -> String,
+) -> anyhow::Result<Value> {
     let mut approved = Vec::new();
     let mut skipped = Vec::new();
     let mut failed = Vec::new();
@@ -1226,7 +1239,7 @@ fn run_targets(
                 // workspace): nothing after this proposal can run either.
                 failed.push(json!({
                     "proposalId": target.proposal_id,
-                    "code": failure_code(&error),
+                    "code": code(&error),
                 }));
                 stopped = true;
                 break;
@@ -1244,7 +1257,7 @@ fn run_targets(
             })),
             Ok(Outcome::Skipped(reasons)) => skipped.push(json!({
                 "proposalId": target.proposal_id,
-                "reasons": reasons.iter().map(|reason| reason.code()).collect::<Vec<_>>(),
+                "reasons": reasons,
             })),
             Err(error) => {
                 // An unproven rollback leaves the connection unreliable:
@@ -1254,7 +1267,7 @@ fn run_targets(
                 }
                 failed.push(json!({
                     "proposalId": target.proposal_id,
-                    "code": failure_code(&error),
+                    "code": code(&error),
                 }));
             }
         }

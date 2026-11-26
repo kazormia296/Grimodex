@@ -873,7 +873,7 @@ pub(super) fn merge_dropped(
 /// How many links a restore of the shape's scopes would not give back,
 /// decided on ids before anything is written. `apply` decides the same thing
 /// on the rows it parked, so the two agree for the same state. `plan` is the
-/// plan after `restore_missing_parents::resolve`, and `plan_dropped` what that
+/// plan after `restore_missing_parents::resolve_with_dropped`, and `plan_dropped` what that
 /// step left out or cleared; the latter is added to the count.
 pub(super) fn count_losses(
     conn: &Connection,

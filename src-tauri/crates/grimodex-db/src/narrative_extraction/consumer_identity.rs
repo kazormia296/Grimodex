@@ -104,6 +104,23 @@ pub(crate) enum ConsumerKind {
     Application,
 }
 
+/// Every Consumer kind the contract names (declared, reserved and not yet
+/// modelled alike). Read-only counts treat a stored kind outside this set as
+/// unreadable; it is the same set as the renderer's Inbox allow-list.
+pub(crate) const CONTRACT_CONSUMER_KINDS: &[&str] = &[
+    "narrative-extraction-run",
+    "proposal-revision",
+    "extraction-artifact",
+    "application",
+    "application-contribution",
+    "derived-projection",
+    "semantic-index",
+    "narrative-ir-revision",
+    "related-scenes-materialization",
+    "chat-context-materialization",
+    "structure-health-diagnostic",
+];
+
 impl ConsumerKind {
     /// `const` so [`RUN_CONSUMER_KIND`] can be defined *from* it. That
     /// direction matters: it makes the enum the single source of the
@@ -400,6 +417,19 @@ mod tests {
                     .to_string()
             })
             .collect()
+    }
+
+    #[test]
+    fn contract_consumer_kinds_match_the_registry() {
+        let contract: serde_json::Value = serde_json::from_str(CONSUMER_CONTRACT_JSON)
+            .expect("policies/narrative/narrative-consumer-contract.json must parse");
+        let registered: Vec<&str> = contract["consumerKinds"]
+            .as_array()
+            .expect("consumerKinds must be an array")
+            .iter()
+            .map(|entry| entry["kind"].as_str().expect("kind"))
+            .collect();
+        assert_eq!(registered, CONTRACT_CONSUMER_KINDS);
     }
 
     /// The registry and this enum have to mean the same thing in both

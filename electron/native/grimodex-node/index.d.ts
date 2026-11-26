@@ -1098,6 +1098,8 @@ export declare class Backend {
    * stops and returns what was done so far.
    */
   narrativeExtractionChronicleBulkApprove(payload: any): Promise<string>
+  /** Reapprove restored Chronicle events as the human reviewer, checking each target before writing. */
+  narrativeExtractionReapproveAppliedProposals(payload: any): Promise<string>
   narrativeExtractionReviseAndDecide(payload: any): Promise<string>
   narrativeExtractionReviseAndDecideAsHuman(payload: any): Promise<string>
   narrativeExtractionSetHumanFieldLock(payload: any): Promise<string>
@@ -1179,8 +1181,12 @@ export declare class Backend {
   narrativeMaintenanceAttentionClear(payload: any): Promise<string>
   /** Read-only: assemble the Maintenance Inbox for one project as of now. */
   narrativeMaintenanceInboxList(payload: any): Promise<string>
+  /** Read-only aggregate maintenance health counts for one project as of now. */
+  narrativeMaintenanceHealthSummary(payload: any): Promise<string>
   /** Read-only count of stale proposals for one project as of now. */
   narrativeMaintenanceStaleProposalCount(payload: any): Promise<string>
+  /** Read-only scene counts for stale proposals in one project. */
+  narrativeMaintenanceStaleProposalScenes(payload: any): Promise<string>
   /** 校閲 run 一覧 (limit 省略時 20 / offset 省略時 0 はサーバサイド既定)。 */
   listPostEffectRuns(projectId: string, effectType?: string | undefined | null, limit?: number | undefined | null, offset?: number | undefined | null): Promise<string>
   /** Outline 用: scene ごとに最新 run の lens (`runCompletedAt` 付き) を返す。 */

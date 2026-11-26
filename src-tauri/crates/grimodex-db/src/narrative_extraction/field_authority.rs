@@ -846,20 +846,18 @@ fn fields_for(entity_kind: &str, entity_id: &str, paths: &[&str]) -> Vec<Affecte
         .collect()
 }
 
+const TEMPORAL_FIELD_PATHS: &[&str] = &[
+    "/startTime",
+    "/startMinute",
+    "/startGranularity",
+    "/endTime",
+    "/endMinute",
+    "/endGranularity",
+    "/precision",
+];
+
 fn temporal_typed_fields(entity_kind: &str, entity_id: &str) -> Vec<AffectedField> {
-    fields_for(
-        entity_kind,
-        entity_id,
-        &[
-            "/startTime",
-            "/startMinute",
-            "/startGranularity",
-            "/endTime",
-            "/endMinute",
-            "/endGranularity",
-            "/precision",
-        ],
-    )
+    fields_for(entity_kind, entity_id, TEMPORAL_FIELD_PATHS)
 }
 
 pub(crate) fn validate_operation_field_authority(
@@ -933,10 +931,16 @@ pub(crate) fn record_operation_field_authority(
     operations: &[CommitOperation],
     updated_at: &str,
     commit_map: &CommitMap,
+    system_dated_operations: &std::collections::BTreeSet<usize>,
 ) -> anyhow::Result<()> {
-    for (operation, (proposal_id, revision_id)) in operations.iter().zip(applications) {
+    for (index, (operation, (proposal_id, revision_id))) in
+        operations.iter().zip(applications).enumerate()
+    {
         let authority = load_decision_authority(conn, proposal_id, revision_id)?;
         for field in affected_fields(operation, commit_map)? {
+            let assigned_date = system_dated_operations.contains(&index)
+                && TEMPORAL_FIELD_PATHS.contains(&field.field_path.as_str());
+            let owner = if assigned_date { "system" } else { &authority.actor_kind };
             conn.execute(
                 "INSERT INTO narrative_field_authority
                     (project_id, entity_kind, entity_id, field_path, owner_kind,
@@ -944,6 +948,7 @@ pub(crate) fn record_operation_field_authority(
                  VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, ?6)
                  ON CONFLICT(project_id, entity_kind, entity_id, field_path)
                  DO UPDATE SET owner_kind = CASE
+                         WHEN ?7 THEN excluded.owner_kind
                          WHEN narrative_field_authority.owner_kind = 'human'
                          THEN 'human' ELSE excluded.owner_kind END,
                      version = narrative_field_authority.version + 1,
@@ -953,8 +958,9 @@ pub(crate) fn record_operation_field_authority(
                     field.entity_kind,
                     field.entity_id,
                     field.field_path,
-                    authority.actor_kind,
+                    owner,
                     updated_at,
+                    assigned_date,
                 ],
             )?;
         }

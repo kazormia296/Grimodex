@@ -30,6 +30,7 @@ import {
   type NapiBackendLike,
   type SecretsResolver,
 } from "../shared/ipcContract.js";
+import { MAIN_READ_CALLER_TIMEOUT_MS } from "../shared/ipcCallerTimeouts.js";
 import {
   mastraAgentTurnRefusalValue,
   MASTRA_AGENT_TURN_START_COMMAND,
@@ -79,6 +80,7 @@ import {
   type MainAgentAuditHandle,
   type MainAgentAuditSink,
 } from "./mastra/agentAuditSink.js";
+import { projectAiChatPolicyAllows } from "./mastraChatPolicy.js";
 import type {
   AgentAuditCompletion,
   AgentAuditRequest,
@@ -96,7 +98,7 @@ import type {
   MastraAgentTurnWindow,
 } from "./mastraAgentTurnGate.js";
 import { createMastraAgentTurnProgressSender } from "./mastraAgentTurnEvents.js";
-import type { MainReadHooks } from "./mastraRead/nativeCall.js";
+import { runNativeRead, type MainReadHooks } from "./mastraRead/nativeCall.js";
 import type {
   MainEgressParticipantContext,
   MainIssuedCallerIdentity,
@@ -969,6 +971,13 @@ export function createMastraTurnOwner(
     const citations: MastraAgentTurnCitation[] = [];
     let finalThinkingBlocks: MastraAgentTurnThinkingBlock[] = [];
     let terminalSent = false;
+    let preparedSendProgress: {
+      sendIndex: number;
+      usage: ReturnType<typeof progressUsage>;
+      cacheDowngradeReason: NonNullable<
+        ReturnType<typeof finalizeTurnPayload>["cacheDowngradeReason"]
+      > | null;
+    } | null = null;
     const makeLoopResult = (
       stoppedReason = loopState.aborted
         ? "aborted"
@@ -1082,11 +1091,51 @@ export function createMastraTurnOwner(
         systemVolatileTail: request.systemVolatileTail,
         send: sendFor(turn, backend, credentials),
         audit: guardedSink(turn),
+        assertSendAllowed: async ({ sendIndex }) => {
+          const rawPolicy = await runNativeRead(
+            () =>
+              backend.dbExecute(
+                "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1",
+                [turn.projectId],
+                "get",
+                JSON.stringify(turn.identity),
+              ),
+            {
+              command: "db_execute",
+              timeoutMs: MAIN_READ_CALLER_TIMEOUT_MS.db_execute,
+              hooks: readHooksOf(turn),
+            },
+          );
+          if (!projectAiChatPolicyAllows(rawPolicy)) {
+            turn.cancelObserved = true;
+            throw sendIndex === 0
+              ? new MastraTurnCancelled()
+              : new MastraAgentLoopStopped();
+          }
+          const prepared = preparedSendProgress;
+          if (prepared?.sendIndex !== sendIndex) {
+            throw new Error("MASTRA_AGENT_SEND_PROGRESS_MISSING");
+          }
+          preparedSendProgress = null;
+          progress.send({
+            kind: "send-accepted",
+            sendIndex: sendIndex + 1,
+            usage: prepared.usage,
+            cacheDowngradeReason: prepared.cacheDowngradeReason,
+          });
+        },
         toolDefinitions,
         bindings: turnReadBindings?.bindings ?? [],
         isToolDeclared: (name) => declaredToolNames.has(name),
-        isTurnStopped: () =>
-          turn.userStop || turn.forcedCause !== null || turn.finished,
+        isTurnStopped: () => {
+          if (turn.finished) return true;
+          try {
+            assertLive(turn);
+            return false;
+          } catch {
+            return true;
+          }
+        },
         maxToolCalls: request.loop.maxToolCalls,
         maxUserQuestions: request.loop.maxUserQuestions,
         tokenBudget: request.loop.tokenBudget,
@@ -1174,12 +1223,11 @@ export function createMastraTurnOwner(
           declaredToolNames = new Set(
             preparedRequest.tools?.map(({ name }) => name) ?? [],
           );
-          progress.send({
-            kind: "send-accepted",
-            sendIndex: ctx.sendIndex + 1,
+          preparedSendProgress = {
+            sendIndex: ctx.sendIndex,
             usage: progressUsage(finalized.usage, request.loop.contextWindow),
             cacheDowngradeReason: finalized.cacheDowngradeReason ?? null,
-          });
+          };
           return preparedRequest;
         },
         observeResponse: (response) => {

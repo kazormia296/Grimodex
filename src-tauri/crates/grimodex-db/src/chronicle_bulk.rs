@@ -13,7 +13,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use grimodex_core::chronicle_time::{
-    validate_canonical_chronicle_date_range, ChronicleDateRange, ChronicleTimestamp,
+    require_event_date, validate_canonical_chronicle_date_range, ChronicleDateRange,
+    ChronicleTimestamp,
 };
 
 use crate::agent_writes::canonical_payload_with_authority_context;
@@ -29,6 +30,9 @@ use crate::idempotency::{
 use crate::narrative_extraction::change_feed::{
     append_narrative_change_transaction_in_tx, AppendNarrativeChangeTransactionInput,
     NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
+};
+use crate::narrative_extraction::{
+    append_event_existence_decisions_in_tx, EventExistenceChange, RemovedVia,
 };
 use crate::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
 use crate::Database;
@@ -1229,6 +1233,7 @@ pub(crate) fn replay_chronicle_bulk_in_tx(
     // Restore/delete event rows first. Associations for restored deletes are
     // deferred until every selected event row exists, so a relation between
     // two events deleted by the same action can be restored safely.
+    let mut removed_event_ids = Vec::new();
     let mut association_restores = Vec::new();
     for (index, (target_state, current_state)) in
         target.events.iter_mut().zip(&current.events).enumerate()
@@ -1264,6 +1269,7 @@ pub(crate) fn replay_chronicle_bulk_in_tx(
             (None, Some(current_snapshot)) => {
                 let expected = event_snapshot_version(current_snapshot)?;
                 delete_event_cascade(conn, project_id, &target_state.event_id, Some(expected))?;
+                removed_event_ids.push(target_state.event_id.clone());
                 target_state.last_version = expected;
             }
             (None, None) => {
@@ -1274,6 +1280,7 @@ pub(crate) fn replay_chronicle_bulk_in_tx(
             }
         }
     }
+    crate::agent_writes::sync_replayed_event_removals(conn, project_id, &removed_event_ids)?;
     for index in association_restores {
         let target_state = &target.events[index];
         let snapshot = target_state
@@ -1417,25 +1424,6 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
                         {
                             codex_ids.insert(codex_id.clone());
                         }
-                        if let ChronicleBulkOperation::EventSetDate {
-                            start_time,
-                            start_minute,
-                            start_granularity,
-                            end_time,
-                            end_minute,
-                            end_granularity,
-                            ..
-                        } = operation
-                        {
-                            validate_absolute_date(
-                                *start_time,
-                                *start_minute,
-                                start_granularity,
-                                *end_time,
-                                *end_minute,
-                                end_granularity,
-                            )?;
-                        }
                     }
                     ChronicleBulkOperation::SceneClearDate { scene_id, .. }
                     | ChronicleBulkOperation::SceneSetPov { scene_id, .. }
@@ -1518,7 +1506,7 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
                         }
                         let kind = match operation {
                             ChronicleBulkOperation::EventDelete { .. } => "eventDelete",
-                            ChronicleBulkOperation::EventClearDate { .. } => "eventClearDate",
+                            ChronicleBulkOperation::EventClearDate { .. } => anyhow::bail!(grimodex_core::chronicle_time::CHRONICLE_EVENT_DATE_REQUIRED),
                             ChronicleBulkOperation::EventSetLane { .. } => "eventSetLane",
                             ChronicleBulkOperation::EventSetDate { .. } => "eventSetDate",
                             _ => unreachable!(),
@@ -1547,28 +1535,6 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
                         let mut next_fields = fields.clone();
                         let next_version = checked_next_version(*base_version)?;
                         match (operation, &mut next_fields) {
-                            (
-                                ChronicleBulkOperation::EventClearDate { .. },
-                                BulkEventFields::Date {
-                                    start_time,
-                                    start_minute,
-                                    start_granularity,
-                                    end_time,
-                                    end_minute,
-                                    end_granularity,
-                                    updated_at,
-                                    version,
-                                },
-                            ) => {
-                                *start_time = None;
-                                *start_minute = None;
-                                *start_granularity = "none".to_string();
-                                *end_time = None;
-                                *end_minute = None;
-                                *end_granularity = "none".to_string();
-                                *updated_at = fresh_updated_at(&record.updated_at)?;
-                                *version = next_version;
-                            }
                             (
                                 ChronicleBulkOperation::EventSetLane {
                                     primary_codex_id,
@@ -1608,6 +1574,23 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
                                     version,
                                 },
                             ) => {
+                                if *start_time != Some(*next_start)
+                                    || start_minute != next_start_minute
+                                    || start_granularity != next_start_granularity
+                                    || end_time != next_end
+                                    || end_minute != next_end_minute
+                                    || end_granularity != next_end_granularity
+                                {
+                                    require_event_date(Some(*next_start), next_start_granularity)?;
+                                    validate_absolute_date(
+                                        *next_start,
+                                        *next_start_minute,
+                                        next_start_granularity,
+                                        *next_end,
+                                        *next_end_minute,
+                                        next_end_granularity,
+                                    )?;
+                                }
                                 *start_time = Some(*next_start);
                                 *start_minute = *next_start_minute;
                                 *start_granularity = next_start_granularity.clone();
@@ -1718,6 +1701,7 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
             let before_scene_feed =
                 collect_full_scene_feed_states(conn, &payload.project_id, &scene_feed_ids)?;
 
+            let mut removed_event_ids = Vec::new();
             let mut event_results = Vec::new();
             let mut scene_results = Vec::new();
             let mut scene_scope_refresh_events = Vec::new();
@@ -1735,6 +1719,7 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
                             event_id,
                             Some(*base_version),
                         )?;
+                        removed_event_ids.push(event_id.clone());
                         event_results.push(BulkEventResult {
                             kind: "eventDelete".to_string(),
                             event_id: event_id.clone(),
@@ -1797,6 +1782,14 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
                     }
                 }
             }
+            append_event_existence_decisions_in_tx(
+                conn,
+                &payload.project_id,
+                EventExistenceChange::Removed {
+                    event_ids: &removed_event_ids,
+                    via: RemovedVia::ScreenDelete,
+                },
+            )?;
             let after_event_feed =
                 collect_full_event_feed_states(conn, &payload.project_id, &event_feed_ids)?;
             let after_scene_feed =
@@ -1908,6 +1901,71 @@ mod tests {
 
     fn test_db() -> Database {
         crate::test_support::current_schema_memory().expect("current-schema fixture")
+    }
+
+    fn set_event_day(event_id: String, base_version: i64) -> ChronicleBulkOperation {
+        ChronicleBulkOperation::EventSetDate {
+            event_id,
+            base_version,
+            start_time: 30,
+            start_minute: None,
+            start_granularity: "day".into(),
+            end_time: None,
+            end_minute: None,
+            end_granularity: "none".into(),
+        }
+    }
+
+    #[test]
+    fn bulk_event_dates_reject_clear_and_undated_replacements() {
+        let db = test_db();
+        let (project_id, _, _, event_id, _) = setup(&db);
+        let set_date = ChronicleBulkOperation::EventSetDate {
+            event_id: event_id.clone(),
+            base_version: 1,
+            start_time: 30,
+            start_minute: None,
+            start_granularity: "none".into(),
+            end_time: None,
+            end_minute: None,
+            end_granularity: "none".into(),
+        };
+        let apply = |operation| {
+            agent_chronicle_bulk_mutate_impl(
+                &db,
+                AgentChronicleBulkPayload {
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    project_id: project_id.clone(),
+                    session_id: "session".into(),
+                    surface: Some("manual".into()),
+                    operations: vec![operation],
+                },
+            )
+        };
+        for operation in [
+            ChronicleBulkOperation::EventClearDate {
+                event_id: event_id.clone(),
+                base_version: 1,
+            },
+            set_date.clone(),
+        ] {
+            assert_eq!(
+                apply(operation).unwrap_err().to_string(),
+                grimodex_core::chronicle_time::CHRONICLE_EVENT_DATE_REQUIRED
+            );
+        }
+
+        // Replay can restore a legacy day with no granularity.
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE events SET start_time = 30, start_minute = NULL, start_granularity = 'none',
+                    end_time = NULL, end_minute = NULL, end_granularity = 'none' WHERE id = ?1",
+                [&event_id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        apply(set_date).expect("all six stored fields are unchanged");
     }
 
     fn setup(db: &Database) -> (String, String, String, String, String) {
@@ -2060,10 +2118,7 @@ mod tests {
                         base_updated_at: "2026-07-29T00:00:00.000Z".to_string(),
                         pov_character_id: Some(codex_id),
                     },
-                    ChronicleBulkOperation::EventClearDate {
-                        event_id: event_clear_id.clone(),
-                        base_version: 1,
-                    },
+                    set_event_day(event_clear_id.clone(), 1),
                     ChronicleBulkOperation::EventDelete {
                         event_id: event_delete_id.clone(),
                         base_version: 1,
@@ -2221,10 +2276,7 @@ mod tests {
                     project_id,
                     session_id: "session".to_string(),
                     surface: Some(surface.to_string()),
-                    operations: vec![ChronicleBulkOperation::EventClearDate {
-                        event_id: event_clear_id,
-                        base_version: 1,
-                    }],
+                    operations: vec![set_event_day(event_clear_id, 1)],
                 },
             )
             .expect("bulk mutation with mapped origin");
@@ -2265,10 +2317,7 @@ mod tests {
                 project_id: project_id.clone(),
                 session_id: "session".to_string(),
                 surface: Some("manual".to_string()),
-                operations: vec![ChronicleBulkOperation::EventClearDate {
-                    event_id: event_id.clone(),
-                    base_version: 1,
-                }],
+                operations: vec![set_event_day(event_id.clone(), 1)],
             },
         )
         .expect_err("feed failure must reject the whole bulk mutation");
@@ -2676,10 +2725,7 @@ mod tests {
                         event_id: event_delete_id.clone(),
                         base_version: 1,
                     },
-                    ChronicleBulkOperation::EventClearDate {
-                        event_id: event_clear_id.clone(),
-                        base_version: 1,
-                    },
+                    set_event_day(event_clear_id.clone(), 1),
                     ChronicleBulkOperation::SceneSetPov {
                         scene_id: scene_id.clone(),
                         base_updated_at: "2026-07-29T00:00:00.000Z".to_string(),
@@ -2720,7 +2766,7 @@ mod tests {
             let changes: i64 =
                 conn.query_row("SELECT COUNT(*) FROM change_events", [], |row| row.get(0))?;
             assert_eq!(deleted, 0);
-            assert_eq!(cleared, (None, "none".to_string(), 2));
+            assert_eq!(cleared, (Some(30), "day".to_string(), 2));
             assert_eq!(pov.as_deref(), Some(codex_id.as_str()));
             assert_eq!(journals, 1);
             assert_eq!(changes, 1);
@@ -2812,7 +2858,7 @@ mod tests {
                 |row| row.get(0),
             )?;
             assert_eq!(deleted, 0);
-            assert_eq!(cleared, (None, 4));
+            assert_eq!(cleared, (Some(30), 4));
             assert_eq!(pov.as_deref(), Some(codex_id.as_str()));
             Ok(())
         })
@@ -2839,10 +2885,7 @@ mod tests {
                              datetime('now'), datetime('now'), 1)",
                     rusqlite::params![event_id, project_id, format!("a{index}")],
                 )?;
-                operations.push(ChronicleBulkOperation::EventClearDate {
-                    event_id,
-                    base_version: 1,
-                });
+                operations.push(set_event_day(event_id, 1));
             }
             Ok(())
         })
@@ -2865,8 +2908,8 @@ mod tests {
             let cleared: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM events
                   WHERE project_id = ?1
-                    AND start_time IS NULL
-                    AND start_granularity = 'none'
+                    AND start_time = 30
+                    AND start_granularity = 'day'
                     AND version = 2",
                 rusqlite::params![project_id],
                 |row| row.get(0),
@@ -2924,13 +2967,10 @@ mod tests {
                 project_id,
                 session_id: "session".to_string(),
                 surface: Some("manual".to_string()),
-                operations: vec![ChronicleBulkOperation::EventClearDate {
-                    event_id,
-                    base_version: 1,
-                }],
+                operations: vec![set_event_day(event_id, 1)],
             },
         )
-        .expect("clear date");
+        .expect("set date");
 
         db.with_conn(|conn| {
             let (before_raw, after_raw): (String, String) = conn.query_row(
@@ -2948,7 +2988,7 @@ mod tests {
             assert!(after["events"][0].get("snapshot").is_none());
             assert_eq!(before["events"][0]["fields"]["stateKind"], "date");
             assert_eq!(before["events"][0]["fields"]["startTime"], 20);
-            assert_eq!(after["events"][0]["fields"]["startTime"], Value::Null);
+            assert_eq!(after["events"][0]["fields"]["startTime"], 30);
             Ok(())
         })
         .expect("inspect compact journal");
@@ -2957,10 +2997,22 @@ mod tests {
     #[test]
     fn legacy_full_event_update_journal_remains_replayable() {
         let db = test_db();
-        let (project_id, _codex_id, _event_delete_id, event_id, _scene_id) = setup(&db);
+        let (project_id, codex_id, _event_delete_id, event_id, _scene_id) = setup(&db);
         let before_snapshot = db
             .with_conn(|conn| collect_event_snapshot(conn, &event_id))
             .expect("legacy before snapshot");
+        // 過去の「日付をまとめて消す」操作が残した状態を作る。変更の記録がまだ無い時点で
+        // 日時なしにし、その後で日付に触れない操作を追跡して journal を得る。
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE events SET start_time = NULL, start_minute = NULL,
+                    start_granularity = 'none', end_time = NULL, end_minute = NULL,
+                    end_granularity = 'none' WHERE id = ?1",
+                [&event_id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
         let result = agent_chronicle_bulk_mutate_impl(
             &db,
             AgentChronicleBulkPayload {
@@ -2968,9 +3020,11 @@ mod tests {
                 project_id: project_id.clone(),
                 session_id: "session".to_string(),
                 surface: Some("manual".to_string()),
-                operations: vec![ChronicleBulkOperation::EventClearDate {
+                operations: vec![ChronicleBulkOperation::EventSetLane {
                     event_id: event_id.clone(),
                     base_version: 1,
+                    primary_codex_id: Some(codex_id.clone()),
+                    lane_group: None,
                 }],
             },
         )
@@ -3141,10 +3195,7 @@ mod tests {
                         event_id: event_delete_id.clone(),
                         base_version: 1,
                     },
-                    ChronicleBulkOperation::EventClearDate {
-                        event_id: event_clear_id.clone(),
-                        base_version: 99,
-                    },
+                    set_event_day(event_clear_id.clone(), 99),
                     ChronicleBulkOperation::SceneClearDate {
                         scene_id,
                         base_updated_at: "2026-07-29T00:00:00.000Z".to_string(),
@@ -3188,10 +3239,7 @@ mod tests {
             project_id: project_id.clone(),
             session_id: "session".to_string(),
             surface: Some("manual".to_string()),
-            operations: vec![ChronicleBulkOperation::EventClearDate {
-                event_id: event_id.clone(),
-                base_version: 1,
-            }],
+            operations: vec![set_event_day(event_id.clone(), 1)],
         };
 
         let first = agent_chronicle_bulk_mutate_impl(&db, payload.clone()).expect("first forward");
@@ -3286,10 +3334,7 @@ mod tests {
                 project_id: project_id.clone(),
                 session_id: "session".to_string(),
                 surface: Some("manual".to_string()),
-                operations: vec![ChronicleBulkOperation::EventClearDate {
-                    event_id: event_id.clone(),
-                    base_version: 1,
-                }],
+                operations: vec![set_event_day(event_id.clone(), 1)],
             },
         )
         .expect("forward");

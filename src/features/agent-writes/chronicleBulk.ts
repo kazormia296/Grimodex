@@ -8,7 +8,7 @@ import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useChronicleStore } from "@/features/chronicle/chronicleStore";
 import { scheduleEventIndex } from "@/features/semantic-search/scheduler";
 import { notifySameRendererDocumentWrite } from "@/features/concurrency/documentWriteNotification";
-import { isUnknownIpcOutcomeError } from "@/lib/ipcOutcome";
+import { hasIpcErrorCode, isUnknownIpcOutcomeError } from "@/lib/ipcOutcome";
 import { createPendingCreateRequestRegistry } from "@/lib/pendingCreateRequestRegistry";
 import {
   captureMutationAuthority,
@@ -238,7 +238,12 @@ export async function uiMutateChronicleBulk(
             useChronicleStore.getState().bumpRevision();
             replayRequests.release(replayRequest);
           } catch (error) {
-            if (!nativeReplayCommitted && !isUnknownIpcOutcomeError(error)) {
+            if (
+              !nativeReplayCommitted &&
+              !isUnknownIpcOutcomeError(error) &&
+              // Rolled back in Native; SRD/1 HK3 retries with the same id.
+              !hasIpcErrorCode(error, "NEX_EXISTENCE_SYNC_FAILED")
+            ) {
               replayRequests.release(replayRequest);
             }
             throw error;

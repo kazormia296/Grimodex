@@ -1,5 +1,6 @@
 import { lazy, Suspense } from "react";
 
+import { ChatStopConfirmHost } from "@/components/ChatStopConfirmHost";
 import { EulaConsentGate } from "@/features/legal/EulaConsentGate";
 import { ProfileEgressStatusSlot } from "@/features/profile-egress/ProfileEgressStatusSlot";
 import { useReleaseNotesStore } from "@/features/release-notes/releaseNotesStore";
@@ -54,6 +55,7 @@ export function ApplicationDialogs({
         </Suspense>
       )}
       <EulaConsentGate />
+      <ChatStopConfirmHost />
       {releaseNotesOpen && (
         <Suspense fallback={null}>
           <ReleaseNotesDialog />

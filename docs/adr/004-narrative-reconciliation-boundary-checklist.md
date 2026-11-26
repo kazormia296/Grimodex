@@ -37,6 +37,8 @@ Strategy が Native Writer に残っていたら merge しない。
 - [ ] stale／needs-reconciliation な Projection の自動コンテキスト投入・自動 Apply 抑止または注記
 - [x] Reconciler 公開型が SQL／DB Operation／Writer command に依存しない
 
+**追補（2026-11-26、確認 138）**　`nir1-chronicle-scene-review-apply-delta/1#chronicle-event-existence-sync`。B2-X04・B2-IM-F・B2-IM-P の例外は、取り込んだ出来事の削除と同じ transaction で Domain Writer が対象の提案に却下を 1 件追記することだけである。Change Feed と Dependency Index の伝播は従来どおり鮮度・`needs-reconciliation` までとし、親の stale や Evidence の削除から撤回・削除を伝播しない。
+
 ## Slice テンプレート
 
 ### Chronicle

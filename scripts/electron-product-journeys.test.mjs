@@ -5772,20 +5772,30 @@ test("product runner keeps the real boundary assertions", async () => {
   assert.match(source, /promptIncludedCodex:\s*true/);
   assert.match(source, /aiAttributionPersisted:\s*true/);
   assert.match(source, /cross-feature-authoring-restored/);
-  assert.match(source, /project-chat-stream-drained/);
+  assert.match(source, /project-chat-switch-cancelled/);
+  assert.match(source, /project-chat-stream-stopped/);
   assert.match(source, /runAgentStreamProjectSwitchJourney/);
   assert.match(source, /pathId:\s*"chat_agent_main"/);
   assert.match(source, /transport:\s*"send_agent_message"/);
-  assert.match(source, /responseStillPending:\s*true/);
-  assert.match(source, /agent-project-switch-drained/);
+  assert.match(source, /responseContinuedAfterCancel:\s*true/);
+  assert.match(source, /agent-project-switch-cancelled/);
+  assert.match(source, /agent-project-switch-stopped/);
   assert.match(source, /runAgentStreamWorkspaceSwitchJourney/);
   assert.match(source, /AGENT_WORKSPACE_SWITCH_PROMPT/);
   assert.match(
     source,
-    /workspace authority revision changed while Agent transport was pending/,
+    /workspace authority revision changed when the Agent switch was cancelled/,
   );
-  assert.match(source, /agent-workspace-switch-drained/);
-  assert.match(source, /workspace-chat-stream-drained/);
+  assert.match(source, /agent-workspace-switch-cancelled/);
+  assert.match(source, /agent-workspace-switch-stopped/);
+  assert.match(source, /workspace-chat-switch-cancelled/);
+  assert.match(source, /workspace-chat-stream-stopped/);
+  assert.match(source, /chat-stop-confirm/);
+  assert.match(source, /chat-stop-confirm-accept/);
+  assert.match(source, /chat-stop-confirm-cancel/);
+  assert.match(source, /assertNoLifecycleTransition/);
+  assert.match(source, /assertAiTurnCancelled/);
+  assert.match(source, /oldScopeStoppedAndPersisted:\s*true/);
   assert.match(source, /project-pending-editor-restored/);
   assert.match(source, /mcp-d2a-pre-dispatch-denial/);
   assert.match(source, /D2A_EGRESS_DENIED/);
