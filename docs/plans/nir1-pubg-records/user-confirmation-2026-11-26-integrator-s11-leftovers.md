@@ -53,3 +53,4 @@
 - 回答：「Main の許可に import-apply を足す (Recommended)」
 - 効力：entity_tags_set に限り、Main の authority の許可に import-apply を足すことを、ユーザーが承認した。他の route は広げない。
 - 後の訂正：Pub-G Gap はその後、snippet の件について「公開版には入っていない（v2.0.10 は 08-01、#530 を含む tag は elv2-final だけ）」と報告した。この件も #530／#532 からなので、公開版には入っていない見込み（未確認）。
+- 問 6 の注（23:51、Pub-G Gap の報告。統合者は自分では確かめていない）：#1163 で import-apply が通るようになった入口は、JSON の取り込みだけでなかった。新しい project を「別の project から Codex の種類を写す」形で作るときの、seedCodexTypes.ts の setEntryTags（origin が import）も通るようになった。それまでは、写し元の entry に tag があると project の作成ごと rollback され、エラーになっていた。直る向きの変化で、route は同じ import-apply、command は同じ entity_tags_set。公開版 v2.0.10 にはもともと無い不具合。
