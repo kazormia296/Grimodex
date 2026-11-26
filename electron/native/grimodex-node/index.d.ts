@@ -1181,6 +1181,8 @@ export declare class Backend {
   narrativeMaintenanceInboxList(payload: any): Promise<string>
   /** Read-only count of stale proposals for one project as of now. */
   narrativeMaintenanceStaleProposalCount(payload: any): Promise<string>
+  /** Read-only scene counts for stale proposals in one project. */
+  narrativeMaintenanceStaleProposalScenes(payload: any): Promise<string>
   /** 校閲 run 一覧 (limit 省略時 20 / offset 省略時 0 はサーバサイド既定)。 */
   listPostEffectRuns(projectId: string, effectType?: string | undefined | null, limit?: number | undefined | null, offset?: number | undefined | null): Promise<string>
   /** Outline 用: scene ごとに最新 run の lens (`runCompletedAt` 付き) を返す。 */

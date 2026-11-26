@@ -112,10 +112,10 @@ use grimodex_db::narrative_extraction::{
     MaintenanceCycleRequest, MaintenanceCycleStatus, MaintenanceWorkspaceBinding,
     NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
     NarrativeMaintenanceCiConfig, NarrativeMaintenanceCiFault, NarrativeMaintenanceCiTrigger,
-    NarrativeMaintenanceInboxListPayload, RebuildDerivedStateOutcome,
-    RebuildNarrativeDerivedStatePayload, RepairNarrativeDependencyDeclarationsPayload,
-    RetryNarrativeLegacyBackfillPayload, RunRefPayload, TemporalScenePatchPayload,
-    VerifyNarrativeDependencyGraphPayload, WorkKey,
+    NarrativeMaintenanceInboxListPayload, NarrativeMaintenanceStaleProposalScenesPayload,
+    RebuildDerivedStateOutcome, RebuildNarrativeDerivedStatePayload,
+    RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
+    RunRefPayload, TemporalScenePatchPayload, VerifyNarrativeDependencyGraphPayload, WorkKey,
 };
 use grimodex_db::narrative_extraction::{validation_terminated, ValidationTerminationReason};
 use grimodex_db::open::{
@@ -16390,6 +16390,33 @@ impl Backend {
                     narrative_extraction::count_stale_proposals(conn, &dto.project_id, &now)
                 })?;
                 Ok(serde_json::to_string(&serde_json::json!({ "count": count }))?)
+            })
+        })
+        .await
+    }
+
+    /// Read-only scene counts for stale proposals in one project.
+    #[napi]
+    pub async fn narrative_maintenance_stale_proposal_scenes(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: NarrativeMaintenanceStaleProposalScenesPayload =
+                from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let now = grimodex_core::now_rfc3339_millis();
+                let page = db.with_conn(|conn| {
+                    narrative_extraction::stale_proposal_scenes(
+                        conn,
+                        &dto.project_id,
+                        &now,
+                        dto.cursor.as_deref(),
+                        dto.limit,
+                    )
+                })?;
+                Ok(serde_json::to_string(&page)?)
             })
         })
         .await

@@ -106,7 +106,8 @@
 
 use rusqlite::{params, Connection};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use serde_json::Value;
+use std::collections::{BTreeMap, HashSet};
 
 use super::attention::{
     get_attention, is_attention_applicable, AttentionDisposition, AttentionRow,
@@ -120,6 +121,12 @@ use super::finding_observation::{
 };
 use super::semantic_epoch::get_current_epoch;
 use super::terminal_failure::TERMINAL_FAILURE_CONSUMER_KIND;
+
+const STALE_PROPOSAL_CONSUMER_PREDICATE: &str = "f.consumer_kind = 'proposal-revision'
+    AND f.evidence_freshness IN
+        ('stale', 'source-missing', 'anchor-mismatch', 'read-set-drift', 'unknown')";
+const STALE_PROPOSAL_SCENES_PAGE_DEFAULT: u64 = 50;
+const STALE_PROPOSAL_SCENES_PAGE_MAX: u64 = 200;
 
 /// Identifies which read authority produced an Inbox entry. Terminal failure
 /// entries are Observation/lifecycle projections, not Consumer Freshness
@@ -221,6 +228,22 @@ pub struct InboxEntry {
     pub latest_observation: Option<FindingObservationRow>,
     pub attention: Option<AttentionRow>,
     pub is_snoozed_and_active: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StaleProposalSceneCount {
+    pub scene_id: String,
+    pub proposal_count: u64,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StaleProposalScenesPage {
+    pub scenes: Vec<StaleProposalSceneCount>,
+    pub without_scene_count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 /// Return the latest current-epoch observation for each Finding identity that
@@ -414,6 +437,77 @@ fn terminal_resolution_is_strictly_newer(
     }
 }
 
+fn stale_proposal_candidate_count(conn: &Connection, project_id: &str) -> anyhow::Result<u64> {
+    // Match list_consumer_freshness's fail-closed enum decoding while doing
+    // the candidate count in SQLite.
+    let sql = format!(
+        "SELECT COALESCE(SUM(CASE WHEN {STALE_PROPOSAL_CONSUMER_PREDICATE}
+                                      THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN f.evidence_freshness NOT IN
+                                          ('fresh', 'stale', 'source-missing', 'anchor-mismatch', 'read-set-drift', 'unknown')
+                                 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN f.build_action NOT IN
+                                          ('none', 'revalidate-exact', 'reanchor-candidate', 'resolve-only', 'recompile-only', 'rebuild-required', 'refresh-available', 'manual')
+                                 THEN 1 ELSE 0 END), 0)
+           FROM narrative_consumer_freshness f
+          WHERE f.project_id = ?1"
+    );
+    let (count, invalid_freshness, invalid_action): (i64, i64, i64) =
+        conn.query_row(&sql, params![project_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+    if invalid_freshness > 0 {
+        anyhow::bail!("NEX_EVIDENCE_FRESHNESS_INVALID: unknown evidence freshness");
+    }
+    if invalid_action > 0 {
+        anyhow::bail!("NEX_BUILD_ACTION_INVALID: unknown build action");
+    }
+    Ok(u64::try_from(count)?)
+}
+
+fn hidden_stale_proposal_consumers(
+    conn: &Connection,
+    project_id: &str,
+    epoch_id: &str,
+    now: &str,
+) -> anyhow::Result<HashSet<String>> {
+    let sql = format!(
+        "SELECT f.consumer_kind, f.consumer_key
+           FROM narrative_consumer_freshness f
+           JOIN narrative_maintenance_attention a
+             ON a.project_id = f.project_id
+            AND a.finding_key = f.consumer_kind || ':' || f.consumer_key
+          WHERE f.project_id = ?1
+            AND {STALE_PROPOSAL_CONSUMER_PREDICATE}
+            AND a.disposition = 'snoozed'
+          ORDER BY f.consumer_kind, f.consumer_key"
+    );
+    let snoozed_consumers = conn
+        .prepare(&sql)?
+        .query_map(params![project_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut hidden = HashSet::new();
+    for (consumer_kind, consumer_key) in snoozed_consumers {
+        let finding_key = consumer_finding_key(&consumer_kind, &consumer_key);
+        let observations = list_observations_for_epoch(conn, project_id, epoch_id, &finding_key)?;
+        let (active_observations, has_unresolved_identity, _) =
+            active_finding_observations(conn, project_id, &observations)?;
+        let attention = get_attention(conn, project_id, &finding_key)?;
+        if snooze_hides_consumer(
+            &active_observations,
+            has_unresolved_identity,
+            attention.as_ref(),
+            now,
+        ) {
+            hidden.insert(consumer_key);
+        }
+    }
+    Ok(hidden)
+}
+
 /// Count stale proposal Consumers without assembling the full Inbox.
 /// Observation history and Attention are read only for matching Consumers
 /// that actually have a Snoozed Attention row.
@@ -429,67 +523,123 @@ pub fn count_stale_proposals(
         return Ok(0);
     };
 
-    // Match list_consumer_freshness's fail-closed enum decoding while doing
-    // the candidate count in SQLite.
-    let (count, invalid_freshness, invalid_action): (i64, i64, i64) = conn.query_row(
-        "SELECT COALESCE(SUM(CASE WHEN consumer_kind = 'proposal-revision'
-                                      AND evidence_freshness IN
-                                          ('stale', 'source-missing', 'anchor-mismatch', 'read-set-drift', 'unknown')
-                                 THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN evidence_freshness NOT IN
-                                          ('fresh', 'stale', 'source-missing', 'anchor-mismatch', 'read-set-drift', 'unknown')
-                                 THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN build_action NOT IN
-                                          ('none', 'revalidate-exact', 'reanchor-candidate', 'resolve-only', 'recompile-only', 'rebuild-required', 'refresh-available', 'manual')
-                                 THEN 1 ELSE 0 END), 0)
-           FROM narrative_consumer_freshness
-          WHERE project_id = ?1",
-        params![project_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    )?;
-    if invalid_freshness > 0 {
-        anyhow::bail!("NEX_EVIDENCE_FRESHNESS_INVALID: unknown evidence freshness");
+    let count = stale_proposal_candidate_count(conn, project_id)?;
+    let hidden = hidden_stale_proposal_consumers(conn, project_id, &current_epoch.id, now)?;
+    Ok(count.saturating_sub(u64::try_from(hidden.len())?))
+}
+
+fn scene_ids_from_envelope(envelope_json: &str) -> Option<HashSet<String>> {
+    let envelope: Value = serde_json::from_str(envelope_json).ok()?;
+    let entries = envelope
+        .pointer("/effectiveMaterialBasis/evidenceSet")?
+        .as_array()?;
+    let mut scene_ids = HashSet::new();
+    for entry in entries {
+        // A quote without a source (the extractor allows it) names no Scene;
+        // skip that entry only, as the Scene-side read does.
+        let Some(source_key) = entry.get("sourceKey").and_then(Value::as_str) else {
+            continue;
+        };
+        if let Some(scene_id) = source_key.strip_prefix("project:scene:") {
+            if !scene_id.is_empty() {
+                scene_ids.insert(scene_id.to_owned());
+            }
+        }
     }
-    if invalid_action > 0 {
-        anyhow::bail!("NEX_BUILD_ACTION_INVALID: unknown build action");
+    Some(scene_ids)
+}
+
+/// Read scene counts for the same stale proposal revisions as
+/// [`count_stale_proposals`], paging only after the full project aggregation.
+pub fn stale_proposal_scenes(
+    conn: &Connection,
+    project_id: &str,
+    now: &str,
+    cursor: Option<&str>,
+    limit: Option<u64>,
+) -> anyhow::Result<StaleProposalScenesPage> {
+    anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
+    anyhow::ensure!(!now.trim().is_empty(), "now is required");
+    anyhow::ensure!(
+        cursor.is_none_or(|value| !value.is_empty() && value.len() <= 256),
+        "cursor must be a non-empty string of at most 256 bytes"
+    );
+    anyhow::ensure!(
+        limit.is_none_or(|value| value > 0),
+        "limit must be positive"
+    );
+
+    let Some(current_epoch) = get_current_epoch(conn, project_id)? else {
+        return Ok(StaleProposalScenesPage {
+            scenes: Vec::new(),
+            without_scene_count: 0,
+            next_cursor: None,
+        });
+    };
+
+    stale_proposal_candidate_count(conn, project_id)?;
+    let hidden = hidden_stale_proposal_consumers(conn, project_id, &current_epoch.id, now)?;
+    let sql = format!(
+        "SELECT f.consumer_key, r.reconciliation_envelope_json
+           FROM narrative_consumer_freshness f
+           LEFT JOIN narrative_proposal_revisions r
+             ON r.id = f.consumer_key
+            AND EXISTS (SELECT 1
+                          FROM narrative_proposals p
+                          JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+                         WHERE p.id = r.proposal_id AND s.project_id = ?1)
+          WHERE f.project_id = ?1
+            AND {STALE_PROPOSAL_CONSUMER_PREDICATE}
+          ORDER BY f.consumer_key"
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let mut rows = statement.query(params![project_id])?;
+
+    // One envelope at a time: a large project has many stale revisions.
+    let mut scene_counts = BTreeMap::<String, u64>::new();
+    let mut without_scene_count = 0_u64;
+    while let Some(row) = rows.next()? {
+        let revision_id: String = row.get(0)?;
+        if hidden.contains(&revision_id) {
+            continue;
+        }
+        let envelope_json: Option<String> = row.get(1)?;
+        let scene_ids = envelope_json
+            .as_deref()
+            .and_then(scene_ids_from_envelope)
+            .filter(|scene_ids| !scene_ids.is_empty());
+        if let Some(scene_ids) = scene_ids {
+            for scene_id in scene_ids {
+                *scene_counts.entry(scene_id).or_default() += 1;
+            }
+        } else {
+            without_scene_count += 1;
+        }
     }
 
-    let snoozed_consumers = conn
-        .prepare(
-            "SELECT f.consumer_kind, f.consumer_key
-               FROM narrative_consumer_freshness f
-               JOIN narrative_maintenance_attention a
-                 ON a.project_id = f.project_id
-                AND a.finding_key = f.consumer_kind || ':' || f.consumer_key
-              WHERE f.project_id = ?1
-                AND f.consumer_kind = 'proposal-revision'
-                AND f.evidence_freshness IN
-                    ('stale', 'source-missing', 'anchor-mismatch', 'read-set-drift', 'unknown')
-                AND a.disposition = 'snoozed'
-              ORDER BY f.consumer_kind, f.consumer_key",
-        )?
-        .query_map(params![project_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+    let page_limit = limit
+        .unwrap_or(STALE_PROPOSAL_SCENES_PAGE_DEFAULT)
+        .min(STALE_PROPOSAL_SCENES_PAGE_MAX) as usize;
+    let mut scenes: Vec<_> = scene_counts
+        .into_iter()
+        .filter(|(scene_id, _)| cursor.is_none_or(|cursor| scene_id.as_str() > cursor))
+        .map(|(scene_id, proposal_count)| StaleProposalSceneCount {
+            scene_id,
+            proposal_count,
+        })
+        .collect();
+    let next_cursor = if scenes.len() > page_limit {
+        scenes.truncate(page_limit);
+        scenes.last().map(|scene| scene.scene_id.clone())
+    } else {
+        None
+    };
 
-    let mut hidden = 0_u64;
-    for (consumer_kind, consumer_key) in snoozed_consumers {
-        let finding_key = consumer_finding_key(&consumer_kind, &consumer_key);
-        let observations =
-            list_observations_for_epoch(conn, project_id, &current_epoch.id, &finding_key)?;
-        let (active_observations, has_unresolved_identity, _) =
-            active_finding_observations(conn, project_id, &observations)?;
-        let attention = get_attention(conn, project_id, &finding_key)?;
-        hidden += u64::from(snooze_hides_consumer(
-            &active_observations,
-            has_unresolved_identity,
-            attention.as_ref(),
-            now,
-        ));
-    }
-
-    Ok(u64::try_from(count)?.saturating_sub(hidden))
+    Ok(StaleProposalScenesPage {
+        scenes,
+        without_scene_count,
+        next_cursor,
+    })
 }
 
 /// Assemble the Maintenance Inbox for `project_id` as of `now`. Read-only:
@@ -741,6 +891,61 @@ mod tests {
         .expect("seed consumer freshness row");
     }
 
+    fn seed_proposal_revision_for_test(
+        conn: &Connection,
+        project_id: &str,
+        revision_id: &str,
+        envelope_json: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let proposal_set_id = format!("set-{revision_id}");
+        let proposal_id = format!("proposal-{revision_id}");
+        conn.execute(
+            "INSERT INTO narrative_proposal_sets
+                (id, run_id, project_id, set_kind, status, summary_json,
+                 created_at, updated_at, version)
+             VALUES (?1, 'run-test', ?2, 'test', 'draft', '{}',
+                     '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z', 0)",
+            params![proposal_set_id, project_id],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_proposals
+                (id, proposal_set_id, proposal_key, kind, status, payload_json,
+                 current_revision_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'test.proposal', 'unreviewed', '{}', ?4,
+                     '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z')",
+            params![proposal_id, proposal_set_id, revision_id, revision_id],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_proposal_revisions
+                (id, proposal_id, revision_number, payload_json,
+                 reconciliation_envelope_json, created_at, created_by)
+             VALUES (?1, ?2, 1, '{}', ?3,
+                     '2026-08-15T00:00:00.000Z', 'test')",
+            params![revision_id, proposal_id, envelope_json],
+        )?;
+        Ok(())
+    }
+
+    fn seed_stale_proposal_revision_for_test(
+        conn: &Connection,
+        project_id: &str,
+        epoch_id: &str,
+        revision_id: &str,
+        envelope_json: Option<&str>,
+    ) -> anyhow::Result<()> {
+        seed_consumer_freshness(
+            conn,
+            project_id,
+            "proposal-revision",
+            revision_id,
+            "stale",
+            "rebuild-required",
+            epoch_id,
+            "2026-08-15T00:00:00.000Z",
+        );
+        seed_proposal_revision_for_test(conn, project_id, revision_id, envelope_json)
+    }
+
     fn seed_dependency_edge(
         conn: &Connection,
         edge_id: &str,
@@ -961,6 +1166,280 @@ mod tests {
                 build_maintenance_inbox(conn, "project-1", "2026-08-15T01:00:00.000Z").is_err()
             );
             assert!(count_stale_proposals(conn, "project-1", "2026-08-15T01:00:00.000Z").is_err());
+            Ok(())
+        })
+        .expect("with_conn");
+    }
+
+    #[test]
+    fn stale_proposal_scenes_match_count_and_scope_revisions_to_project() {
+        let db = test_db();
+        let (count, page) = db
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('project-2', 'Other Project')",
+                    [],
+                )?;
+                let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
+                let multi_scene = serde_json::json!({
+                    "effectiveMaterialBasis": {"evidenceSet": [
+                        {"sourceKey": "project:scene:scene-z"},
+                        {"sourceKey": "project:scene:scene-a"},
+                        {"sourceKey": "project:scene:scene-a"}
+                    ]}
+                })
+                .to_string();
+                let repeated_scene = serde_json::json!({
+                    "effectiveMaterialBasis": {"evidenceSet": [
+                        {"quote": "quote without a source"},
+                        {"sourceKey": "project:scene:"},
+                        {"sourceKey": "project:scene:scene-a"},
+                        {"sourceKey": "project:scene:scene-a"},
+                        {"sourceKey": "project:scene:scene-a"}
+                    ]}
+                })
+                .to_string();
+                let no_scene = serde_json::json!({
+                    "effectiveMaterialBasis": {"evidenceSet": [
+                        {"sourceKey": "project:codex-entry:entry-1"}
+                    ]}
+                })
+                .to_string();
+                seed_stale_proposal_revision_for_test(
+                    conn,
+                    "project-1",
+                    &epoch_id,
+                    "revision-multi",
+                    Some(&multi_scene),
+                )?;
+                seed_stale_proposal_revision_for_test(
+                    conn,
+                    "project-1",
+                    &epoch_id,
+                    "revision-repeat",
+                    Some(&repeated_scene),
+                )?;
+                seed_stale_proposal_revision_for_test(
+                    conn,
+                    "project-1",
+                    &epoch_id,
+                    "revision-no-scene",
+                    Some(&no_scene),
+                )?;
+                seed_stale_proposal_revision_for_test(
+                    conn,
+                    "project-1",
+                    &epoch_id,
+                    "revision-broken",
+                    Some("{"),
+                )?;
+                seed_consumer_freshness(
+                    conn,
+                    "project-1",
+                    "proposal-revision",
+                    "revision-missing",
+                    "stale",
+                    "rebuild-required",
+                    &epoch_id,
+                    "2026-08-15T00:00:00.000Z",
+                );
+                seed_consumer_freshness(
+                    conn,
+                    "project-1",
+                    "proposal-revision",
+                    "revision-other-project",
+                    "stale",
+                    "rebuild-required",
+                    &epoch_id,
+                    "2026-08-15T00:00:00.000Z",
+                );
+                seed_proposal_revision_for_test(
+                    conn,
+                    "project-2",
+                    "revision-other-project",
+                    Some(r#"{"effectiveMaterialBasis":{"evidenceSet":[{"sourceKey":"project:scene:foreign"}]}}"#),
+                )?;
+                seed_snoozed_proposal_for_test(
+                    conn,
+                    &epoch_id,
+                    "revision-snoozed",
+                    &["edge-snoozed"],
+                    "2026-08-15T02:00:00.000Z",
+                    None,
+                )?;
+                seed_proposal_revision_for_test(
+                    conn,
+                    "project-1",
+                    "revision-snoozed",
+                    Some(r#"{"effectiveMaterialBasis":{"evidenceSet":[{"sourceKey":"project:scene:scene-a"}]}}"#),
+                )?;
+                seed_consumer_freshness(
+                    conn,
+                    "project-1",
+                    "proposal-revision",
+                    "revision-fresh",
+                    "fresh",
+                    "none",
+                    &epoch_id,
+                    "2026-08-15T00:00:00.000Z",
+                );
+                seed_proposal_revision_for_test(
+                    conn,
+                    "project-1",
+                    "revision-fresh",
+                    Some(r#"{"effectiveMaterialBasis":{"evidenceSet":[{"sourceKey":"project:scene:ignored"}]}}"#),
+                )?;
+
+                let now = "2026-08-15T01:00:00.000Z";
+                let count = count_stale_proposals(conn, "project-1", now)?;
+                let page = stale_proposal_scenes(conn, "project-1", now, None, None)?;
+                Ok((count, page))
+            })
+            .expect("seed and query");
+
+        assert_eq!(count, 6);
+        assert_eq!(
+            page.scenes,
+            vec![
+                StaleProposalSceneCount {
+                    scene_id: "scene-a".to_owned(),
+                    proposal_count: 2,
+                },
+                StaleProposalSceneCount {
+                    scene_id: "scene-z".to_owned(),
+                    proposal_count: 1,
+                },
+            ]
+        );
+        assert_eq!(page.without_scene_count, 4);
+        assert_eq!(page.without_scene_count + 2, count);
+        assert_eq!(page.next_cursor, None);
+    }
+
+    #[test]
+    fn stale_proposal_scenes_pages_after_aggregation_with_cursor_boundaries() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
+            for (index, scene_id) in ["scene-a", "scene-b", "scene-c", "scene-d"]
+                .into_iter()
+                .enumerate()
+            {
+                let revision_id = format!("page-revision-{index}");
+                let envelope = serde_json::json!({
+                    "effectiveMaterialBasis": {"evidenceSet": [
+                        {"sourceKey": format!("project:scene:{scene_id}")}
+                    ]}
+                })
+                .to_string();
+                seed_stale_proposal_revision_for_test(
+                    conn,
+                    "project-1",
+                    &epoch_id,
+                    &revision_id,
+                    Some(&envelope),
+                )?;
+            }
+            let no_scene = r#"{"effectiveMaterialBasis":{"evidenceSet":[{"sourceKey":"project:codex-entry:entry-1"}]}}"#;
+            seed_stale_proposal_revision_for_test(
+                conn,
+                "project-1",
+                &epoch_id,
+                "page-revision-without-scene",
+                Some(no_scene),
+            )?;
+
+            let exact = stale_proposal_scenes(
+                conn,
+                "project-1",
+                "2026-08-15T01:00:00.000Z",
+                None,
+                Some(4),
+            )?;
+            assert_eq!(exact.scenes.len(), 4);
+            assert_eq!(exact.next_cursor, None);
+            assert_eq!(exact.without_scene_count, 1);
+
+            let first = stale_proposal_scenes(
+                conn,
+                "project-1",
+                "2026-08-15T01:00:00.000Z",
+                None,
+                Some(3),
+            )?;
+            assert_eq!(
+                first
+                    .scenes
+                    .iter()
+                    .map(|scene| scene.scene_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["scene-a", "scene-b", "scene-c"]
+            );
+            assert_eq!(first.next_cursor.as_deref(), Some("scene-c"));
+            assert_eq!(first.without_scene_count, 1);
+
+            let next = stale_proposal_scenes(
+                conn,
+                "project-1",
+                "2026-08-15T01:00:00.000Z",
+                first.next_cursor.as_deref(),
+                Some(3),
+            )?;
+            assert_eq!(next.scenes.len(), 1);
+            assert_eq!(next.scenes[0].scene_id, "scene-d");
+            assert_eq!(next.next_cursor, None);
+            assert_eq!(next.without_scene_count, 1);
+            Ok(())
+        })
+        .expect("with_conn");
+    }
+
+    #[test]
+    fn stale_proposal_scenes_default_and_maximum_limits_are_bounded() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
+            for index in 0..201 {
+                let revision_id = format!("limit-revision-{index:03}");
+                let envelope = serde_json::json!({
+                    "effectiveMaterialBasis": {"evidenceSet": [
+                        {"sourceKey": format!("project:scene:scene-{index:03}")}
+                    ]}
+                })
+                .to_string();
+                seed_stale_proposal_revision_for_test(
+                    conn,
+                    "project-1",
+                    &epoch_id,
+                    &revision_id,
+                    Some(&envelope),
+                )?;
+            }
+
+            let default_page =
+                stale_proposal_scenes(conn, "project-1", "2026-08-15T01:00:00.000Z", None, None)?;
+            assert_eq!(default_page.scenes.len(), 50);
+            assert_eq!(default_page.next_cursor.as_deref(), Some("scene-049"));
+
+            let max_page = stale_proposal_scenes(
+                conn,
+                "project-1",
+                "2026-08-15T01:00:00.000Z",
+                None,
+                Some(250),
+            )?;
+            assert_eq!(max_page.scenes.len(), 200);
+            assert_eq!(max_page.scenes[0].scene_id, "scene-000");
+            assert_eq!(max_page.scenes[199].scene_id, "scene-199");
+            assert_eq!(max_page.next_cursor.as_deref(), Some("scene-199"));
+            assert!(stale_proposal_scenes(
+                conn,
+                "project-1",
+                "2026-08-15T01:00:00.000Z",
+                None,
+                Some(0),
+            )
+            .is_err());
             Ok(())
         })
         .expect("with_conn");

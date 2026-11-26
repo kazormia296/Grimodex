@@ -7134,6 +7134,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_maintenance_attention_set",
       "narrative_maintenance_inbox_list",
       "narrative_maintenance_stale_proposal_count",
+      "narrative_maintenance_stale_proposal_scenes",
       "narrative_runtime_policy_get",
       "narrative_runtime_policy_set",
       "narrative_scene_body_declaration_declare",
@@ -7733,6 +7734,101 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
         ok: false,
         error: expect.stringContaining(
           "native method narrativeMaintenanceStaleProposalCount",
+        ),
+      });
+    });
+  });
+
+  describe("maintenance stale proposal scenes", () => {
+    it("passes the bounded page arguments to native and parses the response", async () => {
+      const method = vi
+        .fn()
+        .mockResolvedValue('{"scenes":[],"withoutSceneCount":2}');
+      const { backend } = fakeBackend({
+        narrativeMaintenanceStaleProposalScenes: method,
+      });
+      const env = await dispatchInvoke(
+        "narrative_maintenance_stale_proposal_scenes",
+        {
+          payload: {
+            projectId: "project-1",
+            cursor: "scene-100",
+            limit: 201,
+          },
+        },
+        { backend, shell: noShell },
+      );
+      expect(env).toEqual({
+        ok: true,
+        value: { scenes: [], withoutSceneCount: 2 },
+      });
+      expect(method).toHaveBeenCalledExactlyOnceWith({
+        projectId: "project-1",
+        cursor: "scene-100",
+        limit: 201,
+      });
+    });
+
+    it.each([
+      {},
+      { payload: {} },
+      { payload: { projectId: "" } },
+      { payload: { projectId: 7 } },
+      { payload: { projectId: "p", cursor: "" } },
+      { payload: { projectId: "p", cursor: " " } },
+      { payload: { projectId: "p", cursor: "x".repeat(257) } },
+      { payload: { projectId: "p", limit: 0 } },
+      { payload: { projectId: "p", limit: -1 } },
+      { payload: { projectId: "p", limit: 1.5 } },
+      { payload: { projectId: "p", limit: "10" } },
+      { payload: { projectId: "p", extra: true } },
+    ])("rejects invalid args before native call: %j", async (args) => {
+      const method = vi.fn();
+      const { backend } = fakeBackend({
+        narrativeMaintenanceStaleProposalScenes: method,
+      });
+      const env = await dispatchInvoke(
+        "narrative_maintenance_stale_proposal_scenes",
+        args,
+        { backend, shell: noShell },
+      );
+      expect(env.ok).toBe(false);
+      expect(method).not.toHaveBeenCalled();
+    });
+
+    it("accepts a cursor at the UTF-8 byte limit", async () => {
+      const method = vi
+        .fn()
+        .mockResolvedValue('{"scenes":[],"withoutSceneCount":0}');
+      const { backend } = fakeBackend({
+        narrativeMaintenanceStaleProposalScenes: method,
+      });
+      const cursor = "x".repeat(256);
+      const env = await dispatchInvoke(
+        "narrative_maintenance_stale_proposal_scenes",
+        { payload: { projectId: "p", cursor } },
+        { backend, shell: noShell },
+      );
+      expect(env.ok).toBe(true);
+      expect(method).toHaveBeenCalledExactlyOnceWith({
+        projectId: "p",
+        cursor,
+      });
+    });
+
+    it("returns backend unavailable for an older native binding", async () => {
+      const { backend } = fakeBackend();
+      delete (backend as Partial<NapiBackendLike>)
+        .narrativeMaintenanceStaleProposalScenes;
+      const env = await dispatchInvoke(
+        "narrative_maintenance_stale_proposal_scenes",
+        { payload: { projectId: "p" } },
+        { backend, shell: noShell },
+      );
+      expect(env).toMatchObject({
+        ok: false,
+        error: expect.stringContaining(
+          "native method narrativeMaintenanceStaleProposalScenes",
         ),
       });
     });
