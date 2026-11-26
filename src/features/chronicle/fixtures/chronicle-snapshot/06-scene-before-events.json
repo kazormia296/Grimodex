@@ -22,7 +22,8 @@
         "ordinal": "a0",
         "primaryCodexId": "hero",
         "locationCodexId": null,
-        "startTime": 89012, "startGranularity": "day",
+        "startTime": 89012,
+        "startGranularity": "day",
         "kind": "birth"
       },
       {
@@ -32,7 +33,8 @@
         "ordinal": "a1",
         "primaryCodexId": "hero",
         "locationCodexId": null,
-        "startTime": 96000, "startGranularity": "day",
+        "startTime": 96000,
+        "startGranularity": "day",
         "kind": "generic"
       },
       {
@@ -42,7 +44,8 @@
         "ordinal": "a3",
         "primaryCodexId": "hero",
         "locationCodexId": null,
-        "startTime": 96500, "startGranularity": "day",
+        "startTime": 96500,
+        "startGranularity": "day",
         "kind": "generic"
       }
     ],
