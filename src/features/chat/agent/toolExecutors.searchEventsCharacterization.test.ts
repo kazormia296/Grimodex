@@ -125,7 +125,10 @@ const LEGACY_SCOPE: ChatTurnToolScope = {
 
 const search = (
   params: Record<string, unknown>,
-  context: { scope?: ChatTurnToolScope } = { scope: LEGACY_SCOPE },
+  context: {
+    scope?: ChatTurnToolScope;
+    currentSceneId?: string | null;
+  } = { scope: LEGACY_SCOPE },
 ) => executeTool("search_events", "t1", params, undefined, context);
 
 const idsOf = (result: { content: unknown }): string[] =>
@@ -307,6 +310,26 @@ describe("scope の境界", () => {
     await search({ query: "q" }, { scope: SCOPE });
     expect(h.getReadingOrder.mock.calls[0]![0]).toBe(NODES_B);
   });
+});
+
+it("turn の scene を dense await の間に切り替えても reveal は開始時のまま", async () => {
+  h.tree.nodes = ["s0", "s1", "s2", "s3"].map((id) => ({ id, title: id }));
+  h.events = [row("sec", true, "s2")];
+  h.hits = [hit("sec")];
+  h.tree.activeSceneId = "s0";
+  h.semantic.mockImplementation(async () => {
+    h.tree.activeSceneId = "s3";
+    return h.hits;
+  });
+  const context = { currentSceneId: h.tree.activeSceneId };
+
+  const result = await search({ query: "q" }, context);
+
+  expect(
+    (
+      result.content as Array<{ revealScene?: { revealedToReader: boolean } }>
+    )[0]?.revealScene,
+  ).toEqual({ id: "s2", title: "s2", revealedToReader: false });
 });
 
 describe("hit の扱い", () => {

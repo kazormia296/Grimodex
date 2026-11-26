@@ -1,12 +1,11 @@
 /**
- * The two layers of what one chat turn hands to its tools (S1-B design 2.7).
- * Types only: the code that builds them is PR-B2's, and while
- * `CHAT_AGENT_IR_ENABLED` is `false` nothing builds them.
+ * The turn's scene pin and the optional IR layers passed to its tools.
+ * Types only: the code that builds them is PR-B2's.
  *
- * Both are created once at the start of a turn and are immutable; the current
- * Scene is the one of the turn's start, never read again from a store inside a
- * tool (T2・T3). This file imports nothing of the wrapper, so that the closure
- * test (B-T6) can hold that no product source imports the wrapper statically.
+ * The scene is captured once at turn start and never read again from a store
+ * inside a tool (T2・T3). Scope and IR are only created when their gate allows
+ * them. This file imports nothing of the wrapper, so the closure test (B-T6)
+ * can hold that no product source imports the wrapper statically.
  *
  * PR-B2 builds them in `createChatTurnToolContext`
  * (`src/application/chat/chatAgentToolHandlers.ts`).
@@ -74,10 +73,14 @@ export interface ChatIrUsedIds {
  * `ChatReadOnlyToolRunContext`, which has no `ir`, so IR cannot reach it.
  */
 export interface ChatToolRunContext {
+  /** Turn-start scene, present even when the IR feature is disabled. */
+  readonly currentSceneId?: string | null;
   readonly scope?: ChatTurnToolScope;
   readonly ir?: ChatIrCapability;
 }
 
 export interface ChatReadOnlyToolRunContext {
+  /** Turn-start scene, present even when the IR feature is disabled. */
+  readonly currentSceneId?: string | null;
   readonly scope?: ChatTurnToolScope;
 }

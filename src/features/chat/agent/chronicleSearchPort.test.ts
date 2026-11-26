@@ -311,11 +311,26 @@ describe("旗×scope の 4 象限（どちらの経路を通ったか）", () =>
           scope === undefined ? undefined : ({ scope } as never),
         );
 
-  it("旗 false・scope なし：core を通る（store の project・場面で動く）。2 つの入口（executeTool・executeReadOnlyTool）とも", async () => {
+  it("旗 false・scope なし・turn scene あり：製品の2入口とも core を通り turn scene を使う", async () => {
     for (const entry of ["main", "read-only"] as const) {
       h.coreCalls.length = 0;
+      h.eventReads.length = 0;
       h.semantic.mockClear();
-      const result = await run(undefined, entry);
+      const result =
+        entry === "main"
+          ? await executeTool(
+              "search_events",
+              "t1",
+              { query: "q" },
+              undefined,
+              { currentSceneId: "s1" },
+            )
+          : await executeReadOnlyTool(
+              "search_events",
+              "t1",
+              { query: "q" },
+              { currentSceneId: "s1" },
+            );
       expect(h.coreCalls, entry).toHaveLength(1);
       expect(idsOf(result), entry).toEqual(["a", "b"]);
       expect(h.semantic, entry).toHaveBeenCalledWith({
@@ -323,6 +338,7 @@ describe("旗×scope の 4 象限（どちらの経路を通ったか）", () =>
         query: "q",
         limit: 30,
       });
+      expect(h.eventReads, entry).toEqual(["events"]);
     }
   });
 
@@ -335,6 +351,33 @@ describe("旗×scope の 4 象限（どちらの経路を通ったか）", () =>
       query: "q",
       limit: 30,
     });
+  });
+
+  it("旗 false・scope なし・turn scene あり：製品の read-only 経路でも core の narrow は fail-closed", async () => {
+    h.hits = [{ eventId: 7, title: "bad", kind: "generic", score: 0.9 }];
+    const result = await executeReadOnlyTool(
+      "search_events",
+      "t1",
+      { query: "q" },
+      { currentSceneId: "s1" },
+    );
+    expect(h.coreCalls).toHaveLength(1);
+    expect(result.error).toMatch(/eventId/);
+    expect(h.eventReads).toEqual([]);
+  });
+
+  it("旗 false・scope なし・turn scene あり：dense hit が 0 件なら events を読まない", async () => {
+    h.hits = [];
+    const result = await executeReadOnlyTool(
+      "search_events",
+      "t1",
+      { query: "q" },
+      { currentSceneId: "s1" },
+    );
+    expect(h.coreCalls).toHaveLength(1);
+    expect(result.error).toBeUndefined();
+    expect(result.content).toEqual([]);
+    expect(h.eventReads).toEqual([]);
   });
 
   it("旗 true・scope なし：core を通らない（位置の filter がある経路）", async () => {
