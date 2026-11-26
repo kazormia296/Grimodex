@@ -8,6 +8,7 @@ import {
   type StaleBreakdownKey,
   type StructureHealthSummary,
 } from "./structureHealthModel";
+import { StaleProposalScenesList } from "./StaleProposalScenesList";
 
 interface Props {
   readonly onClose: () => void;
@@ -17,7 +18,11 @@ type LoadState =
   | { readonly kind: "loading" }
   | { readonly kind: "no-project" }
   | { readonly kind: "failed" }
-  | { readonly kind: "ready"; readonly summary: StructureHealthSummary };
+  | {
+      readonly kind: "ready";
+      readonly projectId: string;
+      readonly summary: StructureHealthSummary;
+    };
 
 const STALE_LABEL_DEFAULTS: Readonly<Record<StaleBreakdownKey, string>> = {
   stale: "根拠の本文が変わった",
@@ -54,7 +59,11 @@ export function StructureHealthPanel({ onClose }: Props) {
     void narrativeMaintenanceInboxList({ projectId })
       .then((entries) => {
         if (!cancelled) {
-          setState({ kind: "ready", summary: summarizeInbox(entries) });
+          setState({
+            kind: "ready",
+            projectId,
+            summary: summarizeInbox(entries),
+          });
         }
       })
       .catch(() => {
@@ -90,7 +99,7 @@ export function StructureHealthPanel({ onClose }: Props) {
           </div>
           <button
             type="button"
-            className="rounded border border-border px-2 py-1 text-xs"
+            className="shrink-0 whitespace-nowrap rounded border border-border px-2 py-1 text-xs"
             onClick={onClose}
           >
             {t("common.close", "閉じる")}
@@ -211,6 +220,12 @@ export function StructureHealthPanel({ onClose }: Props) {
               </dl>
             )}
           </div>
+          {state.kind === "ready" && state.summary.proposalsStale > 0 && (
+            <StaleProposalScenesList
+              projectId={state.projectId}
+              onOpened={onClose}
+            />
+          )}
         </div>
 
         <p

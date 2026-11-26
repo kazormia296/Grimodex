@@ -6758,6 +6758,18 @@
       "unrecognized": "Items that could not be read",
       "partialNote": "Only some checks are counted for now (proposals with out-of-date evidence, and stopped maintenance). This does not mean nothing else is wrong."
     },
+    "scenes": {
+      "heading": "Cited scenes",
+      "loading": "Looking up scenes…",
+      "failed": "Could not load the scene breakdown. Close this and open it again to retry.",
+      "untitled": "Untitled scene",
+      "missing": "Deleted scene",
+      "treeLoading": "Loading scenes…",
+      "without": "Proposals that cite no scene",
+      "more": "Show more",
+      "moreFailed": "Could not load the rest.",
+      "overlapNote": "One proposal can cite several scenes, so the per-scene counts may not add up to the total above."
+    },
     "health": {
       "fresh": "Fresh",
       "reanchorable": "Needs reanchor review",
