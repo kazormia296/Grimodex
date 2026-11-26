@@ -1432,6 +1432,9 @@ mod tests {
                 "revision-held",
                 "revision-null-current",
                 "revision-normal",
+                // No snooze on these two: only the exclusion can drop them.
+                "revision-replaced-quiet",
+                "revision-rejected-quiet",
             ] {
                 seed_stale_proposal_revision_for_test(
                     conn,
@@ -1458,6 +1461,16 @@ mod tests {
             conn.execute(
                 "UPDATE narrative_proposals SET status = 'rejected'
                   WHERE id = 'proposal-revision-rejected'",
+                [],
+            )?;
+            conn.execute(
+                "UPDATE narrative_proposals SET current_revision_id = 'a-later-revision'
+                  WHERE id = 'proposal-revision-replaced-quiet'",
+                [],
+            )?;
+            conn.execute(
+                "UPDATE narrative_proposals SET status = 'rejected'
+                  WHERE id = 'proposal-revision-rejected-quiet'",
                 [],
             )?;
             conn.execute(
@@ -1583,8 +1596,20 @@ mod tests {
             let summary = maintenance_health_summary(conn, "project-1", now)?;
             let scenes = stale_proposal_scenes(conn, "project-1", now, None, None)?;
 
+            // The Inbox still lists the two quiet rows (9), so a read that
+            // forgot the exclusion would answer 9 instead of 7.
+            assert_eq!(
+                inbox
+                    .iter()
+                    .filter(|entry| entry.consumer_kind == PROPOSAL_REVISION_CONSUMER_KIND)
+                    .count(),
+                9
+            );
             assert_eq!(expected_checked, 7);
             assert_eq!(expected_stale, 7);
+            assert_eq!(count, 7);
+            assert_eq!(summary.proposals_stale, 7);
+            assert_eq!(scenes.without_scene_count, 7);
             assert_eq!(count, expected_stale);
             assert_eq!(summary.proposals_checked, expected_checked);
             assert_eq!(summary.proposals_stale, expected_stale);
