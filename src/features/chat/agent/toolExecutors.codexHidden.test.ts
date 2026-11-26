@@ -343,15 +343,29 @@ describe("agent tool は hidden の Codex を model に渡さない", () => {
       },
     ];
     h.activeSceneId = "scene-1";
-    const before = await executeTool("list_codex_by_type", "c", {
-      type: "character",
-    });
-    expect(ids(before.content)).toEqual(["e-visible"]);
+    const turnContext = { currentSceneId: h.activeSceneId };
     h.activeSceneId = "scene-2";
-    const after = await executeTool("list_codex_by_type", "c", {
+    const pinnedList = await executeTool(
+      "list_codex_by_type",
+      "c",
+      { type: "character" },
+      undefined,
+      turnContext,
+    );
+    const pinnedEntry = await executeTool(
+      "get_codex_entry",
+      "c",
+      { id: "e-visible" },
+      undefined,
+      turnContext,
+    );
+    expect(ids(pinnedList.content)).toEqual(["e-visible"]);
+    expect(pinnedEntry.summary).not.toBe("Entry not found");
+
+    const live = await executeTool("list_codex_by_type", "c", {
       type: "character",
     });
-    expect(ids(after.content)).toEqual([]);
+    expect(ids(live.content)).toEqual([]);
   });
 
   it("起点の場面を失った（NULL・読む順に無い）hidden の Phase を持つ Codex は、場面が解決できても落とす（DR-MP4-46。直す前は公開のまま渡った）", async () => {

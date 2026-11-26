@@ -712,7 +712,14 @@ async function restoreStructural(
           source_chat_message_id:
             (row.source_chat_message_id as string | null) ?? null,
           content,
-          source_marker: null,
+          // Same columns as the Native canonical plan (project_snapshots.rs,
+          // canonical_core_rows): Native rejects any other shape with
+          // "does not match the owned snapshot". The snapshot keeps neither
+          // the tags cache nor the usage counters.
+          tags_cache: null,
+          content_source: null,
+          usage_count: 0,
+          version: 0,
           created_at: (row.created_at as string | null) ?? fallbackNow,
           updated_at: (row.updated_at as string | null) ?? fallbackNow,
         }),

@@ -851,6 +851,92 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_chat_messages_session
                 ON chat_messages(session_id, created_at);
 
+            CREATE TABLE IF NOT EXISTS mastra_message_parts (
+                message_id TEXT PRIMARY KEY REFERENCES chat_messages(id) ON DELETE CASCADE,
+                parts_json TEXT NOT NULL CHECK(json_valid(parts_json))
+            );
+
+            CREATE TABLE IF NOT EXISTS mastra_thread_metadata (
+                session_id TEXT PRIMARY KEY REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                metadata_json TEXT NOT NULL DEFAULT '{}'
+                    CHECK(json_valid(metadata_json) AND json_type(metadata_json) = 'object')
+            );
+
+            CREATE TABLE IF NOT EXISTS mastra_resources (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
+                working_memory TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}'
+                    CHECK(json_valid(metadata_json) AND json_type(metadata_json) = 'object'),
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS mastra_observational_memory (
+                id TEXT PRIMARY KEY,
+                scope TEXT NOT NULL CHECK(scope IN ('thread', 'resource')),
+                thread_id TEXT REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+                resource_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_observed_at TEXT,
+                origin_type TEXT NOT NULL CHECK(origin_type IN ('initial', 'reflection')),
+                generation_count INTEGER NOT NULL CHECK(generation_count >= 0),
+                superseded_by TEXT,
+                active_observations TEXT NOT NULL,
+                buffered_observation_chunks_json TEXT
+                    CHECK(buffered_observation_chunks_json IS NULL OR json_valid(buffered_observation_chunks_json)),
+                buffered_observations TEXT,
+                buffered_observation_tokens INTEGER,
+                buffered_message_ids_json TEXT
+                    CHECK(buffered_message_ids_json IS NULL OR json_valid(buffered_message_ids_json)),
+                buffered_reflection TEXT,
+                buffered_reflection_tokens INTEGER,
+                buffered_reflection_input_tokens INTEGER,
+                reflected_observation_line_count INTEGER,
+                observed_message_ids_json TEXT
+                    CHECK(observed_message_ids_json IS NULL OR json_valid(observed_message_ids_json)),
+                observed_timezone TEXT,
+                total_tokens_observed INTEGER NOT NULL DEFAULT 0,
+                observation_token_count INTEGER NOT NULL DEFAULT 0,
+                pending_message_tokens INTEGER NOT NULL DEFAULT 0,
+                is_reflecting INTEGER NOT NULL DEFAULT 0 CHECK(is_reflecting IN (0, 1)),
+                is_observing INTEGER NOT NULL DEFAULT 0 CHECK(is_observing IN (0, 1)),
+                is_buffering_observation INTEGER NOT NULL DEFAULT 0
+                    CHECK(is_buffering_observation IN (0, 1)),
+                is_buffering_reflection INTEGER NOT NULL DEFAULT 0
+                    CHECK(is_buffering_reflection IN (0, 1)),
+                last_buffered_at_tokens INTEGER NOT NULL DEFAULT 0,
+                last_buffered_at_time TEXT,
+                config_json TEXT NOT NULL DEFAULT '{}'
+                    CHECK(json_valid(config_json) AND json_type(config_json) = 'object'),
+                metadata_json TEXT
+                    CHECK(metadata_json IS NULL OR (json_valid(metadata_json) AND json_type(metadata_json) = 'object')),
+                CHECK ((scope = 'thread' AND thread_id IS NOT NULL AND project_id IS NULL)
+                    OR (scope = 'resource' AND thread_id IS NULL AND project_id IS NOT NULL))
+            );
+            CREATE INDEX IF NOT EXISTS idx_mastra_observational_memory_thread
+                ON mastra_observational_memory(thread_id, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_mastra_observational_memory_project
+                ON mastra_observational_memory(project_id, updated_at);
+
+            CREATE TABLE IF NOT EXISTS mastra_memory_vectors (
+                index_name TEXT NOT NULL,
+                id TEXT NOT NULL,
+                vector BLOB NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}'
+                    CHECK(json_valid(metadata_json) AND json_type(metadata_json) = 'object'),
+                message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+                PRIMARY KEY (index_name, id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_mastra_memory_vectors_message
+                ON mastra_memory_vectors(message_id);
+            CREATE TABLE IF NOT EXISTS mastra_memory_vector_indexes (
+                index_name TEXT PRIMARY KEY,
+                dimension INTEGER NOT NULL CHECK(dimension > 0)
+            );
+
             -- Per-message prompt snapshot: the finalized system prompt actually
             -- sent for a chat turn, keyed to the triggering user message. Side-table
             -- (kept out of chat_messages.metadata) so the heavy prompt text stays out

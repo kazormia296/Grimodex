@@ -32,8 +32,8 @@ interface NativeProfileEgressStatus {
   sqlPolicy?: unknown;
 }
 
-/** Native `sqlPolicy` wire version (K3/2 "表の台帳"). Unknown versions are unavailable. */
-const PROFILE_EGRESS_POLICY_VERSION = 2;
+/** Native `sqlPolicy` wire version (K3/2 plus the MP-7 closed tables). */
+const PROFILE_EGRESS_POLICY_VERSION = 3;
 
 /**
  * Whether Electron main routes `own-data-read` (the read-open reading of the

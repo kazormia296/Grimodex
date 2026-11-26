@@ -62,7 +62,7 @@ const run = (rig, sql, params = [], method = "all", own) =>
     ? rig.backend.dbExecute(sql, params, method, rig.wire)
     : rig.backend.dbExecute(sql, params, method, rig.wire, own);
 
-test("the startup status publishes policy version 2 as closed / read-open / read-open columns", async () => {
+test("the startup status publishes policy version 3 as closed / read-open / read-open columns", async () => {
   const rig = await restrictedRig("policy");
   try {
     const policy = rig.status.sqlPolicy;
@@ -72,8 +72,9 @@ test("the startup status publishes policy version 2 as closed / read-open / read
       "readOpenTables",
       "version",
     ]);
-    assert.equal(policy.version, 2);
-    assert.equal(policy.closedTables.length, 26);
+    assert.equal(policy.version, 3);
+    assert.equal(policy.closedTables.length, 32);
+    assert.ok(policy.closedTables.includes("mastra_memory_vector_indexes"));
     assert.equal(policy.readOpenTables.length, 58);
     assert.deepEqual(policy.readOpenColumns, [
       { table: "change_events", column: "payload" },

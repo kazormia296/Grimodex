@@ -73,6 +73,21 @@ fn assert_denied(db: &Database, sql: &str) {
 }
 
 #[test]
+fn mp7_mastra_tables_are_closed_to_generic_sql() {
+    let db = fixture();
+    for table in [
+        "mastra_message_parts",
+        "mastra_thread_metadata",
+        "mastra_resources",
+        "mastra_observational_memory",
+        "mastra_memory_vectors",
+    ] {
+        assert_denied(&db, &format!("SELECT * FROM {table}"));
+        assert_denied(&db, &format!("DELETE FROM {table}"));
+    }
+}
+
+#[test]
 fn map_sticky_dml_passes_without_returning_and_fails_with_it() {
     let db = fixture();
     // createSticky / updateSticky / deleteSticky without RETURNING. The FK

@@ -19,7 +19,11 @@ vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: { getState: () => treeState },
 }));
 vi.mock("@/features/codex/phaseResolver", () => ({
-  computeGlobalSceneOrder: () => new Map([["s1", 0]]),
+  computeGlobalSceneOrder: () =>
+    new Map([
+      ["s1", 0],
+      ["s2", 1],
+    ]),
 }));
 vi.mock("@/features/codex/context/codexHiddenFromAi", () => hiddenCodex);
 
@@ -43,7 +47,10 @@ vi.mock("@/features/codex/api", () => ({
 
 import * as chronicleApi from "@/features/chronicle/api";
 import { listCodexMatchTargets } from "@/features/codex/api";
-import { LEGACY_CHRONICLE_READ_CONTEXT } from "./chronicleReadContext";
+import {
+  createLegacyChronicleReadContext,
+  LEGACY_CHRONICLE_READ_CONTEXT,
+} from "./chronicleReadContext";
 import {
   listEventsTool,
   getEventDetailTool,
@@ -112,7 +119,8 @@ beforeEach(() => {
   vi.mocked(chronicleApi.listEvents).mockClear();
   vi.mocked(chronicleApi.listSceneEventsForProject).mockClear();
   vi.mocked(listCodexMatchTargets).mockClear();
-  hiddenCodex.listCodexIdsHiddenFromAi.mockClear();
+  hiddenCodex.listCodexIdsHiddenFromAi.mockReset();
+  hiddenCodex.listCodexIdsHiddenFromAi.mockResolvedValue(new Set());
 });
 
 describe("the chronicle hidden-id port", () => {
@@ -154,9 +162,56 @@ describe("the chronicle hidden-id port", () => {
       LEGACY_CHRONICLE_READ_CONTEXT.chronicle.listHiddenCodexIds("p1", ["id"]),
     ).rejects.toBe(error);
   });
+
+  it("keeps the turn scene for reveal and hidden reads after the live scene changes", async () => {
+    const context = createLegacyChronicleReadContext("s1");
+    treeState.nodes = [
+      { id: "s1", title: "シーン1" },
+      { id: "s2", title: "シーン2" },
+    ];
+    treeState.activeSceneId = "s2";
+    hiddenCodex.listCodexIdsHiddenFromAi.mockResolvedValue(new Set(["c1"]));
+
+    expect(context.getTreeState().activeSceneId).toBe("s1");
+    const hidden = await context.chronicle.listHiddenCodexIds("p1", ["c1"]);
+
+    expect(hidden).toEqual(new Set(["c1"]));
+    expect(hiddenCodex.listCodexIdsHiddenFromAi).toHaveBeenCalledWith({
+      entryIds: ["c1"],
+      projectId: "p1",
+      sceneId: "s1",
+    });
+  });
 });
 
 describe("listEventsTool", () => {
+  it("keeps reveal and hidden decisions at the turn scene after the live scene changes", async () => {
+    treeState.nodes = [
+      { id: "s1", title: "シーン1" },
+      { id: "s2", title: "シーン2" },
+    ];
+    events.push(ev({ id: "e1", primaryCodexId: "c1", revealSceneId: "s2" }));
+    hiddenCodex.listCodexIdsHiddenFromAi.mockResolvedValue(new Set(["c1"]));
+    const turnContext = { currentSceneId: treeState.activeSceneId };
+    treeState.activeSceneId = "s2";
+
+    const result = await listEventsTool({}, undefined, undefined, turnContext);
+    const item = (result.content as { events: Array<Record<string, unknown>> })
+      .events[0]!;
+
+    expect(item.revealScene).toEqual({
+      id: "s2",
+      title: "シーン2",
+      revealedToReader: false,
+    });
+    expect(item.primaryCharacter).toBeNull();
+    expect(hiddenCodex.listCodexIdsHiddenFromAi).toHaveBeenCalledWith({
+      entryIds: ["c1"],
+      projectId: "p1",
+      sceneId: "s1",
+    });
+  });
+
   it("adds a revealScene mark to list, detail, and character timeline results", async () => {
     events.push(
       ev({

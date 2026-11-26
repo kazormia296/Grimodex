@@ -29,7 +29,7 @@ import {
   NATIVE_CLOSED_TABLES,
   NATIVE_READ_OPEN_COLUMNS,
   NATIVE_READ_OPEN_TABLES,
-  nativeSqlPolicyV2,
+  nativeSqlPolicyV3,
 } from "./d2aSqlPolicyFixture.js";
 
 const mocks = vi.hoisted(() => ({
@@ -172,7 +172,7 @@ function backend(restricted: boolean, activate?: () => Promise<string>) {
     restricted,
     handlesInvalidated: restricted,
     inFlightStopped: true,
-    sqlPolicy: nativeSqlPolicyV2(),
+    sqlPolicy: nativeSqlPolicyV3(),
   };
   return {
     initializeProfileEgress: async () => JSON.stringify(status),
@@ -191,7 +191,7 @@ const ACTIVATED_STATUS = JSON.stringify({
   restricted: true,
   handlesInvalidated: true,
   inFlightStopped: true,
-  sqlPolicy: nativeSqlPolicyV2(),
+  sqlPolicy: nativeSqlPolicyV3(),
 });
 
 const DENIED = (route: string) =>
@@ -925,7 +925,7 @@ describe("gate: own-data-read with the opening on", () => {
       restricted: true,
       handlesInvalidated: true,
       inFlightStopped: true,
-      sqlPolicy: nativeSqlPolicyV2({ version: 3 }),
+      sqlPolicy: nativeSqlPolicyV3({ version: 4 }),
     };
     const gate = await createProfileEgressGate(
       {
