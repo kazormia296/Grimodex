@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const getRunReviewBundleMock = vi.hoisted(() => vi.fn());
+const reapproveMock = vi.hoisted(() => vi.fn());
 const bulkApproveMock = vi.hoisted(() => vi.fn());
 const appendHumanDecisionMock = vi.hoisted(() => vi.fn());
 const createHumanDerivedRevisionMock = vi.hoisted(() => vi.fn());
@@ -18,6 +19,7 @@ vi.mock(
     return {
       ...actual,
       narrativeExtractionGetRunReviewBundle: getRunReviewBundleMock,
+      narrativeExtractionReapproveAppliedProposals: reapproveMock,
       narrativeExtractionChronicleBulkApprove: bulkApproveMock,
     };
   },
@@ -61,12 +63,16 @@ import {
   CHRONICLE_BULK_APPROVE_MAX_TARGETS,
   decideChronicleProposal,
   refreshChronicleBulkApprovalJudgements,
+  refreshChronicleRedecideState,
+  reapproveChronicleProposals,
   resetChronicleExtractionApiCachesForTests,
   reviseChronicleProposal,
   startChronicleExtraction,
 } from "./chronicleExtractionApi";
 import {
   buildProposalSafetyFlags,
+  getChronicleApplyReadiness,
+  selectChronicleReapprovalCount,
   resetChronicleExtractionStoreForTests,
   useChronicleExtractionStore,
   type ChronicleExtractionReviewProjection,
@@ -121,6 +127,7 @@ function proposal(
       evidenceMethods: ["exact"],
     }),
     probableDuplicateChoice: null,
+    redecide: null,
     application: null,
     bulkApproval: null,
     ...overrides,
@@ -193,6 +200,209 @@ describe("Chronicle bulk approve (BAO/1)", () => {
     vi.clearAllMocks();
     resetChronicleExtractionApiCachesForTests();
     resetChronicleExtractionStoreForTests();
+  });
+
+  describe("reapproving applied Chronicle proposals", () => {
+    const removed = {
+      rejectedBy: "event-removed",
+      removedVia: "undo-redo",
+      rejectedAt: "2026-11-27T00:00:00Z",
+      reapproval: { available: true, reason: null },
+    } as const;
+    const accepted = {
+      rejectedBy: null,
+      removedVia: null,
+      rejectedAt: null,
+      reapproval: { available: false, reason: "already-approved" },
+    } as const;
+    const applied = (id: string) =>
+      proposal(id, {
+        status: "rejected",
+        redecide: removed,
+        application: {
+          commitId: "commit",
+          revisionId: "rev-" + id,
+          appliedEntityKind: "chronicle-event",
+          appliedEntityId: id,
+          applicationKind: "normal",
+          createdAt: "2026-11-26T00:00:00Z",
+          compensatesApplicationId: null,
+        },
+      });
+    const state = useChronicleExtractionStore.getState;
+
+    it("sends the 4097 available applied revisions in two batches, then reads once", async () => {
+      const available = Array.from({ length: 4097 }, (_, i) =>
+        applied(String(i)),
+      );
+      state().setProjection(
+        projection([
+          ...available,
+          { ...applied("blocked"), redecide: accepted },
+          proposal("pending", { redecide: removed }),
+          { ...applied("unknown"), redecide: "unverified" },
+          { ...applied("absent"), redecide: null },
+        ]),
+      );
+      expect(selectChronicleReapprovalCount(state())).toBe(4097);
+      const targets = available.map(({ proposalId, revisionId }) => ({
+        proposalId,
+        revisionId,
+      }));
+      reapproveMock.mockImplementation(async ({ targets }) => ({
+        approved: targets,
+        skipped: [],
+        failed: [],
+        stopped: false,
+      }));
+      getRunReviewBundleMock.mockResolvedValue(bundle([]));
+      expect(await reapproveChronicleProposals()).toEqual({
+        approved: 4097,
+        skipped: [],
+        failed: [],
+        stopped: false,
+        refreshed: true,
+      });
+      expect(reapproveMock.mock.calls).toEqual([
+        [{ projectId: "project-a", targets: targets.slice(0, 4096) }],
+        [{ projectId: "project-a", targets: targets.slice(4096) }],
+      ]);
+      expect(getRunReviewBundleMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("refreshes even with no targets and leaves unapplied revisions alone", async () => {
+      state().setProjection(projection([proposal("pending")]));
+      getRunReviewBundleMock.mockResolvedValue(
+        bundle([
+          nativeRow("pending", {
+            currentRevisionId: "different",
+            status: "approved",
+            ...accepted,
+          }),
+        ]),
+      );
+      expect(await reapproveChronicleProposals([])).toMatchObject({
+        approved: 0,
+        refreshed: true,
+      });
+      expect(reapproveMock).not.toHaveBeenCalled();
+      expect(getRunReviewBundleMock).toHaveBeenCalledTimes(1);
+      expect(rowsInStore()[0]).toMatchObject({
+        revisionId: "rev-pending",
+        status: "unreviewed",
+        redecide: null,
+      });
+    });
+
+    it("counts an already approved selection and reads its current decision", async () => {
+      const a = applied("a");
+      state().setProjection(projection([a, applied("b")]));
+      const readiness = getChronicleApplyReadiness(rowsInStore());
+      await expect(
+        decideChronicleProposal({ proposalId: "a", status: "approved" }),
+      ).rejects.toThrow("applied Chronicle proposal is immutable");
+      reapproveMock.mockResolvedValue({
+        approved: [],
+        skipped: [{ proposalId: "a", reasons: ["already-approved"] }],
+        failed: [],
+        stopped: false,
+      });
+      getRunReviewBundleMock.mockResolvedValue(
+        bundle([
+          nativeRow("a", {
+            application: a.application,
+            status: "approved",
+            ...accepted,
+          }),
+          nativeRow("b", {
+            application: applied("b").application,
+            status: "rejected",
+            ...removed,
+          }),
+        ]),
+      );
+      expect(await reapproveChronicleProposals(["a"])).toMatchObject({
+        approved: 1,
+        skipped: [],
+        refreshed: true,
+      });
+      expect(reapproveMock).toHaveBeenCalledWith({
+        projectId: "project-a",
+        targets: [{ proposalId: "a", revisionId: "rev-a" }],
+      });
+      expect(rowsInStore()[0]).toMatchObject({
+        status: "approved",
+        redecide: accepted,
+      });
+      expect(getChronicleApplyReadiness(rowsInStore())).toEqual(readiness);
+      expect(selectChronicleReapprovalCount(state())).toBe(1);
+    });
+
+    it("preserves status and marks only applied rows unverified after a failed read", async () => {
+      state().setProjection(projection([applied("a"), proposal("b")]));
+      reapproveMock.mockResolvedValue({
+        approved: [],
+        skipped: [{ proposalId: "a", reasons: ["event-missing"] }],
+        failed: [],
+        stopped: true,
+      });
+      getRunReviewBundleMock.mockRejectedValue(new Error("offline"));
+      expect(await reapproveChronicleProposals()).toEqual({
+        approved: 0,
+        skipped: [{ proposalId: "a", reason: "event-missing" }],
+        failed: [],
+        stopped: true,
+        refreshed: false,
+      });
+      expect(rowsInStore()[0]).toMatchObject({
+        status: "rejected",
+        redecide: "unverified",
+      });
+      expect(rowsInStore()[1].redecide).toBeNull();
+      expect(selectChronicleReapprovalCount(state())).toBe(0);
+      state().setProjection(projection([applied("c")]));
+      reapproveMock.mockRejectedValue(new Error("command failed"));
+      await expect(reapproveChronicleProposals()).rejects.toMatchObject({
+        name: "ChronicleBulkApproveCommandError",
+        message: "command failed",
+        listRefreshed: false,
+      });
+    });
+
+    it.each(["epoch", "identity"])(
+      "drops a stale %s response",
+      async (changed) => {
+        const a = applied("a");
+        state().setProjection(projection([a]));
+        let finish!: (result: ReturnType<typeof bundle>) => void;
+        getRunReviewBundleMock.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              finish = resolve;
+            }),
+        );
+        const pending = refreshChronicleRedecideState();
+        if (changed === "epoch") state().advanceBulkJudgementEpoch();
+        else
+          useChronicleExtractionStore.setState({
+            projection: projection([a], { openRevision: 2 }),
+          });
+        finish(
+          bundle([
+            nativeRow("a", {
+              application: a.application,
+              status: "approved",
+              ...accepted,
+            }),
+          ]),
+        );
+        expect(await pending).toBe(false);
+        expect(rowsInStore()[0]).toMatchObject({
+          status: "rejected",
+          redecide: removed,
+        });
+      },
+    );
   });
 
   describe("bulkApproveChronicleProposals", () => {
@@ -616,63 +826,68 @@ describe("Chronicle bulk approve (BAO/1)", () => {
   });
 
   describe("overlapping re-reads", () => {
-    it("does not mirror over a newer read that answered while the bulk re-read was pending", async () => {
-      useChronicleExtractionStore
-        .getState()
-        .setProjection(
-          projection([
-            proposal("a", { bulkApproval: ELIGIBLE }),
-            proposal("b", { bulkApproval: ELIGIBLE }),
-          ]),
-        );
-      bulkApproveMock.mockResolvedValue({
-        approved: [
-          { proposalId: "a", revisionId: "rev-a-child", decisionId: "d" },
-        ],
-        skipped: [],
-        failed: [],
-        stopped: false,
-      });
-      const after = bundle([
-        nativeRow("a", {
-          status: "approved",
-          currentRevisionId: "rev-a-child",
-          payloadJson: payload("a", false) as unknown as Record<
-            string,
-            unknown
-          >,
-          reconciliationEnvelopeDigest: `sha256:${"b".repeat(64)}`,
-          bulkApproval: { eligible: false, reasons: ["approved", "edited"] },
-        }),
-        nativeRow("b"),
-      ]);
-      let releaseBulkRead: (
-        value: ReturnType<typeof bundle>,
-      ) => void = () => {};
-      getRunReviewBundleMock.mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            releaseBulkRead = resolve;
+    it.each(["bulk", "redecide"])(
+      "keeps the new child when a %s read supersedes the bulk re-read",
+      async (source) => {
+        useChronicleExtractionStore
+          .getState()
+          .setProjection(
+            projection([
+              proposal("a", { bulkApproval: ELIGIBLE }),
+              proposal("b", { bulkApproval: ELIGIBLE }),
+            ]),
+          );
+        bulkApproveMock.mockResolvedValue({
+          approved: [
+            { proposalId: "a", revisionId: "rev-a-child", decisionId: "d" },
+          ],
+          skipped: [],
+          failed: [],
+          stopped: false,
+        });
+        const after = bundle([
+          nativeRow("a", {
+            status: "approved",
+            currentRevisionId: "rev-a-child",
+            payloadJson: payload("a", false) as unknown as Record<
+              string,
+              unknown
+            >,
+            reconciliationEnvelopeDigest: `sha256:${"b".repeat(64)}`,
+            bulkApproval: { eligible: false, reasons: ["approved", "edited"] },
           }),
-      );
-      const bulk = bulkApproveChronicleProposals();
-      await vi.waitFor(() =>
-        expect(getRunReviewBundleMock).toHaveBeenCalledTimes(1),
-      );
-      // Another re-read starts after the write and answers first.
-      getRunReviewBundleMock.mockResolvedValueOnce(after);
-      await refreshChronicleBulkApprovalJudgements({ syncRevisions: true });
-      releaseBulkRead(after);
-      const outcome = await bulk;
-      expect(outcome.refreshed).toBe(true);
-      const rows = rowsInStore();
-      expect(rows[0]).toMatchObject({
-        status: "approved",
-        revisionId: "rev-a-child",
-        reconciliationEnvelopeDigest: `sha256:${"b".repeat(64)}`,
-      });
-      expect(rows[1]?.bulkApproval).toEqual(ELIGIBLE);
-    });
+          nativeRow("b"),
+        ]);
+        let releaseBulkRead: (
+          value: ReturnType<typeof bundle>,
+        ) => void = () => {};
+        getRunReviewBundleMock.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              releaseBulkRead = resolve;
+            }),
+        );
+        const bulk = bulkApproveChronicleProposals();
+        await vi.waitFor(() =>
+          expect(getRunReviewBundleMock).toHaveBeenCalledTimes(1),
+        );
+        // Another re-read starts after the write and answers first.
+        getRunReviewBundleMock.mockResolvedValueOnce(after);
+        if (source === "bulk")
+          await refreshChronicleBulkApprovalJudgements({ syncRevisions: true });
+        else await refreshChronicleRedecideState();
+        releaseBulkRead(after);
+        const outcome = await bulk;
+        expect(outcome.refreshed).toBe(true);
+        const rows = rowsInStore();
+        expect(rows[0]).toMatchObject({
+          status: "approved",
+          revisionId: "rev-a-child",
+          reconciliationEnvelopeDigest: `sha256:${"b".repeat(64)}`,
+        });
+        expect(rows[1]?.bulkApproval).toEqual(ELIGIBLE);
+      },
+    );
 
     it("lets a failed bulk re-read yield to a newer successful one", async () => {
       useChronicleExtractionStore
