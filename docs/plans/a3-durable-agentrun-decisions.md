@@ -70,7 +70,8 @@
     - Gate A が持つもの：交換の authority（確かめ直し、capability の発行と消費）だけ。Gate A の承認要求は A3 の `interaction_id` を参照する。
     - Gate A の草稿（`claude/gatea-design`、未 merge）では、ApprovalRequest を main の memory に持ち、再起動の後に復元しない（DR-GA-3）。
 - **DR-A3-4 起動時の回収。**
-  - DB を開くときではなく、Electron main の起動時に回収する。対象は「今の起動の ID でない `execution_owner`」を持つ `running`・`waiting_*` の Run で、`interrupted`（`app_shutdown`／`renderer_lost`）にする。
+  - Electron main が workspace の DB を握る時点で、その DB について回収する。起動の直後に開いた workspace だけでなく、後から開いた workspace と切り替えた先の workspace も含む（Mastra の担当の指摘）。
+  - 対象は「今の起動の ID でない `execution_owner`」を持つ `running`・`waiting_*` の Run で、`interrupted`（`app_shutdown`／`renderer_lost`）にする。
   - MCP の起動では回収しない。
   - 回収で Interaction は消さない。pending の扱いは第 7 節の問 2 で決める。
   - 孤児の `running` を成功として扱わない。
@@ -143,3 +144,46 @@ roadmap の A3 の出口条件との対応：
 3. **新しい authority。** Run と Interaction の新しい表 2 本を正本とし、main だけが書く。
 
 回答の原文は統合者に送り、contracts に記録してもらう。
+
+### 回答（2026-11-27、AskUserQuestion）
+
+- 記録：contracts の問 11〜13（`claude/nir1-contracts` の `0de2aed37`）。
+- 問 3 は条件つきの承認で、第 8 節のすり合わせが済むまでは確定扱いにしない。
+- schema の版は、CED/1 の 49 の次に空いている番号（見込みは 50）を、merge の直前に確かめて取る。
+
+- 問 1：「表示文と回答を残す (推奨)」。
+- 問 2：「再表示して答えられる (推奨)」。
+- 問 3：「良いですがadvisorとmastraの担当とすり合わせしてください」。
+  - すり合わせの結果は第 8 節に記録する。結果が出るまで、問 3 に依る実装（PR 2 以降）に入らない。
+
+### 範囲の拡張（2026-11-27、ユーザーの発言）
+
+- 経緯：再起動の後に答えても元の作業の途中からは再開しない（新しい実行が会話の履歴から続ける）ことを説明した。そのうえでの発言（原文）：「中断した瞬間の状態から、読み直しなしで続くで行きたいです。A3の範囲を拡張してやりましょう。」
+- 位置づけ：方向の決定。問 12 の「新しい実行で続ける」と DR-A3-6 の一部を上書きする。
+- 問 11 との食い違い：問 11 では「prompt の本文と tool の結果の本文は残しません」とした。続きから再開するにはその本文を残すことになるので、保存の中身は改めて伺う。
+- 残すもの：保存した承認を認可の根拠にしない（再開しても、交換のときに main が確かめ直す）。
+- 第 3 節の DR-A3-2・DR-A3-4・DR-A3-6 と第 4 節は、この拡張に合わせて改訂する。改訂が済むまで、PR 2 以降に入らない。
+
+## 8. 問 3 のすり合わせ
+
+### Mastra の担当（grimodex-57、2026-11-27）：大きな異論なし。条件と懸念は次のとおり。
+
+1. **closed の表の追加。**
+   - 試験用の台帳の写し（`electron/main/d2aSqlPolicyFixture.ts`）と、件数の試験（`execute.rs`・`own-data-read.test.mjs`）を同時に直す。漏れると、CI でだけ走る `d2aOwnDataRead.pipeline.spec.ts` で master が赤になる（#1175）。
+   - `napi:build` の後に `vitest.electron-native.config.ts` を回す。
+   - renderer の読みは typed の IPC にし、generic SQL を通さない。
+2. **Mastra の経路の port の呼び出し（接続は Mastra の担当の PR）。**
+   - 開始の記録は、owner の admission（gate、profile、sender、要求の検査）の後、audit の begin の前に置く。拒否の理由の順番は journey が固定している（#1186・#1193）。
+   - 記録の失敗は、wire の既存の拒否の理由（例：`unsupported`）に写す。新しい理由は足さない。
+   - 終端の記録は、owner のすべての終わり方（完了、Stop、強制中断〔profile・workspace の切替・quit〕、画面の喪失）で一度だけ呼ぶ。quit の 5 秒の上限の内側に収める。
+3. **起動時の回収。**
+   - DB は workspace ごとにある。そのため、回収は workspace を握る時点で行う（DR-A3-4 に反映した）。
+   - MCP は回収しない。
+4. **`waiting_approval` と W12。**
+   - `waiting_approval` は合意どおり A3 が持ち、Gate A は `interaction_id` を参照する。
+   - W12 と DR-MP5-11 の改訂は、Mastra の担当が port の接続の PR で行い、独立レビューを通す。
+   - 再起動の後の回答は、新しい Run の中で受ける（DR-A3-6）。
+
+### advisor（read-only）
+
+（記入待ち）
