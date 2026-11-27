@@ -1,11 +1,12 @@
-//! CED/1 data repair. The caller owns the transaction and any migration markers.
-use std::collections::HashMap;
+//! CED/1 date placement for migration and forward edits. The caller owns the transaction.
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use anyhow::Result;
 use grimodex_core::chronicle_order::{
-    provisional_event_dates, ChronicleProvisionalEventRow, ChronicleProvisionalSceneDate,
+    provisional_event_dates, ChronicleProvisionalDate, ChronicleProvisionalEventRow,
+    ChronicleProvisionalSceneDate,
 };
-use grimodex_core::chronicle_time::require_event_date;
+use grimodex_core::chronicle_time::{require_event_date, ChronicleDateRange, ChronicleTimestamp};
 use rusqlite::{params, Connection, Row};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -88,6 +89,21 @@ fn read_event(row: &Row<'_>) -> rusqlite::Result<Event> {
     })
 }
 
+impl Event {
+    fn repaired_start(&self) -> Option<ChronicleTimestamp<'static>> {
+        let day = self.start?;
+        (self.start_granularity == "none").then_some(ChronicleTimestamp {
+            day: Some(day),
+            minute: self.start_minute,
+            granularity: if self.start_minute.is_some() {
+                "time"
+            } else {
+                "day"
+            },
+        })
+    }
+}
+
 /// Fill all projects in ID order inside the caller's transaction or savepoint.
 pub fn fill_missing_chronicle_dates(conn: &Connection) -> Result<ChronicleDateMigrationReport> {
     let mut stmt = conn.prepare("SELECT id FROM projects ORDER BY id")?;
@@ -106,29 +122,17 @@ fn fill_project(
 ) -> Result<()> {
     use ChronicleDateAction::*;
 
-    let mut stmt = conn.prepare(
-        "SELECT id, ordinal, created_at, start_time, end_time, start_minute, end_minute,
-                start_granularity, end_granularity, precision IS NOT 'unknown'
-           FROM events WHERE project_id = ? ORDER BY id",
-    )?;
-    let events = stmt
-        .query_map([project], read_event)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let events = project_events(conn, project)?;
     let mut targets = HashMap::new();
     for e in &events {
         if !e.valid {
             report.skipped_event_ids.push(e.id.clone());
         } else if e.start.is_none() {
             targets.insert(e.id.as_str(), e);
-        } else if e.start_granularity == "none" {
-            let granularity = if e.start_minute.is_some() {
-                "time"
-            } else {
-                "day"
-            };
+        } else if let Some(start) = e.repaired_start() {
             conn.execute(
                 "UPDATE events SET start_granularity = ? WHERE id = ?",
-                params![granularity, e.id],
+                params![start.granularity, e.id],
             )?;
             report.changed.push(ChronicleDateChange {
                 project_id: project.into(),
@@ -142,31 +146,12 @@ fn fill_project(
         return Ok(());
     }
 
-    let scenes = crate::chronicle_read::map_live_scenes(conn, project, |row| {
-        Ok(ChronicleProvisionalSceneDate {
-            start_time: row
-                .get::<_, i64>(1)
-                .ok()
-                .filter(|day| safe_day(*day))
-                .map(|day| day as f64),
-            start_granularity: row.get::<_, String>(5).unwrap_or_default(),
-        })
-    })?;
-    // Rows left unchanged still count towards the latest day when their day is readable.
     let inputs: Vec<_> = events
         .iter()
         .filter(|e| e.valid || e.start.is_some())
-        .map(|e| ChronicleProvisionalEventRow {
-            id: e.id.clone(),
-            ordinal: e.ordinal.clone(),
-            created_at: e.created.clone(),
-            start_time: e.start.map(|day| day as f64),
-            end_time: e.end.map(|day| day as f64),
-            start_granularity: e.start_granularity.clone(),
-            end_granularity: e.end_granularity.clone(),
-        })
+        .map(provisional_row)
         .collect();
-    let dates = provisional_event_dates(&inputs, &scenes);
+    let dates = project_dates(conn, project, &inputs)?;
     for date in dates {
         let e = targets[date.id.as_str()];
         let day = date.start_time as i64;
@@ -216,6 +201,162 @@ fn fill_project(
     Ok(())
 }
 
+fn project_events(conn: &Connection, project: &str) -> Result<Vec<Event>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, ordinal, created_at, start_time, end_time, start_minute, end_minute,
+                start_granularity, end_granularity, precision IS NOT 'unknown'
+           FROM events WHERE project_id = ? ORDER BY id",
+    )?;
+    let events = stmt
+        .query_map([project], read_event)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(events)
+}
+
+fn provisional_row(e: &Event) -> ChronicleProvisionalEventRow {
+    ChronicleProvisionalEventRow {
+        id: e.id.clone(),
+        ordinal: e.ordinal.clone(),
+        created_at: e.created.clone(),
+        start_time: e.start.map(|day| day as f64),
+        end_time: e.end.map(|day| day as f64),
+        start_granularity: e.start_granularity.clone(),
+        end_granularity: e.end_granularity.clone(),
+    }
+}
+
+fn project_dates(
+    conn: &Connection,
+    project: &str,
+    inputs: &[ChronicleProvisionalEventRow],
+) -> Result<Vec<ChronicleProvisionalDate>> {
+    let scenes = crate::chronicle_read::map_live_scenes(conn, project, |row| {
+        Ok(ChronicleProvisionalSceneDate {
+            start_time: row
+                .get::<_, i64>(1)
+                .ok()
+                .filter(|day| safe_day(*day))
+                .map(|day| day as f64),
+            start_granularity: row.get::<_, String>(5).unwrap_or_default(),
+        })
+    })?;
+    Ok(provisional_event_dates(inputs, &scenes))
+}
+
+#[derive(Clone, Copy)]
+pub enum DateRepair {
+    StartGranularity(ChronicleTimestamp<'static>),
+    Provisional(i64),
+}
+
+impl DateRepair {
+    pub fn range(self, end: ChronicleTimestamp<'_>) -> ChronicleDateRange<'_> {
+        match self {
+            Self::StartGranularity(start) => ChronicleDateRange { start, end },
+            Self::Provisional(day) => ChronicleDateRange {
+                start: ChronicleTimestamp {
+                    day: Some(day),
+                    minute: None,
+                    granularity: "day",
+                },
+                end: ChronicleTimestamp {
+                    day: None,
+                    minute: None,
+                    granularity: "none",
+                },
+            },
+        }
+    }
+
+    pub fn precision(self) -> Option<&'static str> {
+        match self {
+            Self::StartGranularity(_) => None,
+            Self::Provisional(_) => Some("unknown"),
+        }
+    }
+
+    pub(crate) fn field_paths(self) -> &'static [&'static str] {
+        match self {
+            Self::StartGranularity(_) => &["/startGranularity"],
+            Self::Provisional(_) => crate::narrative_extraction::TEMPORAL_FIELD_PATHS,
+        }
+    }
+
+    pub fn record_authority(
+        self,
+        conn: &Connection,
+        project: &str,
+        event: &str,
+        now: &str,
+    ) -> Result<()> {
+        record_system_date(conn, project, event, now, self.field_paths())
+    }
+}
+
+pub(crate) fn update_date_repairs(
+    conn: &Connection,
+    project: &str,
+    ids: &BTreeSet<&str>,
+) -> Result<BTreeMap<String, DateRepair>> {
+    let mut repairs = BTreeMap::new();
+    if ids.is_empty() {
+        return Ok(repairs);
+    }
+    let mut inputs = Vec::new();
+    for event in project_events(conn, project)? {
+        let mut row = provisional_row(&event);
+        if ids.contains(event.id.as_str()) {
+            anyhow::ensure!(event.valid, "invalid date repair target '{}'", event.id);
+            if let Some(start) = event.repaired_start() {
+                repairs.insert(event.id, DateRepair::StartGranularity(start));
+            } else {
+                anyhow::ensure!(
+                    event.start.is_none(),
+                    "invalid provisional date target '{}'",
+                    event.id
+                );
+                // Equal creation keys leave ordinal and ID as the N4a comparison keys.
+                row.created_at.clear();
+            }
+        } else if event.start.is_none() {
+            continue;
+        }
+        inputs.push(row);
+    }
+    if repairs.len() < ids.len() {
+        for date in project_dates(conn, project, &inputs)? {
+            let day = date.start_time as i64;
+            anyhow::ensure!(
+                safe_day(day),
+                "provisional event date exceeds the safe integer range"
+            );
+            repairs.insert(date.id, DateRepair::Provisional(day));
+        }
+    }
+    anyhow::ensure!(repairs.len() == ids.len(), "missing date repair target");
+    Ok(repairs)
+}
+
+/// Resolve a single forward writer's unchanged date fields against the stored precision.
+pub fn date_repair_if_needed(
+    conn: &Connection,
+    project: &str,
+    id: &str,
+    touches_date: bool,
+    start: ChronicleTimestamp<'_>,
+    precision: Option<&str>,
+    stored_precision: &str,
+) -> Result<Option<DateRepair>> {
+    if touches_date || require_event_date(start.day, start.granularity).is_ok() {
+        return Ok(None);
+    }
+    if precision.is_some_and(|value| value != stored_precision) {
+        require_event_date(start.day, start.granularity)?;
+    }
+    let mut repairs = update_date_repairs(conn, project, &BTreeSet::from([id]))?;
+    Ok(repairs.remove(id))
+}
+
 pub(super) fn record_date_changes(
     conn: &Connection,
     report: &ChronicleDateMigrationReport,
@@ -231,19 +372,37 @@ pub(super) fn record_date_changes(
             .actions
             .contains(&ChronicleDateAction::AssignedProvisionalDate)
         {
-            for path in crate::narrative_extraction::TEMPORAL_FIELD_PATHS {
-                conn.execute(
-                    "INSERT INTO narrative_field_authority
-                        (project_id, entity_kind, entity_id, field_path, owner_kind, updated_at)
-                     VALUES (?1, 'event', ?2, ?3, 'system', ?4)
-                     ON CONFLICT(project_id, entity_kind, entity_id, field_path) DO UPDATE SET
-                         owner_kind = excluded.owner_kind, updated_at = excluded.updated_at,
-                         version = narrative_field_authority.version + 1
-                     WHERE narrative_field_authority.explicit_lock = 0",
-                    params![change.project_id, change.event_id, path, now],
-                )?;
-            }
+            record_system_date(
+                conn,
+                &change.project_id,
+                &change.event_id,
+                &now,
+                crate::narrative_extraction::TEMPORAL_FIELD_PATHS,
+            )?;
         }
+    }
+    Ok(())
+}
+
+/// Record the generated fields without touching an explicitly locked record.
+pub(crate) fn record_system_date(
+    conn: &Connection,
+    project: &str,
+    event: &str,
+    now: &str,
+    paths: &[&str],
+) -> Result<()> {
+    for path in paths {
+        conn.execute(
+            "INSERT INTO narrative_field_authority
+                (project_id, entity_kind, entity_id, field_path, owner_kind, updated_at)
+             VALUES (?1, 'event', ?2, ?3, 'system', ?4)
+             ON CONFLICT(project_id, entity_kind, entity_id, field_path) DO UPDATE SET
+                 owner_kind = excluded.owner_kind, updated_at = excluded.updated_at,
+                 version = narrative_field_authority.version + 1
+             WHERE narrative_field_authority.explicit_lock = 0",
+            params![project, event, path, now],
+        )?;
     }
     Ok(())
 }

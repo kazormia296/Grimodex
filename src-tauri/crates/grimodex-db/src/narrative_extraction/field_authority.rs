@@ -866,13 +866,21 @@ pub(crate) fn validate_operation_field_authority(
     applications: &[(String, String)],
     operations: &[CommitOperation],
     commit_map: &CommitMap,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<std::collections::BTreeMap<usize, String>> {
     anyhow::ensure!(
         applications.len() == operations.len(),
         "NEX_FIELD_AUTHORITY_OPERATION_MISMATCH: applications and operations must align"
     );
-    for (operation, (proposal_id, revision_id)) in operations.iter().zip(applications) {
+    let mut repairs = std::collections::BTreeMap::new();
+    for (index, (operation, (proposal_id, revision_id))) in operations.iter().zip(applications).enumerate() {
         let authority = load_decision_authority(conn, proposal_id, revision_id)?;
+        if operation.kind == super::temporal_operations::OP_KIND_EVENT_METADATA_PATCH {
+            let patch = parse_event_metadata_patch_payload(&operation.payload)?;
+            if patch.needs_system_date(conn, project_id)? {
+                repairs.insert(index, patch.target_id);
+                continue;
+            }
+        }
         for field in affected_fields(operation, commit_map)? {
             let owned: Option<(String, i64)> = conn
                 .query_row(
@@ -921,7 +929,7 @@ pub(crate) fn validate_operation_field_authority(
             }
         }
     }
-    Ok(())
+    Ok(repairs)
 }
 
 pub(crate) fn record_operation_field_authority(
@@ -931,15 +939,20 @@ pub(crate) fn record_operation_field_authority(
     operations: &[CommitOperation],
     updated_at: &str,
     commit_map: &CommitMap,
-    system_dated_operations: &std::collections::BTreeSet<usize>,
+    system_dated_operations: &std::collections::HashMap<usize, &'static [&'static str]>,
 ) -> anyhow::Result<()> {
     for (index, (operation, (proposal_id, revision_id))) in
         operations.iter().zip(applications).enumerate()
     {
         let authority = load_decision_authority(conn, proposal_id, revision_id)?;
+        if let Some(paths) = system_dated_operations.get(&index).filter(|_| operation.kind == super::temporal_operations::OP_KIND_EVENT_METADATA_PATCH) {
+            let patch = parse_event_metadata_patch_payload(&operation.payload)?;
+            crate::chronicle_date_migration::record_system_date(conn, project_id, &patch.target_id, updated_at, paths)?;
+            continue;
+        }
         for field in affected_fields(operation, commit_map)? {
-            let assigned_date = system_dated_operations.contains(&index)
-                && TEMPORAL_FIELD_PATHS.contains(&field.field_path.as_str());
+            let assigned_date = system_dated_operations.get(&index)
+                .is_some_and(|paths| paths.contains(&field.field_path.as_str()));
             let owner = if assigned_date { "system" } else { &authority.actor_kind };
             conn.execute(
                 "INSERT INTO narrative_field_authority

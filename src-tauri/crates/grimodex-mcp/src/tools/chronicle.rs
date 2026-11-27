@@ -979,7 +979,14 @@ pub async fn update_event(
         },
         Some(request_id),
     )
-    .map_err(internal_err)?;
+    .map_err(|error| {
+        use grimodex_core::chronicle_time::ChronicleDateRangeError;
+        if matches!(error.downcast_ref::<ChronicleDateRangeError>(), Some(ChronicleDateRangeError::EventDateRequired)) {
+            ErrorData::invalid_params(CHRONICLE_EVENT_DATE_REQUIRED, None)
+        } else {
+            internal_err(error)
+        }
+    })?;
     ok_json(&outcome)
 }
 
@@ -1636,6 +1643,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn n4a_mcp_tool_distinguishes_changed_and_repeated_precision() {
+        let policy = r#"{"preset":"custom","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"knowledgeWrite":true}}"#;
+        let server = GrimodexServer::new(
+            rusqlite::Connection::open_in_memory().unwrap(),
+            "p1".into(),
+            false,
+            false,
+            "session".into(),
+            grimodex_core::policy::parse_policy_json(policy).unwrap(),
+        );
+        server.conn.migrate().unwrap();
+        server.conn.with_conn(|conn| {
+            conn.execute("INSERT INTO projects (id, ai_policy) VALUES ('p1', ?1)", [policy])?;
+            Ok(())
+        }).unwrap();
+        seed_event(&server, "p1", "legacy", "before", "a0");
+        server.conn.with_conn(|conn| {
+            conn.execute("UPDATE narrative_field_authority SET owner_kind = 'human', explicit_lock = 1,
+                version = 4, updated_at = 'locked' WHERE entity_id = 'legacy' AND field_path = '/precision'", [])?;
+            Ok(())
+        }).unwrap();
+        let input = |id: &str, precision: &str| serde_json::from_value(serde_json::json!({
+            "request_id": id, "event_id": "legacy", "base_version": 0, "precision": precision
+        })).unwrap();
+        let error = update_event(&server, input("changed", "approx")).await.unwrap_err();
+        assert_eq!(error.message, CHRONICLE_EVENT_DATE_REQUIRED);
+        update_event(&server, input("same", "exact")).await.expect("identical precision alone can repair");
+        server.conn.with_conn(|conn| {
+            let state: bool = conn.query_row(
+                "SELECT start_time = 0 AND precision = 'unknown' FROM events WHERE id = 'legacy'", [], |r| r.get(0))?;
+            assert!(state);
+            let owners: (i64, i64) = conn.query_row(
+                "SELECT sum(owner_kind = 'system'), sum(field_path = '/precision' AND owner_kind = 'human'
+                 AND explicit_lock = 1 AND version = 4 AND updated_at = 'locked')
+                 FROM narrative_field_authority WHERE entity_id = 'legacy'", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            assert_eq!(owners, (6, 1));
+            Ok(())
+        }).unwrap();
+    }
+
+    #[tokio::test]
     async fn create_event_rejects_secret_true_without_writing() {
         let server = make_server(false);
         let before = event_write_counts(&server);
@@ -1752,8 +1800,18 @@ mod tests {
 
     #[tokio::test]
     async fn update_event_ignores_secret_false() {
+        // N4a で確度を approx に変更できるよう、試験用の出来事に開始日を設定する。
         let server = make_server(false);
         seed_event(&server, "p1", "secret-false", "Before", "a0");
+        server
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE events SET start_time = 5, start_granularity = 'day' WHERE id = ?1",
+                ["secret-false"],
+            )
+            .unwrap();
         update_event(
             &server,
             UpdateEventParams {
