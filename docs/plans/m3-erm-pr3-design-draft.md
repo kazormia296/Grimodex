@@ -86,9 +86,10 @@ Status: 草稿（起案者 WrokLayer/M3、2026-11-27）。ADR 015（Proposed）�
 - **取込み**：回答「名前と別名でも照合」（推奨の「規則だけ当てる」ではない）。取込みで、規則に加えて既存の項目の名前・別名と一致するものも、重複の候補として確認に出す。今の取込みは確認を挟まずに項目を作るので、確認の段を足す新しい挙動になる。**ERM PR 3 とは別の PR**（取込みの照合）にし、確認の画面の形と文言は実装の前に伺う。規則の当て方は §2 と同じ native の読み取りを使う。§0 の【未決】はこれで閉じる。
 - **点検の規則**：元の資料に根拠はあるが本文に出ない項目には注意を出さない（`zero-mentions` を単独で出さない）。語の一覧は項目の種類に合う語だけを当てる。どちらも PR 5（健全性の検査）で使う。
 
-## 10. 規則で足す版の basis（2 本目の前の判断）
+## 10. 規則で足す版の形（2 本目の前の判断。初稿の「interpretation の basis」を改めた）
 
-- 版の basis の語彙は `policies/narrative/narrative-ir-contract.json` の `staleValidation` で `interpretation` と `humanDerived` の 2 つに決まっている。3 つ目を足すのは取り決めの変更になるので、そうするなら作者に伺う。
-- 【起案者案】取り決めを変えずに、規則で足す版は `interpretation` の basis にする。規則の適用は決まった手順の機械の処理で、作者の手の編集ではない。`human-derived` にしないので、作者が見ていない結び付けに人の編集の扱い（一括承認からの除外の理由 `Edited`、apply の root の系譜の確認など）が付かない。`interpretation` は live の source token の一致を求め、ずれたら `NEX_READ_SET_STALE` で拒む。
-- `interpretation` の版は owner（`revisionBasis.runId+taskId`）を持つ。抽出への適用（2 本目）は抽出の run と task を使える。保存直後の当て直し（3 本目）には run が無いので、当て直し用の run を作るか、別の形にするかを 3 本目の前に決める【未決】。
-
+- 初稿では、規則で足す版を V2 の envelope の `revisionBasis.kind`＝`interpretation` にする案だった。下調べ（`codex-jobs/m3-erm-pr3b-facts-ts.out.md`）と照合の結果、これは成り立たない：構造抽出の提案は V1 の envelope（`buildNativeReconciliationEnvelope`、`revisionBasis` を持たない）で保存され、本番の版の追加は V2 の envelope を拒む（`repository.rs` の `NEX_NARRATIVE_V2_ACTIVATION_DISABLED`）。V2 の禁止を開けるのはこの PR の範囲の外とする。
+- V1 の提案に 2 つ目の版を足したときの扱い：一括承認（`bulk_approval.rs`）の対象は年表の提案だけで、構造抽出の提案には掛からない。V2 の apply の系譜の確認（`v2_apply_sources.rs`）も V2 の envelope にだけ掛かる。作者が確認画面で結び先を選ぶ経路（`resolveCodexStructureBinding`）は、すでに V1 の 2 つ目の版を、親の reconciliation envelope を引き継いで足している。
+- 【起案者案】規則で足す版は、作者が結び先を選ぶ経路と同じ V1 の形で足す（payload は `resolveBindCodexEntityPayload` で作り、親の reconciliation envelope を引き継ぎ、OCC は今の版の ID）。人の編集の扱いは V1 には無いので付かない。「規則で足した版」であることは、適用の記録（`identity_correction_applications` の output）で辿る。取り決め（envelope の語彙）は変えない。
+- 【限界】構造抽出が V2 に移るときは、規則で足す版の basis をそのときに決める（`human-derived` にしない方針は保つ）。
+- 引き継ぐ envelope は source token を live と照合する（V1 でも readSet に token があれば厳密）。抽出の直後は同じ token なので通る。3 本目の当て直しの owner の問題は、親の envelope を引き継ぐ形なら新しい run を作らずに済む（3 本目の前に確かめる）。
