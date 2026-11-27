@@ -1,16 +1,20 @@
 import { useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChronicleEvidencePane } from "./ChronicleEvidencePane";
-import { ChronicleProposalCard } from "./ChronicleProposalCard";
+import { appliedState, ChronicleProposalCard } from "./ChronicleProposalCard";
 import { ChronicleBulkApproveOutcomeNote } from "./ChronicleBulkApproveOutcomeNote";
+import { ChronicleReapproveOutcomeNote } from "./ChronicleReapproveOutcomeNote";
+import { describeRemoval } from "./chronicleReapprovalText";
 import { orderProposalsForReview } from "./chronicleBulkApprovalReasons";
 import {
   bulkApproveChronicleProposals,
   ChronicleBulkApproveCommandError,
   decideChronicleProbableDuplicate,
   decideChronicleProposal,
+  reapproveChronicleProposals,
   reviseChronicleProposal,
   type ChronicleBulkApproveOutcome,
+  type ChronicleReapprovalOutcome,
 } from "./chronicleExtractionApi";
 import {
   isBulkApprovalTarget,
@@ -90,6 +94,10 @@ export function ChronicleProposalReview({
   const persistingRef = useRef(false);
   const [bulkOutcome, setBulkOutcome] =
     useState<ChronicleBulkApproveOutcome | null>(null);
+  const [reapproveOutcome, setReapproveOutcome] = useState<{
+    readonly runId: string | undefined;
+    readonly outcome: ChronicleReapprovalOutcome;
+  } | null>(null);
 
   const titleValue =
     draftTitle ?? selected?.payload?.title ?? selected?.displayTitle ?? "";
@@ -174,6 +182,46 @@ export function ChronicleProposalReview({
   );
   const reviewControlsDisabled = persisting || applyMutationInFlight;
 
+  // SRD/1 RA7: Native's RD1/RD2 only; the screen never decides.
+  const removedCount = proposals.filter(
+    (proposal) => appliedState(proposal) === "removed",
+  ).length;
+  const reapproveCount = proposals.filter(
+    (proposal) =>
+      appliedState(proposal) === "removed" &&
+      proposal.redecide !== null &&
+      proposal.redecide !== "unverified" &&
+      proposal.redecide.reapproval.available,
+  ).length;
+
+  const handleReapprove = (proposalIds?: readonly string[]) => {
+    if (!boundToStore) return;
+    const runId = storeProjection?.runId;
+    void runPersist(async () => {
+      try {
+        const outcome = await reapproveChronicleProposals(proposalIds);
+        setBulkOutcome(null);
+        setReapproveOutcome({ runId, outcome });
+      } catch (error) {
+        const listRefreshed =
+          error instanceof ChronicleBulkApproveCommandError &&
+          error.listRefreshed;
+        throw new Error(
+          listRefreshed
+            ? t(
+                "chronicle.extract.reapproveFailed",
+                "承認し直しに失敗しました。一覧を読み直しました。もう一度試してください。",
+              )
+            : t(
+                "chronicle.extract.reapproveFailedNoRefresh",
+                "承認し直しに失敗しました。一覧も読み直せませんでした。画面を開き直してください。",
+              ),
+          { cause: error },
+        );
+      }
+    });
+  };
+
   const handleBulkApprove = () => {
     if (!boundToStore) return;
     setBulkOutcome(null);
@@ -228,6 +276,23 @@ export function ChronicleProposalReview({
               </button>
             )}
           </div>
+          {boundToStore && removedCount > 0 && (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                className="rounded px-1.5 py-0.5 text-[10px] text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
+                disabled={reapproveCount === 0 || reviewControlsDisabled}
+                onClick={() => handleReapprove()}
+                data-testid="chronicle-reapprove-all"
+              >
+                {t(
+                  "chronicle.extract.reapproveAll",
+                  "出来事を消して外れた提案をまとめて承認し直す",
+                )}
+                {reapproveCount > 0 ? ` (${reapproveCount})` : ""}
+              </button>
+            </div>
+          )}
           {boundToStore && bulkUnknownCount > 0 && bulkJudgementLoading && (
             <p
               className="text-[10px] leading-snug text-muted-foreground"
@@ -278,6 +343,13 @@ export function ChronicleProposalReview({
             bulkOutcome.runId === storeProjection?.runId && (
               <ChronicleBulkApproveOutcomeNote outcome={bulkOutcome} />
             )}
+          {boundToStore &&
+            reapproveOutcome &&
+            reapproveOutcome.runId === storeProjection?.runId && (
+              <ChronicleReapproveOutcomeNote
+                outcome={reapproveOutcome.outcome}
+              />
+            )}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
           {proposals.length === 0 ? (
@@ -295,6 +367,7 @@ export function ChronicleProposalReview({
                 onDuplicateChoice={(choice) =>
                   handleDuplicateChoice(proposal.proposalId, choice)
                 }
+                onReapprove={() => handleReapprove([proposal.proposalId])}
                 disabled={reviewControlsDisabled}
               />
             ))
@@ -319,8 +392,26 @@ export function ChronicleProposalReview({
         ) : selected.application !== null ? (
           <div className="flex flex-col gap-2">
             <p className="text-sm font-medium">{selected.displayTitle}</p>
-            <p className="text-xs text-muted-foreground">
-              このProposalは取り込み済みです。編集・判断・再適用はできません。
+            <p
+              className="text-xs text-muted-foreground"
+              data-testid="chronicle-proposal-applied-detail"
+            >
+              {appliedState(selected) === "removed" &&
+              selected.redecide !== null &&
+              selected.redecide !== "unverified"
+                ? `${t(
+                    "chronicle.extract.removedDetail",
+                    "取り込んだ出来事が年表から消えたため、この提案の承認は外れています。編集・判断・再適用はできません。承認し直すと、取り込み済みに戻ります。",
+                  )}（${describeRemoval(
+                    selected.redecide,
+                    (key, fallback, values) => t(key, fallback, values),
+                  )}）`
+                : appliedState(selected) === "unverified"
+                  ? t(
+                      "chronicle.extract.appliedUnverifiedDetail",
+                      "このProposalは取り込み済みですが、取り込んだ出来事が今も年表にあるかを確かめられませんでした。編集・判断・再適用はできません。",
+                    )
+                  : "このProposalは取り込み済みです。編集・判断・再適用はできません。"}
             </p>
             <ChronicleEvidencePane
               proposal={selected}
