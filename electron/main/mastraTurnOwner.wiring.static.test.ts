@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
+import { MASTRA_AGENT_WRITE_TOOL_NAMES } from "../shared/mastraWriteToolDefinitions.js";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -24,6 +25,7 @@ const codeOf = (rel: string): string =>
 const INDEX = codeOf("electron/main/index.ts");
 const IPC = codeOf("electron/main/ipc.ts");
 const OWNER = codeOf("electron/main/mastraTurnOwner.ts");
+const ADAPTER = codeOf("electron/main/mastra/agentToolAdapter.ts");
 
 describe("index.ts: the owner is an egress participant, a quit step and an event observer", () => {
   it("is registered as a main egress participant with both its quiesce (taking the gate's context) and its force stop", () => {
@@ -109,7 +111,7 @@ describe("index.ts: the owner is an egress participant, a quit step and an event
 describe("ipc.ts: the router hands the owner its invoke and its workspace-switch lease", () => {
   it("the shell handlers come from the route with the invoke's sender, window and issued identity (never the context-less ones)", () => {
     expect(IPC).toMatch(
-      /\.\.\.\(isMastraAgentTurnCommand\(cmd\) \? mastraAgentTurn\.handlersFor\(\{ sender: event\.sender, win, callerIdentity, \}\) : \{\}\),/,
+      /\.\.\.\(isMastraAgentTurnCommand\(cmd\) \|\| cmd === MASTRA_AGENT_TURN_ANSWER_COMMAND \? mastraAgentTurn\.handlersFor\(\{ sender: event\.sender, win, callerIdentity, \}\) : \{\}\),/,
     );
     expect(IPC).not.toMatch(/\.\.\.mastraAgentTurn\.handlers[^F]/);
     expect(IPC).toMatch(/owner: mastraTurnOwner,/);
@@ -144,12 +146,96 @@ describe("the owner module", () => {
     expect(OWNER).not.toMatch(/mastra-agent|require\(/);
   });
 
-  it("never forwards the caller identity to Native, and never issues a capability", () => {
+  it("never forwards the caller identity to Native and uses the injected main capability issuer", () => {
     expect(OWNER).toMatch(
       /const \{ callerIdentity: _identity, \.\.\.nativeArgs \} = args;/,
     );
-    expect(OWNER).not.toMatch(
-      /issueAgentAuthorityCapabilities|agentAuthorityCapabilities/,
+    expect(OWNER).toMatch(/options\.issueWriteCapabilities\(/);
+    expect(OWNER).not.toMatch(/issueAgentAuthorityCapabilities/);
+  });
+
+  it("binds the shared seven UI definitions through the one-shot question registry", () => {
+    expect(OWNER).toMatch(/createMastraUiToolDefinitions\(\)/);
+    expect(OWNER).toMatch(/MASTRA_UI_TOOL_NAMES\.find/);
+    expect(OWNER).toMatch(
+      /requestUiTool\( turn\.turnId, toolCallId, name, args as Readonly<Record<string, unknown>>, \)/,
     );
+    expect(OWNER).toMatch(/result\.content == null \? result\.summary/);
+    expect(OWNER).toMatch(/JSON\.stringify\(result\.content\)/);
+  });
+
+  it("binds approved main-owned writes and routes tree/body tools through their existing writers", () => {
+    expect([...MASTRA_AGENT_WRITE_TOOL_NAMES]).toEqual([
+      "create_codex_entry",
+      "update_codex_entry",
+      "create_foreshadow",
+      "update_foreshadow",
+      "create_snippet",
+      "apply_ai_tree_plan",
+      "propose_scene_body",
+      "create_event",
+      "update_event",
+      "delete_event",
+      "stamp_scene_event",
+      "unstamp_scene_event",
+      "set_event_participants",
+      "add_event_relation",
+      "remove_event_relation",
+    ]);
+    for (const command of [
+      "agent_codex_create",
+      "agent_codex_update",
+      "agent_foreshadow_create",
+      "agent_foreshadow_update",
+      "agent_snippet_create",
+      "ai_tree_plan_apply",
+      "agent_propose_scene_body",
+      "agent_event_create",
+      "agent_event_update",
+      "agent_event_delete",
+      "agent_scene_event_link",
+      "agent_scene_event_unlink",
+      "agent_event_set_participants",
+      "agent_event_relation_add",
+      "agent_event_relation_remove",
+    ]) {
+      expect(IPC).toContain(command);
+    }
+    expect(OWNER).toMatch(/createMastraWriteToolDefinitions\(\)/);
+    expect(OWNER).toMatch(/MASTRA_AGENT_WRITE_TOOL_NAMES\.find/);
+    expect(OWNER).toMatch(/options\.bindWriteCapability\(/);
+    expect(OWNER).toMatch(/await spec\.run\( backend, \{ payload: bound \},/);
+    expect(OWNER.indexOf("options.bindWriteCapability(")).toBeLessThan(
+      OWNER.indexOf("await spec.run( backend, { payload: bound },"),
+    );
+    expect(OWNER).toMatch(/sendWriteCompleted\(turn\.senderId/);
+    expect(OWNER).toMatch(/content: writeResult\.content/);
+    expect(OWNER).toMatch(/undoId: writeResult\.undoId/);
+    const writer = OWNER.slice(
+      OWNER.indexOf("const content = await spec.run("),
+    );
+    expect(writer.indexOf("writeToolResults.set(")).toBeLessThan(
+      writer.indexOf("assertLive(turn);"),
+    );
+    expect(writer.indexOf("sendWriteCompleted(turn.senderId")).toBeLessThan(
+      writer.indexOf("assertLive(turn);"),
+    );
+    expect(writer.indexOf("successfulWriteProcessor?.(")).toBeLessThan(
+      writer.indexOf("assertLive(turn);"),
+    );
+    expect(IPC).toMatch(
+      /typeof mastraTurnOwner\?\.setSuccessfulWriteProcessor === "function"/,
+    );
+    expect(OWNER).not.toMatch(
+      /\b(?:requireApproval|suspend|resumeData|approved)\b/u,
+    );
+  });
+
+  it("does not read Mastra resume or approval context as a UI answer", () => {
+    for (const source of [OWNER, ADAPTER]) {
+      expect(source).not.toMatch(
+        /\b(?:requireApproval|suspend|resumeData|approved)\b/u,
+      );
+    }
   });
 });

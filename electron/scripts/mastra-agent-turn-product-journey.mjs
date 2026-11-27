@@ -41,6 +41,7 @@ export function startRequest(overrides = {}) {
     projectId: `journey-project-${randomUUID()}`,
     currentSceneId: null,
     chatMessageId: `journey-message-${randomUUID()}`,
+    writerSessionId: `journey-writer-${randomUUID()}`,
     messages: [
       { role: "system", content: "MASTRA-AGENT-TURN-JOURNEY system" },
       { role: "user", content: "MASTRA-AGENT-TURN-JOURNEY prompt" },

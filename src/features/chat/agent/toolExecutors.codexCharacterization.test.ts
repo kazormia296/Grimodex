@@ -508,6 +508,46 @@ describe("scope あり（projectId は store、場面は scope）／なし（sto
     expect(idsOf(result)).toContain("cx-late");
   });
 
+  it.each([
+    ["search_codex", { query: "遅れの客" }],
+    ["search_codex_by_tags", { tags: ["魔法"] }],
+    ["find_related_entries", { id: "cx-src" }],
+  ] as const)(
+    "%s は turn context の作成後に場面が変わっても開始時の場面を使う",
+    async (tool, params) => {
+      await setWorld(MAIN_S1);
+      legacyReadInvokeBridge.override("codex_semantic_search", () => []);
+      const context = { currentSceneId: "n-s1" };
+      const hook = onFirstSql(
+        tool === "find_related_entries"
+          ? /"codex_entries"\."id" = \?/iu
+          : /codex_entry_tags|from "codex_entries"/iu,
+        switchScene("n-s2"),
+      );
+      const result = await run(tool, params, context);
+      expect(hook.fired()).toBe(1);
+      if (tool === "find_related_entries") {
+        expect(idsOf(result)).toContain("cx-rel-hid");
+      } else {
+        expect(idsOf(result)).toContain("cx-late");
+      }
+    },
+  );
+
+  it("sub-agent の executeReadOnlyTool も turn context の場面を固定する", async () => {
+    await setWorld(MAIN_S1);
+    const context = { currentSceneId: "n-s1" };
+    const hook = onFirstSql(/codex_entry_tags/iu, switchScene("n-s2"));
+    const result = await executeReadOnlyTool(
+      "search_codex_by_tags",
+      "c",
+      { tags: ["魔法"] },
+      context,
+    );
+    expect(hook.fired()).toBe(1);
+    expect(idsOf(result as Result)).toContain("cx-late");
+  });
+
   it("scope は read-only 経路（executeReadOnlyTool）でも同じ", async () => {
     await setWorld(MAIN_S1);
     const result = await executeReadOnlyTool(

@@ -86,6 +86,10 @@
 //! current epoch, applicability is false and the entry resurfaces; the read
 //! model never falls back to comparing the Attention digest with itself.
 //!
+//! The attention_applies field is independent of disposition: it is true
+//! only when the Attention row applies to every active current-epoch
+//! observation. Snooze expiry is part of applicability.
+//!
 //! ## Epoch invalidation
 //!
 //! [`build_maintenance_inbox`] looks up the current Semantic Epoch once
@@ -239,6 +243,7 @@ pub struct InboxEntry {
     pub finding_key: String,
     pub latest_observation: Option<FindingObservationRow>,
     pub attention: Option<AttentionRow>,
+    pub attention_applies: bool,
     pub is_snoozed_and_active: bool,
 }
 
@@ -450,29 +455,30 @@ fn active_finding_observations<'a>(
     ))
 }
 
-fn snooze_hides_consumer(
+fn attention_applies_to_consumer(
     active_observations: &[&FindingObservationRow],
     has_unresolved_identity: bool,
     attention: Option<&AttentionRow>,
     now: &str,
 ) -> bool {
     match attention {
-        Some(attention_row) if attention_row.disposition == AttentionDisposition::Snoozed => {
-            !active_observations.is_empty()
-                && !has_unresolved_identity
-                && attention_row.identity_resolution_status == "resolved"
-                && active_observations.iter().all(|observation| {
-                    observation.finding_identity.as_deref()
-                        == attention_row.finding_identity.as_deref()
-                        && is_attention_applicable(
-                            attention_row,
-                            observation.material_basis_digest.as_str(),
-                            now,
-                        )
-                })
+        Some(attention_row) if !active_observations.is_empty() && !has_unresolved_identity => {
+            active_observations.iter().all(|observation| {
+                observation.finding_identity.as_deref() == attention_row.finding_identity.as_deref()
+                    && is_attention_applicable(
+                        attention_row,
+                        observation.material_basis_digest.as_str(),
+                        now,
+                    )
+            })
         }
         _ => false,
     }
+}
+
+fn snooze_hides_consumer(attention: Option<&AttentionRow>, attention_applies: bool) -> bool {
+    attention.is_some_and(|row| row.disposition == AttentionDisposition::Snoozed)
+        && attention_applies
 }
 
 /// Compare a terminal lifecycle resolution with its Observation using
@@ -626,12 +632,13 @@ fn hidden_consumers(
         let (active_observations, has_unresolved_identity, _) =
             active_finding_observations(conn, project_id, &observations)?;
         let attention = get_attention(conn, project_id, &finding_key)?;
-        if snooze_hides_consumer(
+        let attention_applies = attention_applies_to_consumer(
             &active_observations,
             has_unresolved_identity,
             attention.as_ref(),
             now,
-        ) {
+        );
+        if snooze_hides_consumer(attention.as_ref(), attention_applies) {
             hidden.insert(
                 (consumer_kind, consumer_key),
                 EvidenceFreshness::try_from(raw_freshness.as_str())?,
@@ -719,7 +726,7 @@ pub fn maintenance_health_summary(
     }
 
     let mut maintenance_stopped = 0;
-    visit_visible_terminal_failures(conn, project_id, &current_epoch.id, now, |_, _, _, _| {
+    visit_visible_terminal_failures(conn, project_id, &current_epoch.id, now, |_, _, _, _, _| {
         maintenance_stopped += 1
     })?;
     Ok(counts.into_summary(maintenance_stopped))
@@ -857,7 +864,7 @@ fn visit_visible_terminal_failures(
     project_id: &str,
     epoch_id: &str,
     now: &str,
-    mut visit: impl FnMut(String, String, FindingObservationRow, Option<AttentionRow>),
+    mut visit: impl FnMut(String, String, FindingObservationRow, Option<AttentionRow>, bool),
 ) -> anyhow::Result<()> {
     let terminal_prefix = format!("{TERMINAL_FAILURE_CONSUMER_KIND}:");
     for finding_key in list_terminal_failure_finding_keys_for_epoch(conn, project_id, epoch_id)? {
@@ -868,12 +875,13 @@ fn visit_visible_terminal_failures(
             continue;
         };
         let attention = get_attention(conn, project_id, &finding_key)?;
-        if snooze_hides_consumer(
+        let attention_applies = attention_applies_to_consumer(
             &active_observations,
             has_unresolved_identity,
             attention.as_ref(),
             now,
-        ) {
+        );
+        if snooze_hides_consumer(attention.as_ref(), attention_applies) {
             continue;
         }
         let consumer_key = finding_key
@@ -884,7 +892,13 @@ fn visit_visible_terminal_failures(
                 )
             })?
             .to_string();
-        visit(finding_key, consumer_key, latest_observation, attention);
+        visit(
+            finding_key,
+            consumer_key,
+            latest_observation,
+            attention,
+            attention_applies,
+        );
     }
     Ok(())
 }
@@ -937,12 +951,13 @@ pub fn build_maintenance_inbox(
         // own contract).
         let attention = get_attention(conn, project_id, &finding_key)?;
 
-        let is_snoozed_and_active = snooze_hides_consumer(
+        let attention_applies = attention_applies_to_consumer(
             &active_observations,
             has_unresolved_identity,
             attention.as_ref(),
             now,
         );
+        let is_snoozed_and_active = snooze_hides_consumer(attention.as_ref(), attention_applies);
 
         if is_snoozed_and_active {
             // Active, unexpired snooze: hidden from the Inbox entirely.
@@ -958,6 +973,7 @@ pub fn build_maintenance_inbox(
             finding_key,
             latest_observation,
             attention,
+            attention_applies,
             is_snoozed_and_active,
         });
     }
@@ -970,7 +986,7 @@ pub fn build_maintenance_inbox(
         project_id,
         &current_epoch.id,
         now,
-        |finding_key, consumer_key, latest_observation, attention| {
+        |finding_key, consumer_key, latest_observation, attention, attention_applies| {
             entries.push(InboxEntry {
                 entry_kind: InboxEntryKind::TerminalFailure,
                 consumer_kind: TERMINAL_FAILURE_CONSUMER_KIND.to_string(),
@@ -980,6 +996,7 @@ pub fn build_maintenance_inbox(
                 finding_key,
                 latest_observation: Some(latest_observation),
                 attention,
+                attention_applies,
                 is_snoozed_and_active: false,
             });
         },
@@ -2134,12 +2151,13 @@ mod tests {
         let (active_observations, has_unresolved_identity, _) =
             active_finding_observations(conn, "project-1", &observations)?;
         let attention = get_attention(conn, "project-1", finding_key)?;
-        assert!(snooze_hides_consumer(
+        let attention_applies = attention_applies_to_consumer(
             &active_observations,
             has_unresolved_identity,
             attention.as_ref(),
             "2026-08-15T01:00:00.000Z",
-        ));
+        );
+        assert!(snooze_hides_consumer(attention.as_ref(), attention_applies));
         let entries = build_maintenance_inbox(conn, "project-1", "2026-08-15T01:00:00.000Z")?;
         assert!(entries.iter().all(|entry| entry.finding_key != finding_key));
         Ok(())
@@ -2225,7 +2243,13 @@ mod tests {
                 params![identity, empty],
             )?;
             assert_proposal_is_hidden(conn, &hidden)?;
-            assert_snooze_test_outputs(conn, 1, &["item-0002"])
+            assert_snooze_test_outputs(conn, 1, &["item-0002"])?;
+            let entry = build_maintenance_inbox(conn, "project-1", "2026-08-15T01:00:00.000Z")?
+                .into_iter()
+                .find(|entry| entry.finding_key == empty)
+                .expect("empty-observation consumer remains visible");
+            assert!(!entry.attention_applies);
+            Ok(())
         })
         .expect("with_conn");
     }
@@ -2274,7 +2298,13 @@ mod tests {
                 [],
             )?;
             assert_proposal_is_hidden(conn, &hidden)?;
-            assert_snooze_test_outputs(conn, 1, &["item-0002"])
+            assert_snooze_test_outputs(conn, 1, &["item-0002"])?;
+            let entry = build_maintenance_inbox(conn, "project-1", "2026-08-15T01:00:00.000Z")?
+                .into_iter()
+                .find(|entry| entry.finding_key == mixed)
+                .expect("consumer with unresolved Observation remains visible");
+            assert!(!entry.attention_applies);
+            Ok(())
         })
         .expect("with_conn");
     }
@@ -2307,7 +2337,13 @@ mod tests {
                 params![unresolved],
             )?;
             assert_proposal_is_hidden(conn, &hidden)?;
-            assert_snooze_test_outputs(conn, 1, &["item-0002"])
+            assert_snooze_test_outputs(conn, 1, &["item-0002"])?;
+            let entry = build_maintenance_inbox(conn, "project-1", "2026-08-15T01:00:00.000Z")?
+                .into_iter()
+                .find(|entry| entry.finding_key == unresolved)
+                .expect("unresolved Attention consumer remains visible");
+            assert!(!entry.attention_applies);
+            Ok(())
         })
         .expect("with_conn");
     }
@@ -2344,6 +2380,12 @@ mod tests {
                   WHERE project_id = 'project-1' AND run_id = 'run-item-0002-1'",
                 params![attention_basis],
             )?;
+            conn.execute(
+                "UPDATE narrative_maintenance_finding_observations
+                    SET material_basis_digest = ?1
+                  WHERE project_id = 'project-1' AND run_id = 'run-item-0002-2'",
+                params![attention_basis],
+            )?;
             let expired = seed_snoozed_proposal_for_test(
                 conn,
                 &epoch_id,
@@ -2368,6 +2410,7 @@ mod tests {
                     .find(|entry| entry.finding_key == *finding_key)
                     .expect("inapplicable snooze remains visible");
                 assert!(!entry.is_snoozed_and_active);
+                assert!(!entry.attention_applies);
             }
             Ok(())
         })
@@ -2708,6 +2751,7 @@ mod tests {
             assert_eq!(entry.finding_key, "proposal:proposal-1");
             assert!(entry.latest_observation.is_none());
             assert!(entry.attention.is_none());
+            assert!(!entry.attention_applies);
             assert!(!entry.is_snoozed_and_active);
             Ok(())
         })
@@ -3062,6 +3106,7 @@ mod tests {
             );
             let entry = &entries[0];
             assert!(!entry.is_snoozed_and_active);
+            assert!(!entry.attention_applies);
             let attention = entry.attention.as_ref().expect("attention row retained");
             assert_eq!(attention.disposition, AttentionDisposition::Snoozed);
             assert_eq!(
@@ -3129,6 +3174,7 @@ mod tests {
                 "a digest mismatch must resurface the consumer even with a future snoozed_until"
             );
             assert!(!entries[0].is_snoozed_and_active);
+            assert!(!entries[0].attention_applies);
             assert!(entries[0].attention.is_some());
             Ok(())
         })
@@ -3185,50 +3231,78 @@ mod tests {
     }
 
     #[test]
-    fn dismissed_and_flagged_attention_do_not_hide_the_consumer() {
+    fn dismissed_and_flagged_attention_apply_until_the_material_basis_changes() {
         let db = test_db();
         db.with_conn(|conn| {
             let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
-            seed_consumer_freshness(
-                conn,
-                "project-1",
-                "proposal",
-                "proposal-1",
-                "stale",
-                "rebuild-required",
-                &epoch_id,
-                "2026-08-15T00:00:00.000Z",
-            );
-            seed_consumer_freshness(
-                conn,
-                "project-1",
-                "codex-entry",
-                "entry-1",
-                "stale",
-                "rebuild-required",
-                &epoch_id,
-                "2026-08-15T00:00:00.000Z",
-            );
-            set_attention_for_test(
-                conn,
-                "project-1",
-                "proposal:proposal-1",
-                AttentionDisposition::Dismissed,
-                "sha256:whatever-1",
-                None,
-                "2026-08-15T00:00:00.000Z",
-                Some("user-1"),
-            )?;
-            set_attention_for_test(
-                conn,
-                "project-1",
-                "codex-entry:entry-1",
-                AttentionDisposition::Flagged,
-                "sha256:whatever-2",
-                None,
-                "2026-08-15T00:00:00.000Z",
-                Some("user-1"),
-            )?;
+            for (kind, key, edge_id, run_prefix, disposition) in [
+                (
+                    "proposal",
+                    "proposal-1",
+                    "edge-dismissed",
+                    "run-dismissed",
+                    AttentionDisposition::Dismissed,
+                ),
+                (
+                    "codex-entry",
+                    "entry-1",
+                    "edge-flagged",
+                    "run-flagged",
+                    AttentionDisposition::Flagged,
+                ),
+            ] {
+                seed_consumer_freshness(
+                    conn,
+                    "project-1",
+                    kind,
+                    key,
+                    "stale",
+                    "rebuild-required",
+                    &epoch_id,
+                    "2026-08-15T00:00:00.000Z",
+                );
+                seed_dependency_edge(conn, edge_id, "project-1", kind, key);
+                let finding_key = format!("{kind}:{key}");
+                let basis = test_material_basis(
+                    edge_id,
+                    FindingReasonCode::SourceRevisionChanged,
+                    EvidenceFreshness::Stale,
+                );
+                record_finding_observation_in_tx(
+                    conn,
+                    "project-1",
+                    &format!("{run_prefix}-initial"),
+                    &epoch_id,
+                    Some(edge_id),
+                    &finding_key,
+                    FindingReasonCode::SourceRevisionChanged,
+                    EvidenceFreshness::Stale,
+                    &basis,
+                    "2026-08-15T00:00:01.000Z",
+                )?;
+                set_attention_for_test(
+                    conn,
+                    "project-1",
+                    &finding_key,
+                    disposition,
+                    &basis,
+                    None,
+                    "2026-08-15T00:00:00.000Z",
+                    Some("user-1"),
+                )?;
+                record_finding_observation_in_tx(
+                    conn,
+                    "project-1",
+                    &format!("{run_prefix}-reeval"),
+                    &epoch_id,
+                    Some(edge_id),
+                    &finding_key,
+                    FindingReasonCode::SourceRevisionChanged,
+                    EvidenceFreshness::Stale,
+                    &basis,
+                    "2026-08-15T00:00:02.000Z",
+                )?;
+            }
 
             let entries = build_maintenance_inbox(conn, "project-1", "2026-08-15T01:00:00.000Z")?;
             assert_eq!(
@@ -3241,6 +3315,7 @@ mod tests {
                 .iter()
                 .find(|entry| entry.consumer_kind == "proposal")
                 .expect("proposal entry present");
+            assert!(dismissed_entry.attention_applies);
             assert_eq!(
                 dismissed_entry
                     .attention
@@ -3253,6 +3328,7 @@ mod tests {
                 .iter()
                 .find(|entry| entry.consumer_kind == "codex-entry")
                 .expect("codex-entry present");
+            assert!(flagged_entry.attention_applies);
             assert_eq!(
                 flagged_entry
                     .attention
@@ -3261,9 +3337,108 @@ mod tests {
                     .disposition,
                 AttentionDisposition::Flagged
             );
+
+            let original_dismissed_attention = dismissed_entry.attention.clone();
+            let original_flagged_attention = flagged_entry.attention.clone();
+            conn.execute(
+                "UPDATE narrative_maintenance_finding_observations
+                    SET material_basis_digest = 'sha256:changed-material-basis'
+                  WHERE project_id = 'project-1'
+                    AND run_id IN ('run-dismissed-reeval', 'run-flagged-reeval')",
+                [],
+            )?;
+            let changed_entries =
+                build_maintenance_inbox(conn, "project-1", "2026-08-15T01:00:00.000Z")?;
+            assert_eq!(changed_entries.len(), 2);
+            for (kind, original_attention) in [
+                ("proposal", original_dismissed_attention),
+                ("codex-entry", original_flagged_attention),
+            ] {
+                let entry = changed_entries
+                    .iter()
+                    .find(|entry| entry.consumer_kind == kind)
+                    .expect("changed-basis entry remains visible");
+                assert!(!entry.attention_applies);
+                assert_eq!(entry.attention, original_attention);
+            }
             Ok(())
         })
         .expect("with_conn");
+    }
+
+    #[test]
+    fn terminal_failure_attention_applies_from_its_current_observation() {
+        let db = test_db();
+        let run_id = "run-terminal-attention";
+        let failure_code = "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION";
+        db.with_conn(|conn| {
+            let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                        (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                         status, coverage_json, created_at, run_kind, semantic_epoch_id,
+                         work_key, terminal_reason_code, completed_at)
+                     VALUES (?1, 'project-1', 'maintenance', '{}', '{}', 'digest', 'failed',
+                             '{}', '2026-08-15T00:00:00.000Z', 'backfill', ?2, ?3, ?4, NULL)",
+                params![
+                    run_id,
+                    epoch_id,
+                    crate::narrative_extraction::LEGACY_BACKFILL_WORK_KEY,
+                    failure_code,
+                ],
+            )?;
+            Ok(epoch_id)
+        })
+        .expect("seed terminal run");
+        crate::narrative_extraction::project_terminal_failure_for_run(
+            &db,
+            "project-1",
+            run_id,
+            "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: test failure",
+        )
+        .expect("project terminal failure");
+
+        let before_attention = db
+            .with_conn(|conn| {
+                build_maintenance_inbox(conn, "project-1", "2026-08-15T01:00:00.000Z")
+            })
+            .expect("build inbox without attention");
+        assert_eq!(before_attention.len(), 1);
+        assert!(!before_attention[0].attention_applies);
+        let finding_key = before_attention[0].finding_key.clone();
+        let material_basis_digest = before_attention[0]
+            .latest_observation
+            .as_ref()
+            .expect("terminal observation")
+            .material_basis_digest
+            .clone();
+        db.with_conn(|conn| {
+            set_attention_for_test(
+                conn,
+                "project-1",
+                &finding_key,
+                AttentionDisposition::Dismissed,
+                &material_basis_digest,
+                None,
+                "2026-08-15T01:00:00.000Z",
+                Some("user-1"),
+            )?;
+            Ok(())
+        })
+        .expect("set terminal attention");
+
+        let after_attention = db
+            .with_conn(|conn| {
+                build_maintenance_inbox(conn, "project-1", "2026-08-15T02:00:00.000Z")
+            })
+            .expect("build inbox with attention");
+        assert_eq!(after_attention.len(), 1);
+        assert_eq!(
+            after_attention[0].entry_kind,
+            InboxEntryKind::TerminalFailure
+        );
+        assert!(after_attention[0].attention_applies);
+        assert!(!after_attention[0].is_snoozed_and_active);
     }
 
     #[test]

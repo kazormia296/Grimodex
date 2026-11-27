@@ -46,9 +46,12 @@ import {
   classifyError,
   createAssistantRowReservation,
   createRetryableCompletedTurnPersistence,
+  createTurnRecovery,
   createSessionForCurrentRuntime,
   fetchRequiredProjectContext,
-  parseMetadataRecord,
+  isTruncatedStopReason,
+  agentContinuationReason,
+  streamAssistantMetadata,
   sendableHistory,
   turnErrorText,
 } from "./chatStoreSupport";
@@ -123,9 +126,7 @@ import type {
 } from "./chatTurnPreflight";
 import type { ChatTurnRuntime } from "./chatTurnRuntime";
 import type { ChatUserQuestionRuntime } from "./chatUserQuestionRuntime";
-import { advanceActiveLifecycleTransition } from "@/application/lifecycle/lifecycleTrace";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
-import { reserveChatMessageAdds } from "@/features/timelapse/captureChat";
 import { cliApi, codexAppApi } from "@/features/chat/lazyRuntimeApi";
 import {
   createChatTurnLifecycle,
@@ -216,28 +217,6 @@ function createChatTurnStoreActions(
     debugLog,
     errorDetail,
   });
-  const hasManualSessionTitleInStore = (sessionId: string): boolean => {
-    const currentSession = get().sessions.find(
-      (session) => session.id === sessionId,
-    );
-    return Boolean(currentSession && currentSession.titleManual !== 0);
-  };
-  const hasManualSessionTitle = async (
-    sessionId: string,
-    projectId: string,
-  ): Promise<boolean> => {
-    if (hasManualSessionTitleInStore(sessionId)) return true;
-
-    const persistedSession = await chatApi.getSessionForProject(
-      sessionId,
-      projectId,
-    );
-    return (
-      hasManualSessionTitleInStore(sessionId) ||
-      Boolean(persistedSession && persistedSession.titleManual !== 0)
-    );
-  };
-
   return {
     sendMessage: async (
       content: string,
@@ -325,76 +304,6 @@ function createChatTurnStoreActions(
         routeAuthorityKey: turnRouteAuthorityKey,
       });
       const sendTurnId = turnRequest.requestId;
-      const persistCompletedTurn = async (input: {
-        retry: () => Promise<void>;
-        sessionId: string;
-        userMetadata?: string;
-        assistantMessage?: ChatMessage;
-      }): Promise<void> => {
-        await turnRuntime.persistCompletedTurn({
-          turnId: sendTurnId,
-          workspaceIdentity: turnWorkspaceIdentity,
-          projectId: turnProjectId,
-          sessionId: input.sessionId,
-          userMessage: {
-            ...userMsg,
-            sessionId: input.sessionId,
-            content,
-            ...(input.userMetadata ? { metadata: input.userMetadata } : {}),
-          },
-          ...(input.assistantMessage
-            ? {
-                assistantMessage: {
-                  ...input.assistantMessage,
-                  sessionId: input.sessionId,
-                },
-              }
-            : {}),
-          onRegister: () => {
-            const reservation = reserveChatMessageAdds([
-              {
-                projectId: turnProjectId,
-                sessionId: input.sessionId,
-                messageId: userMsg.id,
-                role: "user",
-                text: content,
-                createdAt: userMsg.createdAt,
-              },
-              ...(input.assistantMessage
-                ? [
-                    {
-                      projectId: turnProjectId,
-                      sessionId: input.sessionId,
-                      messageId: input.assistantMessage.id,
-                      role: input.assistantMessage.role,
-                      text: input.assistantMessage.content,
-                      model: input.assistantMessage.model,
-                      createdAt: input.assistantMessage.createdAt,
-                    },
-                  ]
-                : []),
-            ]);
-            return {
-              onPersisted: reservation.commit,
-              onDiscarded: reservation.discard,
-            };
-          },
-          retry: async () => {
-            // A completed turn can predate a later retrying lifecycle. Emit
-            // both durability boundaries in whichever transition drains the
-            // retained old-scope payload.
-            advanceActiveLifecycleTransition("old-stream-completed");
-            try {
-              await input.retry();
-            } catch (error) {
-              throw error instanceof ChatTurnPersistenceError
-                ? error
-                : new ChatTurnPersistenceError(error);
-            }
-            advanceActiveLifecycleTransition("old-scope-persisted");
-          },
-        });
-      };
       const sendControl = createTurnControl({
         request: turnRequest,
         surface: useAgentPath ? "agent" : "chat",
@@ -690,116 +599,47 @@ function createChatTurnStoreActions(
       if (cancelBeforeTransport()) return;
       // Scope changes clear the live session list while the captured turn still
       // owns its persisted session and may need to finish its first title.
+      const recovery = createTurnRecovery({
+        runtime: turnRuntime,
+        turnId: sendTurnId,
+        workspaceIdentity: turnWorkspaceIdentity,
+        projectId: turnProjectId,
+        userMessage: userMsg,
+        content,
+        chatApi,
+        get,
+        getSessionId: () => sessionIdForPersist,
+        isCapturedWorkspaceCurrent: capturedWorkspaceIsCurrent,
+        isCapturedProjectCurrent: capturedProjectIsCurrent,
+        isCurrentTurn,
+        isAborted: () => sendControl.aborted,
+        transportStarted: () => transportStarted,
+        isAgentPath: useAgentPath,
+        transport: sendControl.transport,
+        chatScope,
+        scopeAnchorId,
+        options,
+        assistantMessage: assistantMsg,
+        getObservedResponseText: () => observedResponseText,
+        model: chatModelEarly,
+        routeModel: turnRoute?.model,
+        isAiFeatureBlockedByPolicy,
+        isWriteRestrictedByLicense,
+        classifyError,
+        aiFailureToastText,
+        toast,
+        i18next,
+        debugLog,
+        errorDetail,
+      });
+      const persistCompletedTurn = recovery.persistCompletedTurn;
+      const preserveFailedAnchoredTurn = recovery.preserveFailedAnchoredTurn;
+      const hasManualSessionTitleInStore =
+        recovery.hasManualSessionTitleInStore;
+      const hasManualSessionTitle = recovery.hasManualSessionTitle;
       const titleEligibleAtTurnStart =
         get().sessions.find((session) => session.id === sessionIdForPersist)
           ?.titleManual === 0;
-      const preserveFailedAnchoredTurn = async (
-        error: unknown,
-      ): Promise<boolean> => {
-        const current = get();
-        const anchoredScope =
-          chatScope === "folder" ||
-          chatScope === "codex" ||
-          chatScope === "snippet";
-        if (
-          !transportStarted ||
-          sendControl.aborted ||
-          !isCurrentTurn() ||
-          useAgentPath ||
-          sendControl.transport !== "http" ||
-          !sessionIdForPersist ||
-          !anchoredScope ||
-          !scopeAnchorId ||
-          current.chatScope !== chatScope ||
-          current.scopeAnchorId === null ||
-          current.scopeAnchorId === scopeAnchorId ||
-          current.activeProjectId !== turnProjectId ||
-          !capturedWorkspaceIsCurrent() ||
-          !capturedProjectIsCurrent() ||
-          isAiFeatureBlockedByPolicy("chat") ||
-          isWriteRestrictedByLicense()
-        ) {
-          return false;
-        }
-
-        if (error instanceof ChatTurnPersistenceError) {
-          toast.error(i18next.t("chat.pendingCompletedTurnPersistence"));
-          return true;
-        }
-
-        const failureMessage =
-          error instanceof Error ? error.message : String(error);
-        const userMetadata =
-          options?.mentionedSceneIds && options.mentionedSceneIds.length > 0
-            ? JSON.stringify({
-                mentioned_scene_ids: options.mentionedSceneIds,
-              })
-            : undefined;
-        const failedAssistant = observedResponseText
-          ? {
-              ...assistantMsg,
-              sessionId: sessionIdForPersist,
-              content: observedResponseText,
-              model: turnRoute?.model ?? chatModelEarly ?? null,
-              metadata: JSON.stringify({ runtime_error: failureMessage }),
-            }
-          : undefined;
-        const retry = createRetryableCompletedTurnPersistence({
-          persistUser: async () => {
-            await chatApi.addMessage(sessionIdForPersist, "user", content, {
-              id: userMsg.id,
-              createdAt: userMsg.createdAt,
-              recordTimelapse: false,
-              ...(userMetadata ? { metadata: userMetadata } : {}),
-            });
-          },
-          ...(failedAssistant
-            ? {
-                persistAssistant: async () => {
-                  await chatApi.addMessage(
-                    sessionIdForPersist,
-                    "assistant",
-                    failedAssistant.content,
-                    {
-                      id: failedAssistant.id,
-                      model: failedAssistant.model ?? undefined,
-                      metadata: failedAssistant.metadata ?? undefined,
-                      createdAt: failedAssistant.createdAt,
-                      recordTimelapse: false,
-                    },
-                  );
-                },
-              }
-            : {}),
-        });
-        try {
-          await persistCompletedTurn({
-            retry,
-            sessionId: sessionIdForPersist,
-            ...(userMetadata ? { userMetadata } : {}),
-            ...(failedAssistant ? { assistantMessage: failedAssistant } : {}),
-          });
-        } catch (persistenceError) {
-          debugLog.error(
-            "ChatStore",
-            "preserve failed anchored turn",
-            errorDetail(persistenceError),
-          );
-          toast.error(i18next.t("chat.pendingCompletedTurnPersistence"));
-        }
-
-        const kind = classifyError(error);
-        if (kind === "auth") {
-          toast.error(i18next.t("chat.invalidApiKey"));
-        } else if (kind === "rate_limit") {
-          toast.warning(i18next.t("chat.rateLimited"));
-        } else if (kind === "network") {
-          toast.error(i18next.t("chat.networkError"));
-        } else {
-          toast.error(aiFailureToastText("chat.sendFailed", failureMessage));
-        }
-        return true;
-      };
       // -----------------------------------------------------------------------
       // Agent mode path — tool-use loop
       //
@@ -826,119 +666,31 @@ function createChatTurnStoreActions(
         });
         const canFinalizeStoppedAgentTurn = (): boolean =>
           sendControl.aborted && isCurrentTurn() && transportStarted;
-        const finalizeStoppedAgentTurnAfterTransport =
-          async (): Promise<boolean> => {
-            if (!canFinalizeStoppedAgentTurn()) return false;
-
-            const assistant = get().messages.find(
-              (message) => message.id === assistantMsg.id,
-            );
-            const metadata = parseMetadataRecord(assistant?.metadata);
-            const stoppedMetadata = JSON.stringify({
-              ...metadata,
-              stopped: true,
-            });
-            set((s) => ({
-              messages: s.messages.map((message) =>
-                message.id === assistantMsg.id
-                  ? { ...message, metadata: stoppedMetadata }
-                  : message,
-              ),
-            }));
-
-            const userMetadata =
-              options?.mentionedSceneIds && options.mentionedSceneIds.length > 0
-                ? JSON.stringify({
-                    mentioned_scene_ids: options.mentionedSceneIds,
-                  })
-                : undefined;
-            const promptSnapshot =
-              sentSystemPromptForAgent || systemPromptForAgent;
-            const latestAssistant = get().messages.find(
-              (message) => message.id === assistantMsg.id,
-            );
-            const recoverableStoppedAssistant =
-              latestAssistant?.role === "assistant" &&
-              latestAssistant.content &&
-              sessionIdForPersist
-                ? {
-                    ...latestAssistant,
-                    sessionId: sessionIdForPersist,
-                    model: currentAgentModel || null,
-                    metadata: stoppedMetadata,
-                  }
-                : undefined;
-            turnCoordinator.transition(sendControl, "persisting");
-            const persistStoppedAgentTurn =
-              createRetryableCompletedTurnPersistence({
-                persistUser: async () => {
-                  if (!sessionIdForPersist) return;
-                  await chatApi.addMessage(
-                    sessionIdForPersist,
-                    "user",
-                    content,
-                    {
-                      id: userMsg.id,
-                      createdAt: userMsg.createdAt,
-                      recordTimelapse: false,
-                      ...(userMetadata ? { metadata: userMetadata } : {}),
-                    },
-                  );
-                  if (promptSnapshot) {
-                    void chatApi
-                      .saveMessagePrompt(userMsg.id, {
-                        systemPrompt: promptSnapshot,
-                        layers: sentAgentContextLayers,
-                        totalTokens: sentAgentContextTokenCount,
-                        model: currentAgentModel || null,
-                        provider: turnRoute?.provider ?? null,
-                        contextWindow: turnRoute?.contextWindow ?? null,
-                      })
-                      .catch((error) =>
-                        debugLog.warn(
-                          "ChatStore",
-                          "saveMessagePrompt",
-                          errorDetail(error),
-                        ),
-                      );
-                  }
-                },
-                ...(sessionIdForPersist &&
-                (latestAssistant?.content || assistantRow.reserved)
-                  ? {
-                      persistAssistant: async () => {
-                        await assistantRow.persist(
-                          sessionIdForPersist,
-                          latestAssistant?.content ?? "",
-                          {
-                            model: currentAgentModel || undefined,
-                            metadata: stoppedMetadata,
-                          },
-                        );
-                        await commitAssistantReplacement();
-                      },
-                    }
-                  : {}),
-              });
-            try {
-              await persistCompletedTurn({
-                retry: persistStoppedAgentTurn,
-                sessionId: sessionIdForPersist,
-                ...(userMetadata ? { userMetadata } : {}),
-                ...(recoverableStoppedAssistant
-                  ? { assistantMessage: recoverableStoppedAssistant }
-                  : {}),
-              });
-            } catch (error) {
-              debugLog.warn(
-                "ChatStore",
-                "persist stopped agent turn",
-                errorDetail(error),
-              );
-              throw error;
-            }
-            return true;
-          };
+        const finalizeStoppedAgentTurnAfterTransport = (): Promise<boolean> =>
+          recovery.finalizeStoppedAgentTurnAfterTransport({
+            canFinalize: canFinalizeStoppedAgentTurn,
+            get,
+            set,
+            assistantMessageId: assistantMsg.id,
+            getSessionId: () => sessionIdForPersist,
+            options,
+            userMessage: userMsg,
+            content,
+            getPromptSnapshot: () => sentSystemPromptForAgent,
+            getSystemPrompt: () => systemPromptForAgent,
+            getLayers: () => sentAgentContextLayers,
+            getTokenCount: () => sentAgentContextTokenCount,
+            getModel: () => currentAgentModel,
+            route: turnRoute,
+            chatApi,
+            assistantRow,
+            persistCompletedTurn,
+            commitAssistantReplacement,
+            turnCoordinator,
+            sendControl,
+            debugLog,
+            errorDetail,
+          });
         try {
           const projectCtx = await fetchRequiredProjectContext(turnProjectId);
           if (cancelBeforeTransport()) return;
@@ -1358,7 +1110,7 @@ function createChatTurnStoreActions(
             cost,
             tokensIn: agentTokensIn,
             tokensOut: agentTokensOut,
-            stoppedReason: agentStoppedReason,
+            outputTruncated,
           } = agentLoopResult;
 
           const stoppedAgentTurnCanFinalize = canFinalizeStoppedAgentTurn();
@@ -1370,13 +1122,14 @@ function createChatTurnStoreActions(
             return await assistantRow.settleAbandoned(currentAgentModel);
           }
 
-          // 上限で打ち切られたターンには「続行」ボタンを出す。質問上限(ask_user)は
-          // 続行対象外（ユーザー回答待ちで止まる性質なので新予算で再開しても無意味）。
-          if (
-            agentStoppedReason === "limit_calls" ||
-            agentStoppedReason === "limit_tokens"
-          ) {
-            set({ agentContinuation: { sessionId: sessionIdForPersist } });
+          const reason = agentContinuationReason(
+            agentLoopResult,
+            agentModeForThisSend && !stoppedAgentTurnCanFinalize,
+          );
+          if (reason) {
+            set({
+              agentContinuation: { sessionId: sessionIdForPersist, reason },
+            });
           }
 
           // 引用の事後検証: 不正 URL を排除 + 本文中の裏付けなし URL を検出。
@@ -1398,6 +1151,7 @@ function createChatTurnStoreActions(
           const finalAgentMetadata = JSON.stringify({
             tool_calls: toolCallRecords,
             ...(stoppedAgentTurnCanFinalize ? { stopped: true } : {}),
+            ...(outputTruncated ? { output_truncated: true } : {}),
             ...(finalThinkingBlocks.length > 0
               ? { thinking_blocks: finalThinkingBlocks }
               : {}),
@@ -1434,7 +1188,7 @@ function createChatTurnStoreActions(
           const agentModel = currentModel || undefined;
           const recoverableAgentAssistant =
             lastMsg?.role === "assistant" &&
-            lastMsg.content &&
+            (lastMsg.content || outputTruncated) &&
             sessionIdForPersist
               ? {
                   ...lastMsg,
@@ -1476,7 +1230,8 @@ function createChatTurnStoreActions(
               }
             },
             ...(sessionIdForPersist &&
-            (lastMsg?.content || assistantRow.reserved)
+            lastMsg?.role === "assistant" &&
+            (lastMsg.content || assistantRow.reserved || outputTruncated)
               ? {
                   persistAssistant: async () => {
                     await assistantRow.persist(
@@ -2063,40 +1818,21 @@ function createChatTurnStoreActions(
                   : null,
               });
 
-              // Build metadata: thinking blocks + stopped flag
-              const metadataObj: Record<string, unknown> = {};
-              if (thinkingAccumulator) {
-                metadataObj.thinking_blocks = [
-                  { thinking: thinkingAccumulator },
-                ];
-              }
-              if (sendControl.transport === "codex-app-server") {
-                metadataObj.runtime = "codex-app-server";
-                metadataObj.usage_source = "app-server";
-                metadataObj.stop_reason = info.stopReason;
-                if (codexThreadId) metadataObj.codex_thread_id = codexThreadId;
-                if (codexTurnId) metadataObj.codex_turn_id = codexTurnId;
-                if (codexItems.size > 0) {
-                  metadataObj.codex_item_ids = [...codexItems.keys()];
-                  metadataObj.codex_items = [...codexItems.values()].map(
-                    (item) => {
-                      const safeItem = { ...item };
-                      delete safeItem.raw;
-                      return safeItem;
-                    },
-                  );
-                }
-                if (codexWarnings.length > 0) {
-                  metadataObj.codex_warnings = codexWarnings;
-                }
-              }
-              if (info.stopReason === "stopped") {
-                metadataObj.stopped = true;
-              }
-              const chatMetadata =
-                Object.keys(metadataObj).length > 0
-                  ? JSON.stringify(metadataObj)
-                  : undefined;
+              // Build metadata: thinking blocks + codex records + stop flags
+              const outputTruncated = isTruncatedStopReason(info.stopReason);
+              const chatMetadata = streamAssistantMetadata({
+                stopReason: info.stopReason,
+                thinking: thinkingAccumulator,
+                codex:
+                  sendControl.transport === "codex-app-server"
+                    ? {
+                        threadId: codexThreadId,
+                        turnId: codexTurnId,
+                        items: codexItems,
+                        warnings: codexWarnings,
+                      }
+                    : null,
+              });
 
               // draft を一度だけ確定 messages へ移し、以後は通常 message として扱う。
               finalizeStreamingDraft(chatMetadata);
@@ -2158,7 +1894,7 @@ function createChatTurnStoreActions(
               turnCoordinator.transition(sendControl, "persisting");
               const recoverableAssistant =
                 lastMsg?.role === "assistant" &&
-                lastMsg.content &&
+                (lastMsg.content || outputTruncated) &&
                 sessionIdForPersist
                   ? {
                       ...lastMsg,
@@ -2207,7 +1943,7 @@ function createChatTurnStoreActions(
                 },
                 ...(sessionIdForPersist &&
                 lastMsg?.role === "assistant" &&
-                lastMsg.content
+                (lastMsg.content || outputTruncated)
                   ? {
                       persistAssistant: async () => {
                         await chatApi.addMessage(

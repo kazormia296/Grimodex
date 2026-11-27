@@ -33,6 +33,7 @@ import { isAgentForeshadowSecretInputSupported } from "../shared/agentForeshadow
 import {
   hasMastraAgentTurnForbiddenKey,
   isMastraAgentTurnCommand,
+  MASTRA_AGENT_TURN_ANSWER_COMMAND,
   mastraAgentTurnRefusalValue,
 } from "../shared/mastraAgentTurnWire.js";
 import type {
@@ -161,6 +162,9 @@ const RENDERER_CHRONICLE_COMMANDS = new Set([
 ]);
 
 const HUMAN_ONLY_CANONICAL_WRITER_COMMANDS = new Set([
+  // entity_tags_set stays in this set so that an origin without a route is
+  // still blanked (bound) below; authorityRouteForRendererCommand gives it
+  // import-apply as well, before the human-only branch.
   "entity_tags_set",
   "project_create",
   "project_patch",
@@ -382,6 +386,26 @@ function hasRendererHistoryJournal(
   );
 }
 
+function postprocessSuccessfulWriter(
+  cmd: string,
+  args: CommandArgs,
+  value: unknown,
+  senderId: number,
+  wakeRelatedScenes: () => void,
+): void {
+  if (RELATED_SCENES_MUTATION_WAKE_COMMANDS.has(cmd)) wakeRelatedScenes();
+  if (!HISTORY_JOURNAL_WRITER_COMMANDS.has(cmd) || !isRecord(value)) return;
+  const payload = isRecord(args.payload) ? args.payload : args;
+  const projectId = payload.projectId;
+  const journalId = value.undoJournalId;
+  if (
+    isNonEmptyTrimmedString(projectId) &&
+    isNonEmptyTrimmedString(journalId)
+  ) {
+    recordRendererHistoryJournalForIpc(senderId, projectId, journalId);
+  }
+}
+
 function isNonEmptyTrimmedString(value: unknown): value is string {
   return (
     typeof value === "string" &&
@@ -390,7 +414,7 @@ function isNonEmptyTrimmedString(value: unknown): value is string {
   );
 }
 
-function agentToolRequestId(
+export function agentAuthorityRequestId(
   toolName: string,
   projectId: string,
   toolCallId: string,
@@ -1609,7 +1633,8 @@ function bindMainOwnedAgentMutation(
   return bound;
 }
 
-async function issueAgentAuthorityCapabilitiesForSender(
+/** Main-only authority issuer shared by the legacy invoke and Mastra turn loop. */
+export async function issueAgentAuthorityCapabilitiesForSender(
   senderId: number,
   args: CommandArgs,
   response: unknown,
@@ -1666,7 +1691,7 @@ async function issueAgentAuthorityCapabilitiesForSender(
     const now = Date.now();
     const token = randomUUID();
     const mainOwnedProvenanceId = randomUUID();
-    const requestId = agentToolRequestId(toolName, projectId, toolCallId);
+    const requestId = agentAuthorityRequestId(toolName, projectId, toolCallId);
     const expectedEntityId = mainOwnedEntityId(toolName, requestId);
     agentAuthorityCapabilities.set(token, {
       senderId,
@@ -1698,7 +1723,8 @@ async function issueAgentAuthorityCapabilitiesForSender(
   return { ...response, agentAuthorityCapabilities: issued };
 }
 
-function consumeAgentAuthorityCapability(
+/** Main-only one-shot capability consumer shared by renderer and Main writers. */
+export function consumeAgentAuthorityCapability(
   cmd: string,
   payload: CommandArgs,
   senderId: number,
@@ -1747,6 +1773,20 @@ function consumeAgentAuthorityCapability(
   return bindMainOwnedAgentMutation(payload, record) ? record : null;
 }
 
+/** Consumes one grant and returns its main-bound Native payload. */
+export function consumeAndBindAgentAuthorityCapability(
+  cmd: string,
+  payload: CommandArgs,
+  senderId: number,
+): CommandArgs | null {
+  if (!Number.isInteger(senderId)) return null;
+  const args = bindRendererAuthorityForIpc(cmd, { payload }, senderId);
+  return isRecord(args.payload) &&
+    args.payload.authorityRoute === "interactive-agent-command"
+    ? args.payload
+    : null;
+}
+
 function authorityRouteForUnambiguousOrigin(
   origin: unknown,
   allowedRoutes?: readonly CanonicalAuthorityRoute[],
@@ -1771,6 +1811,9 @@ function authorityRouteForUnambiguousOrigin(
     ? route
     : undefined;
 }
+
+/** index.ts は ./ の import だけを使う（rendererContainment.startupOrder の試験の前提）ので、ここから型を再 export する。 */
+export type { CommandArgs };
 
 export type ExtraShellHandlers =
   | ShellCommandHandlers
@@ -1940,6 +1983,16 @@ function authorityRouteForRendererCommand(
 
   if (IMPORT_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd)) {
     return authorityRouteForUnambiguousOrigin(payload.origin, ["import-apply"]);
+  }
+
+  // The Codex import sets an imported entry's tags in the same import session
+  // as the entry itself (importApi.ts), so the tag writer takes import-apply
+  // as well as human-direct, like the other typed writers the import uses.
+  if (cmd === "entity_tags_set") {
+    return authorityRouteForUnambiguousOrigin(payload.origin, [
+      "human-direct",
+      "import-apply",
+    ]);
   }
 
   if (HUMAN_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd)) {
@@ -2251,6 +2304,13 @@ export function registerIpcRouter(
     reportFailure: () =>
       console.warn("[related-scenes] Native generation reconciliation failed"),
   });
+  if (typeof mastraTurnOwner?.setSuccessfulWriteProcessor === "function") {
+    mastraTurnOwner.setSuccessfulWriteProcessor((cmd, args, value, senderId) =>
+      postprocessSuccessfulWriter(cmd, args, value, senderId, () =>
+        relatedScenesReconciler.wake(),
+      ),
+    );
+  }
   const relatedScenesAuthority = createRelatedScenesSearchAuthority({
     releaseOwner: (ownerKey) => {
       relatedScenesReconciler.releaseOwner(ownerKey);
@@ -2336,7 +2396,8 @@ export function registerIpcRouter(
         // Main's (the identity below replaces `callerIdentity`, so it is read
         // here, before that).
         const mastraForgedKey =
-          isMastraAgentTurnCommand(cmd) &&
+          (isMastraAgentTurnCommand(cmd) ||
+            cmd === MASTRA_AGENT_TURN_ANSWER_COMMAND) &&
           hasMastraAgentTurnForbiddenKey(rendererSafeArgs);
         const callerIdentity = profileEgress?.issueCallerIdentity(
           event.sender.id,
@@ -2426,6 +2487,9 @@ export function registerIpcRouter(
             };
           }
         }
+        if (cmd === MASTRA_AGENT_TURN_ANSWER_COMMAND && mastraForgedKey) {
+          return { ok: true, value: { status: "refused", reason: "invalid" } };
+        }
         const dispatch = async (args = dispatchArgs): Promise<Envelope> => {
           // D-10 (DR-DA2-18): an admitted stream is recorded until its invoke
           // settles, so stage 2 can send it a typed terminal.
@@ -2437,7 +2501,8 @@ export function registerIpcRouter(
               shell: {
                 ...buildShellCommandHandlers(win),
                 ...injectedHandlers,
-                ...(isMastraAgentTurnCommand(cmd)
+                ...(isMastraAgentTurnCommand(cmd) ||
+                cmd === MASTRA_AGENT_TURN_ANSWER_COMMAND
                   ? mastraAgentTurn.handlersFor({
                       sender: event.sender,
                       win,
@@ -2813,8 +2878,14 @@ export function registerIpcRouter(
             );
           }
         }
-        if (envelope.ok && RELATED_SCENES_MUTATION_WAKE_COMMANDS.has(cmd)) {
-          relatedScenesReconciler.wake();
+        if (envelope.ok) {
+          postprocessSuccessfulWriter(
+            cmd,
+            boundArgs,
+            envelope.value,
+            event.sender.id,
+            () => relatedScenesReconciler.wake(),
+          );
         }
         if (
           narrativeMaintenanceCiSeam.active &&
@@ -2840,27 +2911,6 @@ export function registerIpcRouter(
                 claimedRunId,
               );
             }
-          }
-        }
-        if (
-          envelope.ok &&
-          HISTORY_JOURNAL_WRITER_COMMANDS.has(cmd) &&
-          isRecord(envelope.value)
-        ) {
-          const payload = isRecord(boundArgs.payload)
-            ? boundArgs.payload
-            : boundArgs;
-          const projectId = payload.projectId;
-          const journalId = envelope.value.undoJournalId;
-          if (
-            isNonEmptyTrimmedString(projectId) &&
-            isNonEmptyTrimmedString(journalId)
-          ) {
-            recordRendererHistoryJournalForIpc(
-              event.sender.id,
-              projectId,
-              journalId,
-            );
           }
         }
         if (workspaceSwitchLeases.length > 0) {

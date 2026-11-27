@@ -19,6 +19,56 @@ use super::*;
 /// replace, is in `PARK_COLUMNS`.
 const NOT_PARKED: &[(&str, &str, &str)] = &[
     (
+        "identity_correction_rule_revisions",
+        "project_id",
+        "project-owned immutable ERM history is outside every partial-restore scope",
+    ),
+    (
+        "identity_lineage_operations",
+        "project_id",
+        "project and composite same-project operation links stay outside partial-restore scopes",
+    ),
+    (
+        "identity_lineage_operations",
+        "undoes_operation_id",
+        "lineage undo links point only to immutable operations outside restore scopes",
+    ),
+    (
+        "identity_lineage_mappings",
+        "operation_id",
+        "lineage mappings cascade only with immutable operations outside restore scopes",
+    ),
+    (
+        "identity_lineage_reference_assignments",
+        "operation_id",
+        "reference assignments cascade only with immutable operations outside restore scopes",
+    ),
+    (
+        "identity_correction_applications",
+        "project_id",
+        "project-owned application history is outside every partial-restore scope",
+    ),
+    (
+        "identity_correction_applications",
+        "origin_proposal_revision_id",
+        "application history follows proposal revisions, which partial restore does not delete",
+    ),
+    (
+        "identity_correction_applications",
+        "input_proposal_revision_id",
+        "application history follows proposal revisions, which partial restore does not delete",
+    ),
+    (
+        "identity_correction_applications",
+        "output_proposal_revision_id",
+        "application history follows proposal revisions, which partial restore does not delete",
+    ),
+    (
+        "identity_correction_applications",
+        "rule_revision_id",
+        "application history follows rule revisions, which partial restore does not delete",
+    ),
+    (
         "change_events",
         "scene_id",
         "a protected table: parked by RestoreSceneIdParking (DR-SRX-9)",

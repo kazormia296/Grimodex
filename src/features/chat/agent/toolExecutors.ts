@@ -53,6 +53,7 @@ import {
 } from "@/features/agent-writes/codex";
 import { agentCreateSnippet } from "@/features/agent-writes/snippet";
 import { agentMarkdownToProseMirrorJson } from "@/features/agent-writes/richTextInput";
+import { normalizeMastraAgentWriteInput } from "@/../electron/shared/agentWriteNormalization";
 import {
   agentCreateForeshadow,
   agentUpdateForeshadow,
@@ -118,6 +119,7 @@ type ChronicleCandidates =
 async function chronicleCandidates(
   params: Record<string, unknown>,
   scope?: ChatTurnToolScope,
+  turnSceneId?: string | null,
 ): Promise<ChronicleCandidates> {
   const query = String(params["query"] ?? "").trim();
   if (!query)
@@ -131,8 +133,7 @@ async function chronicleCandidates(
       },
     };
 
-  // 基準の project・Scene は IR の位置 filter と近似に使う。
-  // turn の文脈（scope）があればその値、無ければ今の tree store。
+  // project は IR scope、Scene は turn 固定値があればそれ、無ければ scope/store を使う。
   const projectId = chronicleProjectId(scope);
   if (!projectId)
     return {
@@ -159,8 +160,8 @@ async function chronicleCandidates(
   const sceneEvents = await getSharedSceneEvents(projectId);
   const nodes = useTreeStore.getState().nodes;
   const readingOrder = getSharedReadingOrder(nodes);
-  // scope が無い呼び手は、従来どおり await の後で今の Scene を読む（定数 false の間は今と同一）。
-  const currentSceneId = chronicleSceneId(scope);
+  // scene pin が無い呼び手だけ、従来どおり await の後で今の Scene を読む。
+  const currentSceneId = chronicleSceneId(scope, turnSceneId);
   const visible = hits
     // 位置の filter（chat IR S1-B）。slice(limit) の前。
     // 定数が false の間は掛けない（今の挙動のまま）。
@@ -254,16 +255,19 @@ function chronicleEntries(
  */
 async function searchEvents(
   params: Record<string, unknown>,
-  scope?: ChatTurnToolScope,
+  context?: ChatToolRunContext,
 ): Promise<Omit<ToolResult, "toolCallId">> {
-  // 旗が false で scope なしの呼出しは read core へ（MP-4b PR-7b、DR-MP4-38）。旗は呼出しごとに評価する
-  // （`READ_ONLY_EXECUTORS` が load 時に 1 度作られることと混同しない）。scope があるときは、旗が false の
-  // 試験でも今までどおり下の経路（scope の project・場面で動く）。`scope` の真偽は `chronicleProjectId` と同じ。
-  if (!CHAT_AGENT_IR_ENABLED && !scope) return chronicleSearchExecutor(params);
-  const candidates = await chronicleCandidates(params, scope);
+  // No IR scope: preserve the shared core path, while pinning its Chronicle ports to the turn scene.
+  if (!CHAT_AGENT_IR_ENABLED && !context?.scope)
+    return chronicleSearchExecutor(params, context?.currentSceneId);
+  const candidates = await chronicleCandidates(
+    params,
+    context?.scope,
+    context?.currentSceneId,
+  );
   if (candidates.kind === "empty") return candidates.result;
   const pool =
-    CHAT_AGENT_IR_ENABLED && scope
+    CHAT_AGENT_IR_ENABLED && context?.scope
       ? candidates.visible.filter(candidates.passesApproximation)
       : candidates.visible;
   const content = chronicleEntries(pool, candidates.limit, candidates.revealOf);
@@ -282,10 +286,15 @@ function chronicleProjectId(scope?: ChatTurnToolScope): string | null {
 }
 
 /** search_events の基準の Scene。scope が無ければ読んだ時点の tree store を使う。 */
-function chronicleSceneId(scope?: ChatTurnToolScope): string {
-  return scope
-    ? (scope.currentSceneId ?? "")
-    : (useTreeStore.getState().activeSceneId ?? "");
+function chronicleSceneId(
+  scope?: ChatTurnToolScope,
+  turnSceneId?: string | null,
+): string {
+  return turnSceneId !== undefined
+    ? (turnSceneId ?? "")
+    : scope
+      ? (scope.currentSceneId ?? "")
+      : (useTreeStore.getState().activeSceneId ?? "");
 }
 
 /**
@@ -341,9 +350,13 @@ async function searchEventsWithIr(
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const ir = context?.ir;
   if (!CHAT_AGENT_IR_ENABLED || !ir) {
-    return searchEvents(params, context?.scope);
+    return searchEvents(params, context);
   }
-  const candidates = await chronicleCandidates(params, context.scope);
+  const candidates = await chronicleCandidates(
+    params,
+    context.scope,
+    context.currentSceneId,
+  );
   // 空の query・project 無しは、年表の側の応答（空の配列）のまま返す。
   if (candidates.kind === "empty") return candidates.result;
   const { query, projectId, currentSceneId, visible, revealOf } = candidates;
@@ -469,31 +482,12 @@ async function searchEventsWithIr(
 // Mutating executors (knowledgeWrite policy gated)
 // ---------------------------------------------------------------------------
 
-const MAX_CODEX_ALIASES = 100;
-const MAX_CODEX_ALIAS_BYTES = 64_000;
-
 function optionalMarkdownBody(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "string") {
     throw new Error("content must be a Markdown string");
   }
   return agentMarkdownToProseMirrorJson(value);
-}
-
-function optionalAliases(value: unknown): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
-    throw new Error("aliases must be an array of strings");
-  }
-  if (value.length > MAX_CODEX_ALIASES) {
-    throw new Error(`aliases must contain at most ${MAX_CODEX_ALIASES} items`);
-  }
-  const aliases = value.map((item) => item.trim()).filter(Boolean);
-  const serialized = JSON.stringify(aliases);
-  if (new TextEncoder().encode(serialized).byteLength > MAX_CODEX_ALIAS_BYTES) {
-    throw new Error(`aliases exceed ${MAX_CODEX_ALIAS_BYTES} bytes`);
-  }
-  return serialized;
 }
 
 async function createCodexEntryTool(
@@ -513,6 +507,10 @@ async function createCodexEntryTool(
     };
   }
   try {
+    const normalized = normalizeMastraAgentWriteInput(
+      "create_codex_entry",
+      params,
+    );
     if (!requestId) {
       throw new Error("create_codex_entry request identity is missing");
     }
@@ -522,8 +520,11 @@ async function createCodexEntryTool(
         type,
         name,
         summary: params["summary"] ? String(params["summary"]) : undefined,
-        content: optionalMarkdownBody(params["content"]),
-        aliases: optionalAliases(params["aliases"]),
+        content:
+          params["content"] === null
+            ? undefined
+            : (normalized["content"] as string | undefined),
+        aliases: normalized["aliases"] as string | undefined,
         parentId: params["parentId"] ? String(params["parentId"]) : undefined,
       },
       authorization?.chatMessageId,
@@ -576,6 +577,10 @@ async function updateCodexEntryTool(
     };
   }
   try {
+    const normalized = normalizeMastraAgentWriteInput(
+      "update_codex_entry",
+      params,
+    );
     const entry = await agentUpdateCodexEntry(
       {
         requestId,
@@ -587,9 +592,11 @@ async function updateCodexEntryTool(
             : undefined,
         content:
           params["content"] !== undefined
-            ? optionalMarkdownBody(params["content"])
+            ? params["content"] === null
+              ? undefined
+              : (normalized["content"] as string)
             : undefined,
-        aliases: optionalAliases(params["aliases"]),
+        aliases: normalized["aliases"] as string | undefined,
       },
       authorization?.chatMessageId,
       {
@@ -742,23 +749,20 @@ const CODEX_NO_PROJECT_CONTENT: Record<CodexReadToolName, () => unknown> = {
 };
 
 /**
- * 4 本の executor。scope があるときは、現在の場面を scope の値にした ctx を**呼出しごとに**作る
- * （作るだけでは何も読まない）。**projectId は scope でなく今までどおり store**（legacy の非対称を保つ。
- * scope の `currentSceneId`（null がありうる）はそのまま `activeSceneId` に渡す：null・空・空白だけは、
- * core の判定が「場面を解決できない」として同じに扱う）。scope は `CHAT_AGENT_IR_ENABLED` が false の間
- * 作られない（`chatAgentToolHandlers.ts` の生成の手前の分岐）ので到達しないが、特性試験が固定している
- * （DR-MP4-21：閉じた経路は renderer の薄い層が自分の分岐を持つ）。
+ * 4 本の executor。turn scene があればその値にした ctx を呼出しごとに作る
+ * （作るだけでは何も読まない）。projectId は今までどおり store から読む。
+ * null・空・空白だけの scene は core が「場面を解決できない」として同じに扱う。
  */
 function codexReadExecutor(name: CodexReadToolName): Executor {
   return async (params, _requestId, _authorization, context) => {
-    const scope = context?.scope;
+    const currentSceneId = turnSceneId(context);
     const run = (
-      scope
+      currentSceneId !== undefined
         ? createCodexReadExecutors({
             ...LEGACY_CODEX_READ_CONTEXT,
             getTreeState: () => ({
               ...useTreeStore.getState(),
-              activeSceneId: scope.currentSceneId,
+              activeSceneId: currentSceneId,
             }),
           })
         : CORE_CODEX_EXECUTORS
@@ -779,23 +783,24 @@ function codexReadExecutor(name: CodexReadToolName): Executor {
   };
 }
 
-/** `get_codex_entry` は scope の場面と store の project を既存の読取規則のまま渡す。 */
+/** `get_codex_entry` は turn scene と store の project を既存の読取規則のまま渡す。 */
 function codexEntryExecutor(): Executor {
   return async (params, _requestId, _authorization, context) => {
-    const scope = context?.scope;
+    const currentSceneId = turnSceneId(context);
     let scopedTreeState: ReturnType<typeof useTreeStore.getState> | undefined;
-    const run = scope
-      ? createCodexEntryExecutors({
-          ...LEGACY_CODEX_ENTRY_CONTEXT,
-          getTreeState: () => {
-            scopedTreeState ??= useTreeStore.getState();
-            return {
-              ...scopedTreeState,
-              activeSceneId: scope.currentSceneId,
-            };
-          },
-        }).get_codex_entry
-      : CORE_CODEX_ENTRY_EXECUTORS.get_codex_entry;
+    const run =
+      currentSceneId !== undefined
+        ? createCodexEntryExecutors({
+            ...LEGACY_CODEX_ENTRY_CONTEXT,
+            getTreeState: () => {
+              scopedTreeState ??= useTreeStore.getState();
+              return {
+                ...scopedTreeState,
+                activeSceneId: currentSceneId,
+              };
+            },
+          }).get_codex_entry
+        : CORE_CODEX_ENTRY_EXECUTORS.get_codex_entry;
     try {
       return await run(params);
     } catch (e) {
@@ -810,6 +815,14 @@ function codexEntryExecutor(): Executor {
       throw e;
     }
   };
+}
+
+function turnSceneId(
+  context?: ChatToolRunContext | ChatReadOnlyToolRunContext,
+): string | null | undefined {
+  return context?.currentSceneId !== undefined
+    ? context.currentSceneId
+    : context?.scope?.currentSceneId;
 }
 
 /**
@@ -853,7 +866,7 @@ export const READ_ONLY_EXECUTORS: Record<string, Executor> = {
   get_character_timeline: getCharacterTimelineTool,
   get_chronicle_state: getChronicleStateTool,
   search_events: (params, _requestId, _authorization, context) =>
-    searchEvents(params, context?.scope),
+    searchEvents(params, context),
   // アプリの使い方ヘルプ。実装（ヘルプ文書・locale の展開）は初回の呼び出しで読む。
   get_app_help_index: async (params) =>
     (await import("./appHelpTools")).getAppHelpIndexTool(params),
@@ -1123,7 +1136,11 @@ async function updateForeshadowTool(
       error: UNSUPPORTED_FORESHADOW_SECRET_ERROR,
     };
   }
-  const id = String(params["id"] ?? "").trim();
+  const id = String(
+    normalizeMastraAgentWriteInput("update_foreshadow", params)[
+      "foreshadowId"
+    ] ?? "",
+  ).trim();
   if (!id) {
     return {
       name: "update_foreshadow",

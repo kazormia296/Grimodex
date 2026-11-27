@@ -84,6 +84,17 @@ function aiNovelistFallback(model: string): number {
   return 400;
 }
 
+/**
+ * thinking が既定で常に働く Anthropic の世代（Fable／Mythos の全版、Opus／Sonnet／Haiku の
+ * 5 以降）。thinking の切替が off でも考えるので、request に thinking が無くても上限を
+ * 広げる。Rust の `anthropic_model_thinking_always_on` と同じ規則にする。
+ */
+export function anthropicThinkingAlwaysOn(model: string): boolean {
+  return /^claude-(?:fable-|mythos-|(?:opus|sonnet|haiku)-(?:[5-9]|\d\d))/.test(
+    modelBasename(model),
+  );
+}
+
 function manualThinkingBudget(thinking?: ThinkingLike): number | null {
   if (thinking?.thinking?.type !== "enabled") return null;
   const value =
@@ -102,23 +113,13 @@ export function resolveOutputBudgetPlan(
   input: ResolveOutputBudgetPlanInput,
 ): OutputBudgetPlan {
   requirePositiveSafeInteger(input.contextWindow, "contextWindow");
-  if (input.modelMaxOutputTokens !== undefined) {
-    requirePositiveSafeInteger(
-      input.modelMaxOutputTokens,
-      "modelMaxOutputTokens",
-    );
-  }
-  if (input.defaultVisibleOutputTokens !== undefined) {
-    requirePositiveSafeInteger(
-      input.defaultVisibleOutputTokens,
-      "defaultVisibleOutputTokens",
-    );
-  }
-  if (input.defaultReasoningReservationTokens !== undefined) {
-    requirePositiveSafeInteger(
-      input.defaultReasoningReservationTokens,
-      "defaultReasoningReservationTokens",
-    );
+  for (const key of [
+    "modelMaxOutputTokens",
+    "defaultVisibleOutputTokens",
+    "defaultReasoningReservationTokens",
+  ] as const) {
+    const value = input[key];
+    if (value !== undefined) requirePositiveSafeInteger(value, key);
   }
 
   const visibleOutputTokens =
@@ -145,9 +146,14 @@ export function resolveOutputBudgetPlan(
       input.modelMaxOutputTokens ?? aiNovelistFallback(input.model);
   } else if (input.provider === "anthropic") {
     const thinkingBudget = manualThinkingBudget(input.thinking);
+    // thinking の token も max_tokens に数える。adaptive を送るときと、常に考える世代は
+    // 4,096 では thinking だけで打ち切られる。
     requestMaxOutputTokens = thinkingBudget
       ? thinkingBudget + visibleOutputTokens
-      : visibleOutputTokens;
+      : input.thinking?.thinking?.type === "adaptive" ||
+          anthropicThinkingAlwaysOn(input.model)
+        ? reasoningReservationTokens
+        : visibleOutputTokens;
   } else if (usesResponsesApi(input)) {
     const reasoningActive =
       input.thinking?.reasoningEnabled === true ||

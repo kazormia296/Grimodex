@@ -4,12 +4,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  MASTRA_AGENT_TURN_ANSWER_COMMAND,
   MASTRA_AGENT_TURN_CANCEL_COMMAND,
   MASTRA_AGENT_TURN_REFUSAL_REASONS,
   MASTRA_AGENT_TURN_START_COMMAND,
   type MastraAgentTurnStartRequest,
 } from "@/../electron/shared/mastraAgentTurnWire";
 import { MASTRA_AGENT_TURN_PROGRESS_EVENT } from "@/../electron/shared/ipcContract";
+import { MASTRA_AGENT_TURN_QUESTION_EVENT } from "@/../electron/shared/ipcContract";
 
 const invokeMock = vi.hoisted(() => vi.fn());
 const listenMock = vi.hoisted(() => vi.fn());
@@ -17,12 +19,18 @@ const listenMock = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/tauri", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/tauri")>()),
   invoke: invokeMock,
+  invokeMastraAgentTurnControl: invokeMock,
   listen: listenMock,
+}));
+vi.mock("@/features/timelapse/recorder", () => ({
+  getRecorderSessionId: () => "writer-session-1",
 }));
 
 import { IpcInvokeError } from "@/lib/tauri";
 import {
+  answerMastraAgentTurnQuestion,
   cancelMastraAgentTurn,
+  listenMastraAgentTurnQuestion,
   listenMastraAgentTurnProgress,
   startMastraAgentTurn,
 } from "./mastraAgentTurn";
@@ -32,6 +40,7 @@ const TURN_ID = "8f14e45f-ceea-467e-a5d4-1b9c6d0e2f3a";
 const REQUEST: MastraAgentTurnStartRequest = {
   turnId: TURN_ID,
   chatSessionId: "session-1",
+  writerSessionId: "writer-session-1",
   projectId: "project-1",
   currentSceneId: "scene-1",
   chatMessageId: "message-1",
@@ -278,6 +287,9 @@ describe("nothing calls the wrapper yet (the engine branch is MP-4)", () => {
           /\.tsx?$/u.test(entry.name) &&
           !/\.test\.tsx?$/u.test(entry.name) &&
           !full.endsWith(join("lib", "mastraAgentTurn.ts")) &&
+          !full.endsWith(
+            join("application", "chat", "mastraAgentTurnResponder.ts"),
+          ) &&
           /mastraAgentTurn["']/u.test(readFileSync(full, "utf8"))
         ) {
           importers.push(full.slice(root.length + 1));
@@ -347,5 +359,51 @@ describe("listenMastraAgentTurnProgress", () => {
     handlers[0](progressPayload(2));
     expect(remove).toHaveBeenCalledOnce();
     expect(callback).toHaveBeenCalledExactlyOnceWith(progressPayload(1));
+  });
+});
+
+describe("MP-5 UI question wrapper", () => {
+  it("validates question events and removes the listener", async () => {
+    let handler: ((payload: unknown) => void) | undefined;
+    const remove = vi.fn();
+    listenMock.mockImplementation(
+      async (channel: string, listener: (payload: unknown) => void) => {
+        expect(channel).toBe(MASTRA_AGENT_TURN_QUESTION_EVENT);
+        handler = listener;
+        return remove;
+      },
+    );
+    const callback = vi.fn();
+    const unlisten = await listenMastraAgentTurnQuestion(callback);
+    const payload = {
+      turnId: TURN_ID,
+      requestId: "0f14e45f-ceea-467e-a5d4-1b9c6d0e2f3a",
+      toolCallId: "call-1",
+      toolName: "get_ui_state",
+      args: {},
+      deadlineAt: Date.now() + 5_000,
+    };
+    handler?.({ ...payload, approved: true });
+    handler?.(payload);
+    expect(callback).toHaveBeenCalledExactlyOnceWith(payload);
+    unlisten();
+    unlisten();
+    expect(remove).toHaveBeenCalledOnce();
+  });
+
+  it("sends only the answer wire and parses Main's no-pending refusal", async () => {
+    invokeMock.mockResolvedValue({ status: "refused", reason: "no-pending" });
+    const request = {
+      requestId: "0f14e45f-ceea-467e-a5d4-1b9c6d0e2f3a",
+      refusal: "authority-revoked" as const,
+    };
+    await expect(answerMastraAgentTurnQuestion(request)).resolves.toEqual({
+      kind: "refused",
+      reason: "no-pending",
+    });
+    expect(invokeMock).toHaveBeenCalledExactlyOnceWith(
+      MASTRA_AGENT_TURN_ANSWER_COMMAND,
+      request,
+    );
   });
 });

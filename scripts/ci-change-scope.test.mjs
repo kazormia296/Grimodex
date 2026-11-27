@@ -600,6 +600,7 @@ test("every file a skippable lane's JS tests import stays outside that lane's ne
       atLeast: 1500,
       unresolved: [
         "src/AiAuditLazyImport.test.ts -> ./aiScaffold/AiTreeDialog",
+        "src/AiAuditLazyImport.test.ts -> ./chatAgentToolHandlers",
         "src/AiAuditLazyImport.test.ts -> ./chatStreamTransport",
         "src/AiAuditLazyImport.test.ts -> ./cliApi",
         "src/AiAuditLazyImport.test.ts -> ./codexAppApi",

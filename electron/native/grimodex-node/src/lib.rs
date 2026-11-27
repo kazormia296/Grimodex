@@ -104,6 +104,7 @@ use grimodex_db::lint_terms::{
     self, InsertPayload as LintTermInsertPayload, UpdatePayload as LintTermUpdatePayload,
 };
 use grimodex_db::map_writes::{self, MapWritePayload};
+use grimodex_db::mastra_memory::{self as memory, MemoryVectorInput};
 use grimodex_db::narrative_extraction::{
     self, is_transient_maintenance_preemption, AttentionDisposition, AutomaticRunKind,
     FreshnessLifecycleControl, GetNarrativeBackfillStatusPayload, GraphWorkControl, GraphWorkStage,
@@ -2911,6 +2912,32 @@ where
         .await
         .map_err(join_err_to_napi)?
         .map_err(app_err_to_napi)
+}
+
+async fn run_memory_operation<T, F>(state: Arc<AppState>, operation: F) -> Result<String>
+where
+    T: serde::Serialize + Send + 'static,
+    F: FnOnce(&Database) -> anyhow::Result<T> + Send + 'static,
+{
+    run_blocking(move || with_db_state(&state.ws, |db| Ok(serde_json::to_string(&operation(db)?)?)))
+        .await
+}
+
+async fn run_memory_payload<P, T, F>(
+    state: Arc<AppState>,
+    payload: serde_json::Value,
+    operation: F,
+) -> Result<String>
+where
+    P: serde::de::DeserializeOwned + Send + 'static,
+    T: serde::Serialize + Send + 'static,
+    F: FnOnce(&Database, P) -> anyhow::Result<T> + Send + 'static,
+{
+    run_blocking(move || {
+        let request = from_wire("payload", payload)?;
+        with_db_state(&state.ws, |db| Ok(serde_json::to_string(&operation(db, request)?)?))
+    })
+    .await
 }
 
 fn emit_workspace_lifecycle_view(state: &AppState, view: &WorkspaceLifecycleView) {
@@ -10939,6 +10966,192 @@ impl Backend {
         .await
     }
 
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_thread_read(&self, payload: serde_json::Value) -> Result<String> {
+        run_memory_payload(Arc::clone(&self.state), payload, memory::thread_read).await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_thread_write(&self, payload: serde_json::Value) -> Result<String> {
+        run_memory_payload(Arc::clone(&self.state), payload, memory::thread_write).await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_thread_delete(&self, payload: serde_json::Value) -> Result<String> {
+        run_memory_payload(Arc::clone(&self.state), payload, memory::thread_delete).await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_message_read(&self, payload: serde_json::Value) -> Result<String> {
+        run_memory_payload(Arc::clone(&self.state), payload, memory::message_read).await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_message_write(&self, payload: serde_json::Value) -> Result<String> {
+        run_memory_payload(Arc::clone(&self.state), payload, memory::message_write).await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_message_delete(&self, payload: serde_json::Value) -> Result<String> {
+        run_memory_payload(Arc::clone(&self.state), payload, memory::message_delete).await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_resource_read(&self, payload: serde_json::Value) -> Result<String> {
+        run_memory_payload(Arc::clone(&self.state), payload, memory::resource_read).await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_resource_write(&self, payload: serde_json::Value) -> Result<String> {
+        run_memory_payload(Arc::clone(&self.state), payload, memory::resource_write).await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_observational_memory_read(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        run_memory_payload(
+            Arc::clone(&self.state),
+            payload,
+            memory::observational_memory_read,
+        )
+        .await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_observational_memory_write(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        run_memory_payload(
+            Arc::clone(&self.state),
+            payload,
+            memory::observational_memory_write,
+        )
+        .await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_vector_create_index(
+        &self,
+        index_name: String,
+        dimension: u32,
+    ) -> Result<String> {
+        run_memory_operation(Arc::clone(&self.state), move |db| {
+            memory::vector_create_index(db, &index_name, dimension as usize)
+        })
+        .await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_vector_upsert(
+        &self,
+        index_name: String,
+        vectors: serde_json::Value,
+    ) -> Result<String> {
+        run_memory_payload(
+            Arc::clone(&self.state),
+            vectors,
+            move |db, vectors: Vec<MemoryVectorInput>| {
+                memory::vector_upsert(db, &index_name, &vectors)
+            },
+        )
+        .await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_vector_query(
+        &self,
+        index_name: String,
+        query: Vec<f64>,
+        top_k: u32,
+    ) -> Result<String> {
+        let query = query.into_iter().map(|value| value as f32).collect::<Vec<_>>();
+        run_memory_operation(Arc::clone(&self.state), move |db| {
+            memory::vector_query(db, &index_name, &query, top_k as usize)
+        })
+        .await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_vector_list_indexes(&self) -> Result<String> {
+        run_memory_operation(Arc::clone(&self.state), memory::vector_list_indexes).await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_vector_describe_index(&self, index_name: String) -> Result<String> {
+        run_memory_operation(Arc::clone(&self.state), move |db| {
+            memory::vector_describe_index(db, &index_name)
+        })
+        .await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_vector_delete_index(&self, index_name: String) -> Result<String> {
+        run_memory_operation(Arc::clone(&self.state), move |db| {
+            memory::vector_delete_index(db, &index_name)
+        })
+        .await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_vector_update(
+        &self,
+        index_name: String,
+        id: String,
+        vector: Option<Vec<f64>>,
+        metadata: Option<serde_json::Value>,
+    ) -> Result<String> {
+        let vector: Option<Vec<f32>> =
+            vector.map(|values| values.into_iter().map(|value| value as f32).collect());
+        run_memory_operation(Arc::clone(&self.state), move |db| {
+            memory::vector_update(db, &index_name, &id, vector.as_deref(), metadata.as_ref())
+        })
+        .await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_vector_delete(&self, index_name: String, id: String) -> Result<String> {
+        run_memory_operation(Arc::clone(&self.state), move |db| {
+            memory::vector_delete(db, &index_name, &id)
+        })
+        .await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_vector_delete_many(
+        &self,
+        index_name: String,
+        request: serde_json::Value,
+    ) -> Result<String> {
+        run_memory_payload(
+            Arc::clone(&self.state),
+            request,
+            move |db, request| memory::vector_delete_many_request(db, &index_name, request),
+        )
+        .await
+    }
+
     /// DA-2b CW (DR-DA2-50): delete messages of one chat session. Typed
     /// `internal` writer; Main attaches the caller identity as the trailing
     /// sidecar. Returns `{"deleted":n}`.
@@ -13606,6 +13819,42 @@ impl Backend {
         .await
     }
 
+    /// Filter caller-supplied Codex IDs through current, human-approved typed
+    /// Entity/Relation Revisions in the workspace pinned by Main.
+    #[napi]
+    pub async fn nir1_entity_relation_approved_codex_filter(
+        &self,
+        payload: serde_json::Value,
+        caller_identity: Option<String>,
+    ) -> Result<String> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Request {
+            expected_workspace_path: String,
+            project_id: String,
+            codex_entry_ids: Vec<String>,
+        }
+
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let guard = admit_publication_entry(&state, caller_identity)?;
+            let request: Request = from_wire("payload", payload)?;
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
+            let response = workspace.authority.db().with_read_transaction(|conn| {
+                narrative_extraction::read_nir1_entity_relation_approved_codex_filter(
+                    conn,
+                    &request.project_id,
+                    &request.codex_entry_ids,
+                )
+            })?;
+            let wire = serde_json::to_string(&response).map_err(anyhow::Error::from)?;
+            finish_publication_entry(&state, &guard)?;
+            Ok(wire)
+        })
+        .await
+    }
+
     /// Read the project-scoped typed change review without changing stored state.
     #[napi]
     pub async fn nir1_change_review_read(
@@ -13992,6 +14241,26 @@ impl Backend {
             });
         }
         serde_json::to_string(&status).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// Embed arbitrary bounded text locally for main-process memory adapters.
+    #[napi]
+    pub async fn memory_embed_texts(&self, language: String, texts: Vec<String>) -> Result<String> {
+        if !(1..=64).contains(&texts.len())
+            || texts
+                .iter()
+                .any(|text| text.is_empty() || text.chars().count() > 16_384)
+        {
+            return Err(Error::from_reason("MEMORY_EMBED_INVALID_INPUT"));
+        }
+        let semantic = Arc::clone(&self.state.semantic);
+        run_blocking(move || {
+            let response = semantic
+                .memory_embed_texts(&language, &texts)
+                .map_err(anyhow::Error::from)?;
+            Ok(serde_json::to_string(&response).map_err(anyhow::Error::from)?)
+        })
+        .await
     }
 
     #[napi]
@@ -15641,6 +15910,25 @@ impl Backend {
             with_db_state(&state.ws, |db| {
                 Ok(serde_json::to_string(
                     &narrative_extraction::narrative_extraction_list_scene_proposals(db, dto)?,
+                )?)
+            })
+        })
+        .await
+    }
+
+    /// Read-only: list applied proposals eligible for reapproval in one project, one page.
+    #[napi]
+    pub async fn narrative_extraction_list_redecidable_proposals(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: narrative_extraction::ListRedecidableProposalsPayload =
+                from_wire("payload", payload).map_err(|error| anyhow::anyhow!("NEX_REDECIDABLE_PROPOSALS_INPUT_INVALID: {error}"))?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(
+                    &narrative_extraction::narrative_extraction_list_redecidable_proposals(db, dto)?,
                 )?)
             })
         })

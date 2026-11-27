@@ -1531,13 +1531,14 @@ fn feed_writers_in(files: &[(String, String)]) -> (BTreeMap<String, usize>, BTre
 /// narrative one; the bodies now call the private `*_with_mode_*` helpers).
 /// `change_feed.rs` is the writer's own file, kept here as a fixed number so a
 /// new entry or call inside it is noticed.
-const FEED_APPEND_CALLERS: [(&str, usize); 22] = [
+const FEED_APPEND_CALLERS: [(&str, usize); 23] = [
     ("agent_writes.rs", 4),
     ("chronicle.rs", 2),
     ("chronicle_bulk.rs", 1),
     ("codex_writes.rs", 1),
     ("domain_writes.rs", 7),
     ("foreshadow.rs", 1),
+    ("identity_correction.rs", 1),
     ("import/commit.rs", 1),
     ("integrity.rs", 1),
     ("map_writes.rs", 1),

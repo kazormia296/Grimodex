@@ -14,6 +14,8 @@ import type { AiAuditEventInput } from "../../shared/aiAuditEvents.js";
 import type { NapiBackendLike } from "../../shared/ipcContract.js";
 import type { MastraAgentTurnStartRequest } from "../../shared/mastraAgentTurnWire.js";
 import { M4_READ_TOOL_NAMES } from "../../shared/agentReadToolDefinitions.js";
+import { MASTRA_UI_TOOL_NAMES } from "../../shared/mastraUiToolDefinitions.js";
+import { MASTRA_AGENT_WRITE_TOOL_NAMES } from "../../shared/mastraWriteToolDefinitions.js";
 import { createPerCodePointTokenizer } from "../../shared/mastraRead/tokenizer.testSupport.js";
 import { createMastraAgentLoader } from "../mastraAgentLoader.js";
 import { createMastraEnvPin } from "../mastraEnv.js";
@@ -175,6 +177,7 @@ const request = (
 ): MastraAgentTurnStartRequest => ({
   turnId: TURN,
   chatSessionId: "s1",
+  writerSessionId: "writer-session-1",
   projectId: "project-1",
   currentSceneId: null,
   chatMessageId: "message-1",
@@ -380,8 +383,15 @@ describe("the real Agent in the third bundle", () => {
 });
 
 describe("the runtime tool allow-list (DR-MP3-14, layer 2)", () => {
-  it("matches the M4 shared names, and a tool outside it is refused by name", () => {
-    expect([...MASTRA_AGENT_TOOL_ALLOWLIST]).toEqual([...M4_READ_TOOL_NAMES]);
+  it("matches the M4 and MP-5 shared names, and a tool outside it is refused by name", () => {
+    expect([...MASTRA_AGENT_TOOL_ALLOWLIST]).toEqual([
+      ...M4_READ_TOOL_NAMES,
+      ...MASTRA_UI_TOOL_NAMES,
+      ...MASTRA_AGENT_WRITE_TOOL_NAMES,
+    ]);
+    expect(MASTRA_AGENT_TOOL_ALLOWLIST).not.toContain(
+      "narrative_extraction_list_redecidable_proposals",
+    );
     expect(MASTRA_AGENT_TOOL_ALLOWLIST).not.toContain(
       "narrative_extraction_reapprove_applied_proposals",
     );

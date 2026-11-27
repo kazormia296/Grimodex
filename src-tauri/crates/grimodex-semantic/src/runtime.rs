@@ -344,6 +344,37 @@ pub struct SemanticRuntime {
     downloads_inflight: Mutex<HashSet<&'static str>>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryEmbeddings {
+    pub model_id: String,
+    pub dimension: usize,
+    pub vectors: Vec<Vec<f32>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum MemoryEmbeddingError {
+    InvalidCount,
+    InvalidText,
+    InvalidLanguage,
+    ModelUnavailable,
+    Inference(String),
+}
+
+impl std::fmt::Display for MemoryEmbeddingError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidCount => formatter.write_str("MEMORY_EMBED_INVALID_COUNT"),
+            Self::InvalidText => formatter.write_str("MEMORY_EMBED_INVALID_TEXT"),
+            Self::InvalidLanguage => formatter.write_str("MEMORY_EMBED_INVALID_LANGUAGE"),
+            Self::ModelUnavailable => formatter.write_str("MEMORY_EMBED_MODEL_UNAVAILABLE"),
+            Self::Inference(reason) => write!(formatter, "MEMORY_EMBED_INFERENCE_FAILED: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for MemoryEmbeddingError {}
+
 impl SemanticRuntime {
     pub fn new(paths: SemanticPaths, events: Arc<dyn EventSink + Send + Sync>) -> Self {
         Self {
@@ -366,6 +397,49 @@ impl SemanticRuntime {
 
     pub fn paths(&self) -> &SemanticPaths {
         &self.paths
+    }
+
+    /// Embed bounded arbitrary text locally with the language's configured ONNX model.
+    #[cfg(feature = "semantic-embedding")]
+    pub fn memory_embed_texts(
+        &self,
+        language: &str,
+        texts: &[String],
+    ) -> std::result::Result<MemoryEmbeddings, MemoryEmbeddingError> {
+        use crate::spec::{SPEC_EN, SPEC_JA};
+        if !(1..=64).contains(&texts.len()) {
+            return Err(MemoryEmbeddingError::InvalidCount);
+        }
+        if !texts
+            .iter()
+            .all(|text| !text.is_empty() && text.chars().count() <= 16_384)
+        {
+            return Err(MemoryEmbeddingError::InvalidText);
+        }
+        let spec = match language {
+            "ja" => &SPEC_JA,
+            "en" => &SPEC_EN,
+            _ => return Err(MemoryEmbeddingError::InvalidLanguage),
+        };
+        let vectors = self
+            .with_embedder(spec, |embedder| {
+                texts
+                    .iter()
+                    .map(|text| embedder.embed_document(text))
+                    .collect::<Result<Vec<_>>>()
+            })
+            .map_err(|error| {
+                if error.to_string().contains("is not installed") {
+                    MemoryEmbeddingError::ModelUnavailable
+                } else {
+                    MemoryEmbeddingError::Inference(error.to_string())
+                }
+            })?;
+        Ok(MemoryEmbeddings {
+            model_id: spec.full_model_id(),
+            dimension: spec.embedding_dim,
+            vectors,
+        })
     }
 
     pub fn snapshot_epoch(&self) -> SemanticEpoch {
@@ -2124,6 +2198,29 @@ mod tests {
             },
             events,
         ))
+    }
+
+    #[cfg(feature = "semantic-embedding")]
+    #[test]
+    fn memory_embedding_returns_vectors_or_typed_missing_model_error() {
+        let runtime = runtime(Arc::new(RecordingEvents::default()));
+        let result = runtime.memory_embed_texts("ja", &["試験文".to_string()]);
+        match result {
+            Ok(output) => {
+                assert_eq!(output.model_id, crate::spec::SPEC_JA.full_model_id());
+                assert_eq!(output.dimension, crate::spec::SPEC_JA.embedding_dim);
+                assert_eq!(output.vectors.len(), 1);
+                assert_eq!(output.vectors[0].len(), output.dimension);
+            }
+            Err(MemoryEmbeddingError::ModelUnavailable) => {}
+            Err(error) => panic!("unexpected embedding error: {error}"),
+        }
+        assert_eq!(
+            runtime
+                .memory_embed_texts("xx", &["test".into()])
+                .unwrap_err(),
+            MemoryEmbeddingError::InvalidLanguage
+        );
     }
 
     #[test]

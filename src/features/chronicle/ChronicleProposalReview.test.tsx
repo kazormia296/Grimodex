@@ -21,6 +21,7 @@ const decideMock = vi.hoisted(() => vi.fn());
 const decideDuplicateMock = vi.hoisted(() => vi.fn());
 const reviseMock = vi.hoisted(() => vi.fn());
 const bulkMock = vi.hoisted(() => vi.fn());
+const reapproveMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./chronicleExtractionApi", async () => {
   const actual = await vi.importActual<
@@ -32,6 +33,7 @@ vi.mock("./chronicleExtractionApi", async () => {
     decideChronicleProbableDuplicate: decideDuplicateMock,
     reviseChronicleProposal: reviseMock,
     bulkApproveChronicleProposals: bulkMock,
+    reapproveChronicleProposals: reapproveMock,
   };
 });
 
@@ -90,6 +92,7 @@ function proposal(
       evidenceMethods: ["exact"],
     }),
     probableDuplicateChoice: null,
+    redecide: null,
     ...overrides,
     application: overrides.application ?? null,
   };
@@ -878,5 +881,275 @@ describe("ChronicleProposalReview: bulk approve (BAO/1)", () => {
         .getState()
         .projection?.proposals.map((row) => row.proposalId),
     ).toEqual(["plain-1", "shown-1", "plain-2", "shown-2", "decided"]);
+  });
+});
+
+describe("ChronicleProposalReview: approve again (SRD/1 RA7)", () => {
+  const APPLICATION: NonNullable<ChronicleReviewProposal["application"]> = {
+    commitId: "commit-1",
+    revisionId: "rev-1",
+    appliedEntityKind: "event",
+    appliedEntityId: "event-1",
+    createdAt: "2026-11-26T09:00:00.000Z",
+    applicationKind: "normal",
+    compensatesApplicationId: null,
+  };
+  const removed = (
+    reapproval: { available: boolean; reason: string | null } = {
+      available: true,
+      reason: null,
+    },
+  ): ChronicleReviewProposal["redecide"] => ({
+    rejectedBy: "event-removed",
+    removedVia: "screen-delete",
+    rejectedAt: "2026-11-26T10:00:00.000Z",
+    reapproval: reapproval as never,
+  });
+  const outcome = (
+    overrides: Partial<{
+      approved: number;
+      skipped: { proposalId: string; reason: string }[];
+      failed: { proposalId: string; code: string }[];
+      stopped: boolean;
+      refreshed: boolean;
+    }> = {},
+  ) => ({
+    approved: 1,
+    skipped: [],
+    failed: [],
+    stopped: false,
+    refreshed: true,
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    resetChronicleExtractionStoreForTests();
+    vi.clearAllMocks();
+    reapproveMock.mockResolvedValue(outcome());
+  });
+
+  it("shows a removed proposal as rejected with what removed it, not as imported", () => {
+    useChronicleExtractionStore.getState().setProjection(
+      projection([
+        proposal({
+          status: "rejected",
+          application: APPLICATION,
+          redecide: removed(),
+        }),
+      ]),
+    );
+    render(<ChronicleProposalReview />);
+    const card = screen.getByTestId("chronicle-proposal-card-proposal-1");
+    expect(
+      screen.getByTestId("chronicle-proposal-removed-proposal-1"),
+    ).toHaveTextContent("却下（出来事を消したため）");
+    expect(
+      screen.getByTestId("chronicle-proposal-removed-proposal-1"),
+    ).toHaveTextContent("年表での削除で外れました");
+    expect(card).not.toHaveTextContent("取り込み済み（再適用しません）");
+    expect(
+      screen.getByTestId("chronicle-proposal-reapprove-proposal-1"),
+    ).toBeEnabled();
+    // Approve, reject and hold stay hidden for an applied proposal.
+    expect(card).not.toHaveTextContent("拒否");
+    expect(
+      screen.getByTestId("chronicle-proposal-applied-detail"),
+    ).toHaveTextContent("この提案の承認は外れています");
+  });
+
+  it("keeps an applied proposal that Native did not take off as imported", () => {
+    useChronicleExtractionStore.getState().setProjection(
+      projection([
+        proposal({
+          status: "approved",
+          application: APPLICATION,
+          redecide: {
+            rejectedBy: null,
+            removedVia: null,
+            rejectedAt: null,
+            reapproval: { available: false, reason: "already-approved" },
+          },
+        }),
+      ]),
+    );
+    render(<ChronicleProposalReview />);
+    expect(
+      screen.getByTestId("chronicle-proposal-card-proposal-1"),
+    ).toHaveTextContent("取り込み済み（再適用しません）");
+    expect(
+      screen.queryByTestId("chronicle-proposal-reapprove-proposal-1"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("chronicle-reapprove-all"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("disables the button and says why when Native says it cannot be approved again", () => {
+    useChronicleExtractionStore.getState().setProjection(
+      projection([
+        proposal({
+          status: "rejected",
+          application: APPLICATION,
+          redecide: removed({ available: false, reason: "event-missing" }),
+        }),
+      ]),
+    );
+    render(<ChronicleProposalReview />);
+    expect(
+      screen.getByTestId("chronicle-proposal-reapprove-proposal-1"),
+    ).toBeDisabled();
+    expect(
+      screen.getByTestId("chronicle-proposal-reapprove-blocked-proposal-1"),
+    ).toHaveTextContent("取り込んだ出来事が年表にありません");
+    expect(screen.getByTestId("chronicle-reapprove-all")).toBeDisabled();
+  });
+
+  it("does not claim imported or rejected when the state could not be checked", () => {
+    useChronicleExtractionStore.getState().setProjection(
+      projection([
+        proposal({
+          status: "approved",
+          application: APPLICATION,
+          redecide: "unverified",
+        }),
+      ]),
+    );
+    render(<ChronicleProposalReview />);
+    const card = screen.getByTestId("chronicle-proposal-card-proposal-1");
+    expect(
+      screen.getByTestId("chronicle-proposal-unverified-proposal-1"),
+    ).toHaveTextContent("確かめられませんでした");
+    expect(card).not.toHaveTextContent("取り込み済み（再適用しません）");
+    expect(card).not.toHaveTextContent("却下（出来事を消したため）");
+    expect(
+      screen.queryByTestId("chronicle-proposal-reapprove-proposal-1"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("approves one proposal again from its card and shows the result", async () => {
+    useChronicleExtractionStore.getState().setProjection(
+      projection([
+        proposal({
+          status: "rejected",
+          application: APPLICATION,
+          redecide: removed(),
+        }),
+      ]),
+    );
+    render(<ChronicleProposalReview />);
+    fireEvent.click(
+      screen.getByTestId("chronicle-proposal-reapprove-proposal-1"),
+    );
+    await waitFor(() =>
+      expect(reapproveMock).toHaveBeenCalledWith(["proposal-1"]),
+    );
+    expect(
+      await screen.findByTestId("chronicle-reapprove-result"),
+    ).toHaveTextContent("1 件を承認し直しました。");
+  });
+
+  it("shows the proposal as imported again once the re-read says it was approved", async () => {
+    useChronicleExtractionStore.getState().setProjection(
+      projection([
+        proposal({
+          status: "rejected",
+          application: APPLICATION,
+          redecide: removed(),
+        }),
+      ]),
+    );
+    // The command re-reads the review itself; stand in for that re-read.
+    reapproveMock.mockImplementationOnce(async () => {
+      const store = useChronicleExtractionStore.getState();
+      const current = store.projection!;
+      store.setProjection({
+        ...current,
+        proposals: current.proposals.map((item) => ({
+          ...item,
+          status: "approved" as const,
+          redecide: {
+            rejectedBy: null,
+            removedVia: null,
+            rejectedAt: null,
+            reapproval: {
+              available: false,
+              reason: "already-approved" as const,
+            },
+          },
+        })),
+      });
+      return outcome();
+    });
+    render(<ChronicleProposalReview />);
+    fireEvent.click(
+      screen.getByTestId("chronicle-proposal-reapprove-proposal-1"),
+    );
+    expect(
+      await screen.findByText("取り込み済み（再適用しません）"),
+    ).toBeTruthy();
+    expect(
+      screen.queryByTestId("chronicle-proposal-removed-proposal-1"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("chronicle-reapprove-all"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("counts only what Native says can be approved again, and sends the whole screen", async () => {
+    useChronicleExtractionStore.getState().setProjection(
+      projection([
+        proposal({
+          proposalId: "can",
+          proposalKey: "k1",
+          status: "rejected",
+          application: APPLICATION,
+          redecide: removed(),
+        }),
+        proposal({
+          proposalId: "cannot",
+          proposalKey: "k2",
+          status: "rejected",
+          application: APPLICATION,
+          redecide: removed({ available: false, reason: "revision-changed" }),
+        }),
+        proposal({ proposalId: "unapplied", proposalKey: "k3" }),
+      ]),
+    );
+    reapproveMock.mockResolvedValueOnce(
+      outcome({
+        approved: 1,
+        skipped: [{ proposalId: "cannot", reason: "revision-changed" }],
+      }),
+    );
+    render(<ChronicleProposalReview />);
+    const button = screen.getByTestId("chronicle-reapprove-all");
+    expect(button).toHaveTextContent(
+      "出来事を消して外れた提案をまとめて承認し直す (1)",
+    );
+    fireEvent.click(button);
+    await waitFor(() => expect(reapproveMock).toHaveBeenCalledWith(undefined));
+    const result = await screen.findByTestId("chronicle-reapprove-result");
+    expect(result).toHaveTextContent("1 件は飛ばしました（");
+    expect(result).toHaveTextContent("取り込んだ後に提案が変わりました");
+  });
+
+  it("says whether the list was re-read when the whole command failed", async () => {
+    useChronicleExtractionStore.getState().setProjection(
+      projection([
+        proposal({
+          status: "rejected",
+          application: APPLICATION,
+          redecide: removed(),
+        }),
+      ]),
+    );
+    reapproveMock.mockRejectedValueOnce(
+      new ChronicleBulkApproveCommandError(new Error("boom"), false),
+    );
+    render(<ChronicleProposalReview />);
+    fireEvent.click(screen.getByTestId("chronicle-reapprove-all"));
+    expect(
+      await screen.findByTestId("chronicle-proposal-persist-error"),
+    ).toHaveTextContent("一覧も読み直せませんでした");
   });
 });

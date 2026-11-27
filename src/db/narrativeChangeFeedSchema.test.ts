@@ -50,9 +50,11 @@ describe("narrative maintenance Change Feed schema (SCHEMA 22)", () => {
     // adds the narrative_scope_project_defaults table, SCHEMA 45 has no DDL
     // (a Freshness dead-letter reservation release), and SCHEMA 46 only adds
     // the Native-owned commit sequence/lineage tables and their grimodex_clock_*
-    // triggers. Keep this exact guard so each schema bump revisits the
+    // triggers. SCHEMA 47 adds the closed Mastra memory tables and their
+    // cascade edges. SCHEMA 48 adds the closed immutable ERM tables
+    // (DR-M3-39). Keep this exact guard so each schema bump revisits the
     // contract assertions below.
-    expect(contractJson.schemaVersion).toBe(46);
+    expect(contractJson.schemaVersion).toBe(48);
     expect(
       contractJson.tables.narrative_change_transactions.columns
         .source_change_event_uid,

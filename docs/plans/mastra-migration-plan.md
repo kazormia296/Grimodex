@@ -160,24 +160,26 @@
 | 2   | `LanguageModelV4` adapter（B′。3 provider）と parity 試験                     | main                  | -    | revert                  |
 | 3   | loop の骨格（tool 0・memory 0）、gate L、lifecycle、audit owner、typed IPC    | renderer、IPC、main   | L 閉 | revert                  |
 | 4   | tool 基盤、loop 規則の同値移植、read tool の main 化                          | main、（N-API）       | L 閉 | revert                  |
-| 5   | main→renderer の RPC と UI tool（8 本。help 2 本を含む）                      | renderer、IPC、main   | L 閉 | revert                  |
-| 6   | write tool、capability、write 後処理                                          | main、renderer        | L 閉 | revert                  |
-| 7   | **schema の migration**、Rust の memory 書込み、N-API `memory_*`、D2a 台帳    | Rust、N-API、main     | M 閉 | **schema は戻らない**   |
-| 8   | TS の storage／vector adapter、`MemoryRuntimeOwner`、実 Mastra の呼び順の観測 | main                  | M 閉 | revert（schema は残る） |
-| 9   | 履歴の持ち主と保存の main への移動                                            | renderer、main        | M 閉 | revert                  |
-| 10  | 背景 LLM の route 4 本、embedding、OM 構成                                    | main、N-API、registry | M 閉 | revert                  |
+| 5   | main→renderer の RPC と UI tool（7 本。help 2 本を含む）— 完了（#1157・#1160・#1161・#1164・#1168） | renderer、IPC、main   | L 閉 | revert                  |
+| 6   | write tool、capability、write 後処理 — 実装中（PR①〜③：#1170・#1189・#1190。残り 2 tool と renderer の完了処理） | main、renderer        | L 閉 | revert                  |
+| 7   | **schema の migration**、Rust の memory 書込み、N-API `memory_*`、D2a 台帳 — 完了（schema 47、#1173・#1175・#1178） | Rust、N-API、main     | M 閉 | **schema は戻らない**   |
+| 8   | TS の storage／vector adapter、`MemoryRuntimeOwner`、実 Mastra の呼び順の観測 — 完了（#1184・#1194） | main                  | M 閉 | revert（schema は残る） |
+| 9   | 履歴の持ち主と保存の main への移動 — 着手（判断 #1182、実装中）              | renderer、main        | M 閉 | revert                  |
+| 10  | 背景 LLM の route 4 本、embedding、OM 構成 — 実装中（route #1180・#1183、N-API #1187。OM 構成） | main、N-API、registry | M 閉 | revert                  |
 | 11  | lifecycle（closure、quit、削除時の purge）、`T_quit`                          | main、Rust            | M 閉 | revert                  |
 | 12  | 設定・WM の UI・開示・consent                                                 | renderer、IPC、main   | M 閉 | revert                  |
 | 13  | **旗を開ける**（13a：L、13b：M）、P11 の確定、公開前の検査                    | 全層                  | 開   | engine 設定             |
 | 14  | legacy 経路の撤去                                                             | -                     | -    | この計画の外            |
 
 依存の骨格：1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11 → 12 → 13。
+状態・順序の更新（master、2026-11-27）：2026-11-26 の決定で MP-7〜MP-10 は MP-5 と並行し、U-10・U-11・U-12 は回答済み。目的欄は取り下げ済み（MP-9 範囲参照）。Gate A（A1・A2）は Mastra lane が MP-6 の後に持ち、A3 は別 lane（2026-11-27 決定）。MP-5 は #1157・#1160・#1161・#1164・#1168 で完了。MP-6 は PR①〜③（#1170・#1189・#1190）まで実装中で、`propose_scene_body`・`apply_ai_tree_plan` と renderer の完了処理が残る。4c-2 は #1185 で準備、PR①は実装中。
+
 ただし 13a（旗 L）は、MP-6 の後に前倒しできる（schema の変更を伴わない）。
 
 - MP-7 を MP-6 の後に置く理由：
   - L だけで出荷できる地点（MP-6 の後）が持てる。schema の変更を伴わない。
   - 一方向の変更の前に、移行をやめる判断が安く下せる（第 10 節）。
-- MP-7 以降は、L の journey が緑になってから着手する。
+- MP-7 以降は、2026-11-26 の決定により MP-5 と並行して着手する（状態更新。下記の設計条件は維持）。
 
 ## 6. 各 PR
 
@@ -359,7 +361,7 @@
   - manifest の 44 本（master で read 26、write 16、destructive 2）を Mastra の tool に。schema は `toolDefinitions.ts` の元の定義（adapter が `$schema`／`additionalProperties` を戻す。S6）。
     **段階に読み替える（2026-11-21 のユーザー決定 U-7(D)。[MP-4 の判断](mastra-mp4-decisions.md)第 1.2 節）**：
     MP-4 は、データ read のうち main の `dbExecute` と既存の Native の typed 呼出しで動く 20 本（M4。`get_codex_entry` は guard の扱い待ちで外す）を main の tool にする。
-    `get_ui_state`・`ask_user`・UI 系の write 4 本は MP-5（main→renderer の RPC）、残りの write 14 本は MP-6、`run_research` は MP-4 では移さない（DR-MP3-3）。help 2 本は MP-5 に寄せる（**技術判断**。[DR-MP4-11](mastra-mp4-decisions.md)。2026-11-21）。
+    `get_ui_state`・`ask_user`・UI 系の write 3 本は MP-5（main→renderer の RPC）、残りの write 15 本は MP-6（`propose_scene_body` は 2026-11-26 の Q4 で MP-5 から MP-6 へ）、`run_research` は MP-4 では移さない（DR-MP3-3）。help 2 本は MP-5 に寄せる（**技術判断**。[DR-MP4-11](mastra-mp4-decisions.md)。2026-11-21）。
     MP-4 の間は main の tool が 44 本そろわず、製品の agent-mode turn（毎 turn 44 本を宣言する）は Mastra に届かない（読み替えの帰結。**報告のみ**。C-5）。旗 L は閉のまま。
   - **loop 規則を同値に写す**（閾値の黙示変更は委任外）：
     - tool 回数の上限（窓に応じて 25／16／12／10。survey の点検は 25／16 だけ確認）、予算（窓の 30%、下限 2,000）。
@@ -390,6 +392,7 @@
   - main→renderer の request／response の新設。既存の event は一方向（`electron/shared/ipcContract.ts:303-307` の `BACKEND_EVENT_CHANNEL_ALLOWLIST`。renderer の `emit` からは送れない）。
   - renderer に残る 6 本：`ask_user`、`run_app_command`、`apply_layout_preset`、`propose_setting_change`、`propose_scene_body`、`get_ui_state`（survey 付録 A）。
     MP-4 の判断で help 2 本（`get_app_help_index`、`get_app_help`）を足して 8 本にする（[DR-MP4-11](mastra-mp4-decisions.md)。技術判断。2026-11-21）。
+    2026-11-26 のユーザー回答（Q4）で `propose_scene_body` を MP-6 に回し、**MP-5 は 7 本**（[MP-5 の判断](mastra-mp5-decisions.md)）。
   - 保留中の renderer 喪失（window close、reload、crash）時の所有と終了証跡。有限の待ち。
   - 同じ session の再入、複数 window。
 - 層：renderer、IPC、main。
@@ -403,13 +406,17 @@
 ### MP-6 write tool、capability、write 後処理
 
 - 範囲：
-  - write 系 tool の main 化（survey 付録 A が挙げる 15 本。`propose_scene_body` を含み、MP-5 の 8 本と重なる）。
+  - write 系 tool の main 化（survey 付録 A が挙げる 15 本。`propose_scene_body` を含む。MP-5 から回した 1 本）。
     manifest の read 以外は 18 本（write 16、destructive 2）で、survey の 15 本に UI の 3 本（`run_app_command`、`apply_layout_preset`、`propose_setting_change`）を足した数と合う。
   - **capability（製品認可）の維持**：main の発行（`electron/main/ipc.ts:1595`）と消費（同 `:1682`）を、loop の中で同じ関数で行う。
     one-shot、`senderId`・projectId・入力 digest の束縛を保つ。廃止は製品認可の削除で委任外。
   - write 後処理（store の再読込、undo、timelapse、index の予約）の書き手と永続先。main に移る分は renderer への完了 event。
   - `chatMessageId` と、master の #940 の予約行との整合。
   - `requiresUserConfirmation`（挙動を変えない）。
+  - **SessionTasks（Release B）からの接続**（[SessionTasks の判断記録](session-tasks-decisions-2026-11.md)。設計のときに扱う。この段の範囲を決めるものではない）：
+    - 承認した範囲での連続実行は ADR 008 の `mutate / task-scope`（Task Grant）で表す。Mastra の承認（`requireApproval`／`beforeApproval`）を「止めて、人が押したら再開する」部品として使う案は候補。`resumeData` とモデル入力の `approved` を根拠にせず、capability は上のとおり main が発行・消費する。mutate・destructive の capability は承認の確定後にだけ発行する（ADR 008 §4）。採る前に mock で確かめ、W12 と DR-MP5-7 の改訂を利用者に確認する（DR-ST-4）。
+    - 親の turn の tool 回数の上限（`maxToolCalls`。wire の検証の上限 25 を含む）の撤廃は、この段の後に置く（停止が効く経路から。Mastra の経路は 4c-2 の後。`limit_tokens` や文脈で止まったときの扱いを決めてから。DR-ST-5）。
+    - 確認待ちを会話の外に保存する場合の継ぎ目（DR-MP5-11 と W12 の「再起動の後に復元しない」を変える点。保存の範囲の拡大で、利用者の確認が要る。DR-ST-7）。
 - 層：main、renderer。
 - 条件：
   - **負の試験**：capability 無し、再利用、別 project、別 digest が拒否される。
@@ -486,7 +493,8 @@
   - 既存 session の OM の seed（`observedMessageIds` に既存 id を入れる。S-M5）。
   - renderer が DB の行を再読込する経路。A/B 採用、`is_starred`、`thinking_blocks`、tokens／duration／model の写像。
   - semantic の二重 embedding（`chat_message_chunks` と `mastra_memory_vectors`）の併存か統合。
-  - 圧縮しても消えない「目的欄」（会話ごとの目的と条件。[MP-4 の判断](mastra-mp4-decisions.md) DR-MP4-57 の 3。内容は SessionTasks の結論で変わりうる）。
+  - ~~圧縮しても消えない「目的欄」（会話ごとの目的と条件。[MP-4 の判断](mastra-mp4-decisions.md) DR-MP4-57 の 3。内容は SessionTasks の結論で変わりうる）。~~ 2026-11-26 に取り下げ（利用者の回答。[SessionTasks の判断記録](session-tasks-decisions-2026-11.md) の DR-ST-9）。
+  - **SessionTasks（Release B）からの接続**（[SessionTasks の判断記録](session-tasks-decisions-2026-11.md) の DR-ST-7。設計のときに扱う）：続行のときに読んだ内容を引き継ぐ形（続行を出す条件は wire の P14 の Q4 と renderer）。SessionTasks の Task は Native の独立した表に置き、Mastra の thread metadata には置かない（ADR 007 §2・§4）。作者が書く目的欄は作らない（DR-ST-9）。前の回の tool の結果を全部残す形は、比較実験で質が下がったので、そのままは採らない（DR-ST-1）。
 - 層：renderer、main。
 - 条件：
   - gate M 閉で、既存の journey が全部緑。

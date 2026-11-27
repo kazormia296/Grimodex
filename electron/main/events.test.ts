@@ -55,6 +55,7 @@ const {
   sendAiStreamTerminalToWindow,
   sendBackendEventToWindow,
   sendMainEventToWindow,
+  sendMastraAgentWriteCompletedToWindow,
   setBackendEventEgressGate,
 } = await import("./events.js");
 const { createMastraAgentTurnProgressSender } =
@@ -438,6 +439,10 @@ describe("trusted event broadcast", () => {
 
     broadcastMainEvent("updater:download-progress", { downloaded: 1 });
     broadcastMainEvent("backend:ready", { fake: true });
+    broadcastMainEvent("mastra:agent-write-completed", {
+      targetId: "entry-1",
+      undoId: "undo-1",
+    });
 
     expect(w.webContents.send).toHaveBeenCalledExactlyOnceWith(
       IPC.event,
@@ -446,14 +451,42 @@ describe("trusted event broadcast", () => {
     );
   });
 
+  it("Mastra write completion は本文を拒否し、開始窓だけに送る", () => {
+    const owner = makeWindow(31);
+    const other = makeWindow(32);
+    allWindows.push(owner, other);
+
+    expect(
+      sendMastraAgentWriteCompletedToWindow(31, {
+        targetId: "entry-1",
+        undoId: "undo-1",
+        content: "private body",
+      }),
+    ).toBe(false);
+    expect(
+      sendMastraAgentWriteCompletedToWindow(31, {
+        targetId: "entry-1",
+        undoId: "undo-1",
+      }),
+    ).toBe(true);
+    expect(owner.webContents.send).toHaveBeenCalledExactlyOnceWith(
+      IPC.event,
+      "mastra:agent-write-completed",
+      { targetId: "entry-1", undoId: "undo-1" },
+    );
+    expect(other.webContents.send).not.toHaveBeenCalled();
+  });
+
   it("targeted main event は指定した main window だけへ配信する", () => {
     const main = makeWindow(21);
     const detachedPanel = makeWindow(22);
     allWindows.push(main, detachedPanel);
 
-    sendMainEventToWindow(21, "web-editor-handoff:requested", {
-      kind: "web-editor-handoff",
-    });
+    expect(
+      sendMainEventToWindow(21, "web-editor-handoff:requested", {
+        kind: "web-editor-handoff",
+      }),
+    ).toBe(true);
 
     expect(main.webContents.send).toHaveBeenCalledExactlyOnceWith(
       IPC.event,
@@ -468,7 +501,9 @@ describe("trusted event broadcast", () => {
     const main = makeWindow(21);
     allWindows.push(main);
 
-    sendMainEventToWindow(21, "backend:ready", { fake: true });
+    expect(sendMainEventToWindow(21, "backend:ready", { fake: true })).toBe(
+      false,
+    );
 
     expect(main.webContents.send).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("backend:ready"));

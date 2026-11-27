@@ -9,7 +9,7 @@
  *   send は main 側（`mastraTurnOwner.ts`）が作って注入する（ipcContract を 3 つ目の bundle に持ち込まない）。
  *   class を境界越しに `instanceof` で見ない（sink は `isAgentModelError` の形の検査）。
  * - Agent に workspace・skills・memory・mcp・browser を渡さない（DR-MP3-14。静的検査は
- *   electron/main/mastra/mastraWorkspaceDisabled.static.test.ts）。tool は M4 の turn binding だけを渡す。
+ *   electron/main/mastra/mastraWorkspaceDisabled.static.test.ts）。tool は turn の binding だけを渡す。
  * - 再試行しない（`AGENT_NO_RETRY_CONFIG`・`AGENT_CALL_OPTIONS`。GDX-POLICY-001、DR-MP3-16）。tool が無い turn は 1 step、
  *   tool がある turn は loop 上限から導出した step 数で回す。
  * - Mastra の logger は注入する（既定の ConsoleLogger は error を元ごと console に出す）。出すのは固定の文だけ。
@@ -38,10 +38,11 @@ import type {
   AgentSend,
   AgentWireToolDefinition,
 } from "./agentWire.js";
+import { MASTRA_AGENT_WRITE_TOOL_NAMES } from "../../shared/mastraWriteToolDefinitions.js";
 
 export type { MastraAgentToolBinding } from "./agentToolAdapter.js";
 
-/** M4 read tools only; the bundle test pins this list to the shared definition names. */
+/** M4 read and MP-5 UI tools; the bundle test pins these names to shared definitions. */
 export const MASTRA_AGENT_TOOL_ALLOWLIST: readonly string[] = Object.freeze([
   "search_codex",
   "search_events",
@@ -64,6 +65,14 @@ export const MASTRA_AGENT_TOOL_ALLOWLIST: readonly string[] = Object.freeze([
   "get_event_detail",
   "get_character_timeline",
   "get_chronicle_state",
+  "ask_user",
+  "run_app_command",
+  "apply_layout_preset",
+  "propose_setting_change",
+  "get_ui_state",
+  "get_app_help_index",
+  "get_app_help",
+  ...MASTRA_AGENT_WRITE_TOOL_NAMES,
 ] as string[]);
 
 /** Agent が持つ tool 名が許可リストに収まらないとき投げる。名前だけを載せる。 */

@@ -22,11 +22,13 @@
  *   cancel contract): a late settle of it is dropped, never returned and never
  *   a second terminal.
  *
- * Nothing here opens a new destination, event type, path ID, Native entry or
- * capability. It imports no `@mastra/*`: the runtime comes from `mastraAgentLoader.ts`.
+ * The question uses MP-5's existing main-only event and answer command; it
+ * opens no destination, path ID, Native entry or capability. This imports no
+ * `@mastra/*`: the runtime comes from `mastraAgentLoader.ts`.
  */
 import {
   resolveRequiredAiKeyAndSettings,
+  MASTRA_AGENT_TURN_QUESTION_EVENT,
   type NapiBackendLike,
   type SecretsResolver,
 } from "../shared/ipcContract.js";
@@ -38,10 +40,25 @@ import {
   type MastraAgentTurnProgressEvent,
   type MastraAgentTurnCancelRequest,
   type MastraAgentTurnCancelResult,
+  type MastraAgentTurnAnswerRequest,
+  type MastraAgentTurnAnswerResult,
   type MastraAgentTurnRefusalReason,
+  type MastraAgentTurnQuestionPayload,
+  type MastraAgentTurnQuestionToolName,
+  type MastraAgentTurnUiToolResult,
   type MastraAgentTurnStartRequest,
   type MastraAgentTurnStartResult,
+  MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS,
+  MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT_MS,
+  parseMastraAgentTurnQuestionPayload,
 } from "../shared/mastraAgentTurnWire.js";
+import {
+  createMastraWriteToolDefinitions,
+  MASTRA_AGENT_WRITE_TOOL_NAMES,
+  type MastraAgentWriteToolName,
+} from "../shared/mastraWriteToolDefinitions.js";
+import { NAPI_COMMANDS, type CommandArgs } from "../shared/ipcContract.js";
+import { normalizeMastraAgentWriteInput } from "../shared/agentWriteNormalization.js";
 import type {
   MastraAgentTurnCitation,
   MastraAgentTurnLoopResult,
@@ -59,8 +76,17 @@ import {
 } from "../shared/agentPayloadRenderer.js";
 import {
   createM4ReadToolDefinitions,
+  M4_READ_TOOL_NAMES,
+  type AgentReadToolDefinition,
   type M4ReadToolName,
 } from "../shared/agentReadToolDefinitions.js";
+import {
+  createMastraUiToolDefinitions,
+  MASTRA_UI_TOOL_NAMES,
+  MAX_UI_OPERATIONS_PER_TURN,
+  UI_OPERATION_TOOL_NAMES,
+  type MastraUiToolName,
+} from "../shared/mastraUiToolDefinitions.js";
 import type * as MastraTurnReadBindings from "./mastraTurnReadBindings.js";
 import type { CoreTokenizer } from "../shared/mastraRead/tokenizer.js";
 import { isAgentModelError } from "./mastra/agentModelPolicy.js";
@@ -88,6 +114,7 @@ import type {
   AgentSend,
   AgentWireArgs,
   AgentWireResponse,
+  AgentWireCapabilityGrant,
 } from "./mastra/agentWire.js";
 import type {
   MastraAgentRuntime,
@@ -98,6 +125,10 @@ import type {
   MastraAgentTurnWindow,
 } from "./mastraAgentTurnGate.js";
 import { createMastraAgentTurnProgressSender } from "./mastraAgentTurnEvents.js";
+import {
+  sendMainEventToWindow,
+  sendMastraAgentWriteCompletedToWindow,
+} from "./events.js";
 import { runNativeRead, type MainReadHooks } from "./mastraRead/nativeCall.js";
 import type {
   MainEgressParticipantContext,
@@ -122,6 +153,25 @@ export const MASTRA_TURN_TOTAL_MAX = 8;
 export const MASTRA_TURN_FALLBACK_PROJECT_ID = "default-project";
 
 const START_COMMAND = MASTRA_AGENT_TURN_START_COMMAND;
+const MASTRA_WRITE_COMMANDS: Readonly<
+  Record<MastraAgentWriteToolName, string>
+> = {
+  create_codex_entry: "agent_codex_create",
+  update_codex_entry: "agent_codex_update",
+  create_foreshadow: "agent_foreshadow_create",
+  update_foreshadow: "agent_foreshadow_update",
+  create_snippet: "agent_snippet_create",
+  apply_ai_tree_plan: "ai_tree_plan_apply",
+  propose_scene_body: "agent_propose_scene_body",
+  create_event: "agent_event_create",
+  update_event: "agent_event_update",
+  delete_event: "agent_event_delete",
+  stamp_scene_event: "agent_scene_event_link",
+  unstamp_scene_event: "agent_scene_event_unlink",
+  set_event_participants: "agent_event_set_participants",
+  add_event_relation: "agent_event_relation_add",
+  remove_event_relation: "agent_event_relation_remove",
+};
 
 // ---------------------------------------------------------------------------
 // The causes a turn can end for, as errors the adapter hands to the sink.
@@ -225,7 +275,40 @@ export interface MastraTurnOwnerOptions {
   readonly perSenderMax?: number;
   readonly totalMax?: number;
   readonly randomUUID?: () => string;
+  /** The targeted MP-5 event; false means the renderer did not receive it. */
+  readonly sendQuestion?: (
+    webContentsId: number,
+    payload: MastraAgentTurnQuestionPayload,
+  ) => boolean;
+  readonly issueWriteCapabilities?: (
+    senderId: number,
+    args: AgentWireArgs,
+    response: AgentWireResponse,
+    backend: MastraTurnBackend,
+    callerIdentity: unknown,
+  ) => Promise<unknown>;
+  readonly agentAuthorityRequestId?: (
+    toolName: string,
+    projectId: string,
+    toolCallId: string,
+  ) => string;
+  readonly bindWriteCapability?: (
+    command: string,
+    payload: CommandArgs,
+    senderId: number,
+  ) => CommandArgs | null;
+  readonly sendWriteCompleted?: (
+    webContentsId: number,
+    payload: unknown,
+  ) => boolean;
 }
+
+type SuccessfulWriteProcessor = (
+  command: string,
+  payload: CommandArgs,
+  result: unknown,
+  senderId: number,
+) => void;
 
 /** A workspace switch's lease: `resume` reopens admission. Idempotent. */
 export interface MastraTurnSwitchLease {
@@ -244,6 +327,18 @@ export interface MastraTurnOwner {
     context: MastraTurnInvokeContext,
     request: MastraAgentTurnCancelRequest,
   ): MastraAgentTurnCancelResult;
+  /** Main-owned bridge for the later UI-tool adapter and owner tests. */
+  requestUiTool(
+    turnId: string,
+    toolCallId: string,
+    toolName: MastraAgentTurnQuestionToolName,
+    args: Readonly<Record<string, unknown>>,
+  ): Promise<MastraAgentTurnUiToolResult>;
+  /** Accept one parsed answer from the window that received its question. */
+  answer(
+    context: MastraTurnInvokeContext,
+    request: MastraAgentTurnAnswerRequest,
+  ): Promise<MastraAgentTurnAnswerResult>;
   /** The egress participant's quiesce: close admission, abort, wait for the terminals. */
   quiesceForProfileEgress(
     context?: MainEgressParticipantContext,
@@ -254,6 +349,8 @@ export interface MastraTurnOwner {
   quiesceForWorkspaceSwitch(): Promise<MastraTurnSwitchLease>;
   /** The quit finalizer's call (dispose and complete both): bounded, idempotent, never rejects. */
   shutdown(): Promise<void>;
+  /** Installed by the IPC router so main-owned writes share its success effects. */
+  setSuccessfulWriteProcessor(processor: SuccessfulWriteProcessor): void;
   /** A backend event: a changed workspace binding ends the turns whose identity is no longer issued. */
   handleBackendEvent(channel: string, payload: unknown): void;
   /** How many turns are attached (running or preparing). */
@@ -283,12 +380,14 @@ interface Turn {
   readonly windowId: number;
   readonly sessionKey: string;
   /**
-   * The three fields of the start request, bound once at start and never
+   * The scope and recorder fields of the start request, bound once and never
    * changed in the turn (DR-MP4-1). Claims of the renderer, form-checked by the
    * wire parser only. `projectId` is the audit scope the sink appends to and
    * the send names; `chatMessageId` rides the send's arguments.
    */
   readonly projectId: string;
+  readonly chatSessionId: string;
+  readonly writerSessionId: string;
   readonly currentSceneId: string | null;
   readonly chatMessageId: string;
   readonly identity: unknown;
@@ -318,6 +417,19 @@ interface Turn {
   finished: boolean;
   slotReleased: boolean;
   detach: () => void;
+}
+
+interface PendingQuestion {
+  readonly turn: Turn;
+  readonly requestId: string;
+  readonly toolCallId: string;
+  readonly toolName: MastraAgentTurnQuestionToolName;
+  readonly deadlineAt: number;
+  readonly senderId: number;
+  readonly windowId: number;
+  readonly resolve: (result: MastraAgentTurnUiToolResult) => void;
+  readonly reject: (error: Error) => void;
+  readonly timer: ReturnType<typeof setTimeout>;
 }
 
 function sessionKeyOf(senderId: number, chatSessionId: string): string {
@@ -413,6 +525,17 @@ export function createMastraTurnOwner(
   const perSenderMax = options.perSenderMax ?? MASTRA_TURN_PER_SENDER_MAX;
   const totalMax = options.totalMax ?? MASTRA_TURN_TOTAL_MAX;
   const randomUUID = options.randomUUID ?? (() => crypto.randomUUID());
+  const sendQuestion =
+    options.sendQuestion ??
+    ((webContentsId, payload) =>
+      sendMainEventToWindow(
+        webContentsId,
+        MASTRA_AGENT_TURN_QUESTION_EVENT,
+        payload,
+      ));
+  const sendWriteCompleted =
+    options.sendWriteCompleted ?? sendMastraAgentWriteCompletedToWindow;
+  let successfulWriteProcessor: SuccessfulWriteProcessor | undefined;
   const m4Tools = new Map(
     createM4ReadToolDefinitions().map((tool) => [tool.name, tool]),
   );
@@ -432,6 +555,8 @@ export function createMastraTurnOwner(
   const forcedPending = new Set<Turn>();
   /** Turns with a Native read that has not settled (attached or not). */
   const readTurns = new Set<Turn>();
+  const questionsByRequest = new Map<string, PendingQuestion>();
+  const questionByWindow = new Map<number, string>();
   /** closed-profile and closed-quit are one-way; a switch is a counter that resume lowers. */
   let closed: "profile" | "quit" | null = null;
   let switchDepth = 0;
@@ -507,6 +632,7 @@ export function createMastraTurnOwner(
   ): Promise<void> => {
     if (turn.forcedTerminal !== null) return turn.forcedTerminal;
     turn.forcedCause = cause;
+    closeTurnQuestions(turn, new MastraTurnAborted(cause));
     turn.controller.abort();
     turn.rejectForced(new MastraTurnAborted(cause));
     const terminal = (async (): Promise<void> => {
@@ -597,6 +723,40 @@ export function createMastraTurnOwner(
   /** The profile quiesce's drains, released when the gate force-stops the owner. */
   const profileDrains = new Set<() => void>();
 
+  const removeQuestion = (pending: PendingQuestion): boolean => {
+    if (questionsByRequest.get(pending.requestId) !== pending) return false;
+    questionsByRequest.delete(pending.requestId);
+    if (questionByWindow.get(pending.windowId) === pending.requestId) {
+      questionByWindow.delete(pending.windowId);
+    }
+    clearTimeout(pending.timer);
+    return true;
+  };
+
+  const closeTurnQuestions = (turn: Turn, error: Error): void => {
+    for (const pending of questionsByRequest.values()) {
+      if (pending.turn === turn && removeQuestion(pending)) {
+        pending.reject(error);
+      }
+    }
+  };
+
+  const expireQuestion = (pending: PendingQuestion): boolean => {
+    if (!removeQuestion(pending)) return false;
+    if (pending.toolName === "ask_user") {
+      pending.turn.userStop = true;
+      pending.turn.cancelObserved = true;
+      pending.reject(new MastraAgentLoopStopped());
+    } else {
+      pending.reject(
+        new Error(
+          "MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT: outcome is uncertain; do not repeat the operation",
+        ),
+      );
+    }
+    return true;
+  };
+
   /** Each send and each begin: the turn's own checks before anything leaves Main (DR-MP3-5). */
   const assertLive = (turn: Turn): void => {
     if (turn.forcedCause !== null)
@@ -667,6 +827,35 @@ export function createMastraTurnOwner(
     trackInFlight: (settled) => trackRead(turn, settled),
   });
 
+  /** The same Stop/profile/identity/chat-policy check used before every send. */
+  const assertTurnAuthority = async (
+    turn: Turn,
+    backend: MastraTurnBackend,
+  ): Promise<void> => {
+    assertLive(turn);
+    const rawPolicy = await runNativeRead(
+      () =>
+        backend.dbExecute(
+          "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1",
+          [turn.projectId],
+          "get",
+          JSON.stringify(turn.identity),
+        ),
+      {
+        command: "db_execute",
+        timeoutMs: MAIN_READ_CALLER_TIMEOUT_MS.db_execute,
+        hooks: readHooksOf(turn),
+      },
+    );
+    assertLive(turn);
+    if (!projectAiChatPolicyAllows(rawPolicy)) {
+      turn.userStop = true;
+      turn.cancelObserved = true;
+      if (turn.response === null) throw new MastraTurnCancelled();
+      throw new MastraAgentLoopStopped();
+    }
+  };
+
   // -------------------------------------------------------------------------
   // The turn's sink: Main's sink, with the owner's checks and bookkeeping.
   // -------------------------------------------------------------------------
@@ -722,6 +911,7 @@ export function createMastraTurnOwner(
     turn: Turn,
     backend: MastraTurnBackend,
     credentials: { readonly settings: unknown; readonly apiKey: string },
+    capabilities: Map<string, AgentWireCapabilityGrant>,
   ): AgentSend => {
     return async (args: AgentWireArgs) => {
       assertLive(turn);
@@ -753,7 +943,29 @@ export function createMastraTurnOwner(
       };
       pending.then(settled, settled);
       const raw = await pending;
-      return JSON.parse(raw) as AgentWireResponse;
+      const response = JSON.parse(raw) as AgentWireResponse;
+      const withCapabilities = options.issueWriteCapabilities
+        ? await options.issueWriteCapabilities(
+            turn.senderId,
+            args,
+            response,
+            backend,
+            turn.identity,
+          )
+        : response;
+      const issued = (withCapabilities as AgentWireResponse)
+        .agentAuthorityCapabilities;
+      const writeToolNames = new Set<string>(MASTRA_AGENT_WRITE_TOOL_NAMES);
+      for (const [toolCallId, grant] of Object.entries(issued ?? {})) {
+        const block = response.blocks.find(
+          (candidate) =>
+            candidate.type === "tool_use" && candidate.id === toolCallId,
+        );
+        if (block?.type === "tool_use" && writeToolNames.has(block.name)) {
+          capabilities.set(toolCallId, grant);
+        }
+      }
+      return withCapabilities as AgentWireResponse;
     };
   };
 
@@ -806,6 +1018,151 @@ export function createMastraTurnOwner(
     };
   }
 
+  async function requestUiTool(
+    turnId: string,
+    toolCallId: string,
+    toolName: MastraAgentTurnQuestionToolName,
+    args: Readonly<Record<string, unknown>>,
+    authorization?: AgentWireCapabilityGrant,
+  ): Promise<MastraAgentTurnUiToolResult> {
+    const turn = attached.get(turnId);
+    if (!turn || turn.finished) throw new Error("MASTRA_AGENT_TURN_NOT_ACTIVE");
+    if (questionByWindow.has(turn.windowId)) {
+      throw new Error("MASTRA_AGENT_TURN_QUESTION_ALREADY_PENDING");
+    }
+    const backend = options.backend;
+    if (!backend) throw new Error("IPC_BACKEND_UNAVAILABLE: dbExecute");
+    await assertTurnAuthority(turn, backend);
+    if (turn.finished || attached.get(turnId) !== turn) {
+      throw new Error("MASTRA_AGENT_TURN_NOT_ACTIVE");
+    }
+    if (questionByWindow.has(turn.windowId)) {
+      throw new Error("MASTRA_AGENT_TURN_QUESTION_ALREADY_PENDING");
+    }
+    const timeoutMs =
+      toolName === "ask_user"
+        ? MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS
+        : MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT_MS;
+    const payload: MastraAgentTurnQuestionPayload = {
+      turnId,
+      requestId: randomUUID(),
+      toolCallId,
+      toolName,
+      args,
+      ...(authorization ? { authorization } : {}),
+      deadlineAt: Date.now() + timeoutMs,
+    };
+    const parsed = parseMastraAgentTurnQuestionPayload(payload);
+    if (!parsed.ok) throw new Error("MASTRA_AGENT_TURN_QUESTION_INVALID");
+    if (questionsByRequest.has(payload.requestId)) {
+      throw new Error("MASTRA_AGENT_TURN_QUESTION_ID_COLLISION");
+    }
+
+    let pending!: PendingQuestion;
+    const result = new Promise<MastraAgentTurnUiToolResult>(
+      (resolve, reject) => {
+        const timer = setTimeout(() => {
+          expireQuestion(pending);
+        }, timeoutMs);
+        pending = {
+          turn,
+          requestId: payload.requestId,
+          toolCallId,
+          toolName,
+          deadlineAt: payload.deadlineAt,
+          senderId: turn.senderId,
+          windowId: turn.windowId,
+          resolve,
+          reject,
+          timer,
+        };
+      },
+    );
+    questionsByRequest.set(pending.requestId, pending);
+    questionByWindow.set(pending.windowId, pending.requestId);
+
+    let sent = false;
+    try {
+      sent = sendQuestion(turn.senderId, parsed.value);
+    } catch {
+      // A synchronous transport error closes the registered question below.
+    }
+    if (!sent && removeQuestion(pending)) {
+      pending.reject(new Error("MASTRA_AGENT_TURN_QUESTION_DELIVERY_FAILED"));
+    }
+    return result;
+  }
+
+  async function answer(
+    context: MastraTurnInvokeContext,
+    request: MastraAgentTurnAnswerRequest,
+  ): Promise<MastraAgentTurnAnswerResult> {
+    const pending = questionsByRequest.get(request.requestId);
+    if (
+      !pending ||
+      pending.senderId !== context.sender.id ||
+      pending.windowId !== context.win?.id
+    ) {
+      return { status: "refused", reason: "no-pending" };
+    }
+    if (
+      "result" in request &&
+      (request.result.toolCallId !== pending.toolCallId ||
+        request.result.name !== pending.toolName)
+    ) {
+      return { status: "refused", reason: "invalid" };
+    }
+    if (Date.now() >= pending.deadlineAt) {
+      expireQuestion(pending);
+      return { status: "refused", reason: "no-pending" };
+    }
+
+    try {
+      const backend = options.backend;
+      if (!backend) throw new Error("IPC_BACKEND_UNAVAILABLE: dbExecute");
+      await assertTurnAuthority(pending.turn, backend);
+    } catch (error) {
+      if (questionsByRequest.get(pending.requestId) !== pending) {
+        return { status: "refused", reason: "no-pending" };
+      }
+      if (Date.now() >= pending.deadlineAt) {
+        expireQuestion(pending);
+        return { status: "refused", reason: "no-pending" };
+      }
+      // If Main cannot revalidate authority, consume the answer and stop this turn.
+      pending.turn.userStop = true;
+      pending.turn.cancelObserved = true;
+      if (removeQuestion(pending)) {
+        pending.reject(
+          error instanceof MastraTurnAborted ||
+            error instanceof MastraTurnCancelled ||
+            error instanceof MastraAgentLoopStopped
+            ? error
+            : new MastraAgentLoopStopped(),
+        );
+      }
+      return { status: "accepted", requestId: pending.requestId };
+    }
+    if (questionsByRequest.get(pending.requestId) !== pending) {
+      return { status: "refused", reason: "no-pending" };
+    }
+    if (Date.now() >= pending.deadlineAt) {
+      expireQuestion(pending);
+      return { status: "refused", reason: "no-pending" };
+    }
+    if (!removeQuestion(pending)) {
+      return { status: "refused", reason: "no-pending" };
+    }
+    if ("refusal" in request) {
+      pending.turn.userStop = true;
+      pending.turn.cancelObserved = true;
+      pending.reject(new MastraAgentLoopStopped());
+    } else {
+      pending.resolve(request.result);
+    }
+    return { status: "accepted", requestId: pending.requestId };
+  }
+
   /** The error the start rejects with, from what ended the turn. */
   function endError(turn: Turn, error: unknown): Error {
     // By the turn's own state first: Mastra and the adapter wrap what the
@@ -826,7 +1183,6 @@ export function createMastraTurnOwner(
 
   const admissionRefusal = (
     context: MastraTurnInvokeContext,
-    request: MastraAgentTurnStartRequest,
   ): MastraAgentTurnStartResult | null => {
     if (!options.open) return refusal("gate-closed");
     if (closed === "quit") return refusal("unsupported");
@@ -843,6 +1199,14 @@ export function createMastraTurnOwner(
     ) {
       return refusal("sender-refused");
     }
+    return null;
+  };
+
+  const busyRefusal = (
+    context: MastraTurnInvokeContext,
+    request: MastraAgentTurnStartRequest,
+  ): MastraAgentTurnStartResult | null => {
+    const { sender } = context;
     if (switchDepth > 0) return refusal("busy");
     if (
       attached.has(request.turnId) ||
@@ -859,7 +1223,7 @@ export function createMastraTurnOwner(
     context: MastraTurnInvokeContext,
     request: MastraAgentTurnStartRequest,
   ): Promise<MastraAgentTurnStartResult> {
-    const refused = admissionRefusal(context, request);
+    const refused = admissionRefusal(context);
     if (refused !== null) return refused;
     const model = request.route.model;
     if (typeof model !== "string" || model.trim() === "") {
@@ -893,13 +1257,57 @@ export function createMastraTurnOwner(
     }
     const tokenizer = options.tokenizer;
     if (!tokenizer) return refusal("unsupported");
-    // The wire admits only M4 names, so an unknown one is a desync of this
-    // build: refused here, before the turn is registered.
-    const toolDefinitions: ReturnType<typeof createM4ReadToolDefinitions> = [];
+    const busy = busyRefusal(context, request);
+    if (busy !== null) return busy;
+    const uiTools = request.tools.some((name) =>
+      (MASTRA_UI_TOOL_NAMES as readonly string[]).includes(name),
+    )
+      ? new Map(
+          createMastraUiToolDefinitions().map((tool) => [tool.name, tool]),
+        )
+      : null;
+    const writeTools = request.tools.some((name) =>
+      (MASTRA_AGENT_WRITE_TOOL_NAMES as readonly string[]).includes(name),
+    )
+      ? new Map(
+          createMastraWriteToolDefinitions().map((tool) => [tool.name, tool]),
+        )
+      : null;
+    const toolDefinitions: AgentReadToolDefinition[] = [];
+    const readToolDefinitions: AgentReadToolDefinition[] = [];
+    const readToolNames: M4ReadToolName[] = [];
+    const uiToolNames: MastraUiToolName[] = [];
+    const writeToolNames: MastraAgentWriteToolName[] = [];
     for (const name of request.tools) {
-      const definition = m4Tools.get(name);
-      if (!definition) return refusal("invalid");
-      toolDefinitions.push(definition);
+      const readToolName = M4_READ_TOOL_NAMES.find(
+        (candidate) => candidate === name,
+      );
+      if (readToolName) {
+        const definition = m4Tools.get(name);
+        if (!definition) return refusal("invalid");
+        toolDefinitions.push(definition);
+        readToolDefinitions.push(definition);
+        readToolNames.push(readToolName);
+        continue;
+      }
+      const uiToolName = MASTRA_UI_TOOL_NAMES.find(
+        (candidate) => candidate === name,
+      );
+      const definition = uiToolName ? uiTools?.get(uiToolName) : undefined;
+      if (uiToolName && definition) {
+        toolDefinitions.push(definition);
+        uiToolNames.push(uiToolName);
+        continue;
+      }
+      const writeToolName = MASTRA_AGENT_WRITE_TOOL_NAMES.find(
+        (candidate) => candidate === name,
+      );
+      const writeDefinition = writeToolName
+        ? writeTools?.get(writeToolName)
+        : undefined;
+      if (!writeToolName || !writeDefinition) return refusal("invalid");
+      toolDefinitions.push(writeDefinition);
+      writeToolNames.push(writeToolName);
     }
 
     let rejectForced: (error: Error) => void = () => undefined;
@@ -927,6 +1335,8 @@ export function createMastraTurnOwner(
       windowId: win.id,
       sessionKey: sessionKeyOf(sender.id, request.chatSessionId),
       projectId: request.projectId,
+      chatSessionId: request.chatSessionId,
+      writerSessionId: request.writerSessionId,
       currentSceneId: request.currentSceneId,
       chatMessageId: request.chatMessageId,
       identity: callerIdentity,
@@ -1025,7 +1435,7 @@ export function createMastraTurnOwner(
       }
       if (!tokenizerReady) return refusal("unsupported");
       let readBindingsModule: typeof MastraTurnReadBindings | null = null;
-      if (request.tools.length > 0) {
+      if (readToolNames.length > 0) {
         const loaded = await Promise.race([
           loadReadBindings().then(
             (module) => ({ module }),
@@ -1071,47 +1481,259 @@ export function createMastraTurnOwner(
       // The identity, the profile or a stop may have changed during the await.
       assertLive(turn);
       const turnReadBindings =
-        request.tools.length === 0
+        readToolNames.length === 0
           ? null
           : await readBindingsModule!.createTurnReadBindings({
               backend: options.backend!,
               identity: callerIdentity as MainIssuedCallerIdentity,
               hooks: readHooksOf(turn),
-              request,
+              request: { ...request, tools: readToolNames },
               projectId: turn.projectId,
               currentSceneId: turn.currentSceneId,
               tokenizer,
-              toolDefinitions,
+              toolDefinitions: readToolDefinitions,
             });
+      let uiOperationAttempts = 0;
+      const uiToolResults = new Map<string, MastraAgentTurnUiToolResult>();
+      const writeCapabilities = new Map<string, AgentWireCapabilityGrant>();
+      const writeToolResults = new Map<
+        string,
+        { readonly content: unknown; readonly undoId?: string }
+      >();
+      const uiToolBindings = uiToolNames.map((name) => {
+        const definition = uiTools?.get(name);
+        if (!definition) throw new Error("MASTRA_AGENT_UI_TOOL_MISSING");
+        return {
+          name,
+          description: definition.description,
+          execute: async (
+            args: unknown,
+            { toolCallId }: { toolCallId: string },
+          ) => {
+            if ((UI_OPERATION_TOOL_NAMES as readonly string[]).includes(name)) {
+              uiOperationAttempts += 1;
+              if (uiOperationAttempts > MAX_UI_OPERATIONS_PER_TURN) {
+                const message = `UI operation limit reached (${MAX_UI_OPERATIONS_PER_TURN} per response). Do not operate the UI further; tell the user what you did and that they can undo it from the tool result.`;
+                throw new Error(message);
+              }
+            }
+            const result = await requestUiTool(
+              turn.turnId,
+              toolCallId,
+              name,
+              args as Readonly<Record<string, unknown>>,
+            );
+            uiToolResults.set(toolCallId, result);
+            if (result.error) throw new Error(result.error);
+            return {
+              text:
+                result.content == null
+                  ? result.summary || "No result (not found)."
+                  : JSON.stringify(result.content),
+              summary: result.summary,
+              tokensUsed: result.tokensUsed,
+            };
+          },
+        };
+      });
+      const writeToolBindings = writeToolNames.map((name) => {
+        const definition = writeTools?.get(name);
+        if (!definition) throw new Error("MASTRA_AGENT_WRITE_TOOL_MISSING");
+        return {
+          name,
+          description: definition.description,
+          execute: async (
+            args: unknown,
+            { toolCallId }: { toolCallId: string },
+          ) => {
+            assertLive(turn);
+            const grant = writeCapabilities.get(toolCallId);
+            writeCapabilities.delete(toolCallId);
+            if (!grant || !options.issueWriteCapabilities) {
+              throw new Error("MASTRA_AGENT_WRITE_CAPABILITY_MISSING");
+            }
+            const command = MASTRA_WRITE_COMMANDS[name];
+            const backend = options.backend;
+            if (!backend) throw new Error("IPC_BACKEND_UNAVAILABLE: writer");
+            const spec = NAPI_COMMANDS[command];
+            if (!spec) throw new Error("MASTRA_AGENT_WRITE_COMMAND_MISSING");
+            if (!args || typeof args !== "object" || Array.isArray(args)) {
+              throw new Error("MASTRA_AGENT_WRITE_INPUT_INVALID");
+            }
+            const requestId = options.agentAuthorityRequestId?.(
+              name,
+              turn.projectId,
+              toolCallId,
+            );
+            if (!requestId || !options.bindWriteCapability) {
+              throw new Error("MASTRA_AGENT_WRITE_BINDING_UNAVAILABLE");
+            }
+            const normalized = normalizeMastraAgentWriteInput(
+              name,
+              args as Record<string, unknown>,
+            );
+            if (
+              name === "apply_ai_tree_plan" ||
+              name === "propose_scene_body"
+            ) {
+              const result = await requestUiTool(
+                turn.turnId,
+                toolCallId,
+                name,
+                normalized,
+                grant,
+              );
+              uiToolResults.set(toolCallId, result);
+              if (result.error) throw new Error(result.error);
+              if (result.content !== undefined) {
+                writeToolResults.set(toolCallId, {
+                  content: result.content,
+                  ...(result.undoId ? { undoId: result.undoId } : {}),
+                });
+              }
+              if (name === "apply_ai_tree_plan") {
+                if (!result.undoId) {
+                  throw new Error("MASTRA_AGENT_WRITE_RESULT_INVALID");
+                }
+                writeToolResults.set(toolCallId, {
+                  content: result.content,
+                  undoId: result.undoId,
+                });
+                const content = result.content as Record<string, unknown>;
+                const targetId = ["createdIds", "movedIds", "renamedIds"]
+                  .flatMap((key) =>
+                    Array.isArray(content?.[key]) ? content[key] as unknown[] : [],
+                  )
+                  .find((id): id is string => typeof id === "string");
+                sendWriteCompleted(turn.senderId, {
+                  targetId: targetId ?? requestId,
+                  undoId: result.undoId,
+                });
+              }
+              assertLive(turn);
+              const text = JSON.stringify(result.content);
+              return {
+                text,
+                summary: result.summary,
+                tokensUsed: result.tokensUsed,
+              };
+            }
+            if (name === "update_codex_entry") {
+              const raw = await backend.dbExecute(
+                "SELECT version FROM codex_entries WHERE id = ? AND project_id = ? LIMIT 1",
+                [normalized.entryId, turn.projectId],
+                "get",
+                JSON.stringify(turn.identity),
+              );
+              const rows = (JSON.parse(raw) as { rows?: unknown }).rows;
+              const row = Array.isArray(rows) ? rows[0] : undefined;
+              normalized.baseVersion =
+                row &&
+                typeof row === "object" &&
+                typeof (row as Record<string, unknown>).version === "number"
+                  ? (row as Record<string, number>).version
+                  : 0;
+            }
+            if (
+              name === "update_event" ||
+              name === "delete_event" ||
+              name === "set_event_participants"
+            ) {
+              if (typeof backend.eventGetVersion !== "function") {
+                throw new Error("MASTRA_AGENT_EVENT_VERSION_UNAVAILABLE");
+              }
+              const rawVersion = await backend.eventGetVersion(
+                turn.projectId,
+                String(normalized.eventId ?? ""),
+              );
+              const version: unknown = JSON.parse(rawVersion);
+              if (
+                typeof version !== "number" ||
+                !Number.isSafeInteger(version)
+              ) {
+                throw new Error("Event not found");
+              }
+              normalized.baseVersion = version;
+            }
+            const payload: CommandArgs = {
+              ...normalized,
+              projectId: turn.projectId,
+              sessionId: turn.writerSessionId,
+              writerSessionId: turn.writerSessionId,
+              requestId,
+              eventUid: `${requestId}:event`,
+              origin: "ai-apply",
+              originalTransactionId: null,
+              undoJournalId: null,
+              toolCallId,
+              executionId: grant.executionId,
+              chatMessageId: grant.chatMessageId,
+              mainOwnedProvenanceId: grant.mainOwnedProvenanceId,
+              agentAuthorityCapability: grant.capability,
+            };
+            const bound = options.bindWriteCapability(
+              command,
+              payload,
+              turn.senderId,
+            );
+            if (!bound)
+              throw new Error("MASTRA_AGENT_WRITE_CAPABILITY_INVALID");
+            const content = await spec.run(
+              backend,
+              { payload: bound },
+              {
+                backend,
+                shell: {},
+              },
+            );
+            if (
+              !content ||
+              typeof content !== "object" ||
+              typeof (content as Record<string, unknown>).entityId !==
+                "string" ||
+              typeof (content as Record<string, unknown>).undoJournalId !==
+                "string"
+            ) {
+              throw new Error("MASTRA_AGENT_WRITE_RESULT_INVALID");
+            }
+            const result = content as {
+              entityId: string;
+              undoJournalId: string;
+            };
+            writeToolResults.set(toolCallId, {
+              content,
+              undoId: result.undoJournalId,
+            });
+            sendWriteCompleted(turn.senderId, {
+              targetId: result.entityId,
+              undoId: result.undoJournalId,
+            });
+            successfulWriteProcessor?.(command, bound, content, turn.senderId);
+            assertLive(turn);
+            const text = JSON.stringify(content);
+            return {
+              text,
+              summary: `${name} completed`,
+              tokensUsed: tokenizer.countTokens(text),
+            };
+          },
+        };
+      });
+      const bindings = [
+        ...(turnReadBindings?.bindings ?? []),
+        ...uiToolBindings,
+        ...writeToolBindings,
+      ];
       const run = runtime.runTurn({
         instructions: split.instructions,
         messages: split.messages,
         route: request.route as unknown as AgentRoute,
         systemCacheSegments: request.systemCacheSegments,
         systemVolatileTail: request.systemVolatileTail,
-        send: sendFor(turn, backend, credentials),
+        send: sendFor(turn, backend, credentials, writeCapabilities),
         audit: guardedSink(turn),
         assertSendAllowed: async ({ sendIndex }) => {
-          const rawPolicy = await runNativeRead(
-            () =>
-              backend.dbExecute(
-                "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1",
-                [turn.projectId],
-                "get",
-                JSON.stringify(turn.identity),
-              ),
-            {
-              command: "db_execute",
-              timeoutMs: MAIN_READ_CALLER_TIMEOUT_MS.db_execute,
-              hooks: readHooksOf(turn),
-            },
-          );
-          if (!projectAiChatPolicyAllows(rawPolicy)) {
-            turn.cancelObserved = true;
-            throw sendIndex === 0
-              ? new MastraTurnCancelled()
-              : new MastraAgentLoopStopped();
-          }
+          await assertTurnAuthority(turn, backend);
           const prepared = preparedSendProgress;
           if (prepared?.sendIndex !== sendIndex) {
             throw new Error("MASTRA_AGENT_SEND_PROGRESS_MISSING");
@@ -1125,7 +1747,9 @@ export function createMastraTurnOwner(
           });
         },
         toolDefinitions,
-        bindings: turnReadBindings?.bindings ?? [],
+        bindings: request.tools.map(
+          (name) => bindings.find((binding) => binding.name === name)!,
+        ),
         isToolDeclared: (name) => declaredToolNames.has(name),
         isTurnStopped: () => {
           if (turn.finished) return true;
@@ -1305,15 +1929,32 @@ export function createMastraTurnOwner(
           }
           if (completedToolCallIds.has(toolCallId)) return;
           completedToolCallIds.add(toolCallId);
-          loopState = recordToolResultTokens(loopState, tokens);
+          const uiResult = uiToolResults.get(toolCallId);
+          uiToolResults.delete(toolCallId);
+          const writeResult = writeToolResults.get(toolCallId);
+          writeToolResults.delete(toolCallId);
+          loopState = recordToolResultTokens(
+            loopState,
+            uiResult?.tokensUsed ?? tokens,
+          );
           const recordIndex = toolCallRecordIndexes.get(toolCallId);
           if (recordIndex !== undefined) {
             const record = toolCallRecords[recordIndex];
             if (record && record.name === toolName) {
               toolCallRecords[recordIndex] = {
                 ...record,
-                resultSummary: summary,
-                tokensUsed: tokens,
+                resultSummary: uiResult?.summary ?? summary,
+                tokensUsed: uiResult?.tokensUsed ?? tokens,
+                ...(uiResult?.undoId ? { undoId: uiResult.undoId } : {}),
+                ...(writeResult
+                  ? {
+                      content: writeResult.content,
+                      undoId: writeResult.undoId,
+                    }
+                  : {}),
+                ...(uiResult?.settingProposal && !uiResult.error
+                  ? { settingProposal: uiResult.settingProposal }
+                  : {}),
               };
             }
           }
@@ -1419,6 +2060,7 @@ export function createMastraTurnOwner(
       }
       throw endError(turn, error);
     } finally {
+      closeTurnQuestions(turn, new MastraAgentLoopStopped());
       turn.finished = true;
       attached.delete(turn.turnId);
       if (bySession.get(turn.sessionKey) === turn)
@@ -1447,6 +2089,7 @@ export function createMastraTurnOwner(
     }
     // `user-stop`: no step begins after this (a send in flight is not cut).
     turn.userStop = true;
+    closeTurnQuestions(turn, new MastraAgentLoopStopped());
     return { status: "ok", turnId: request.turnId, found: true };
   }
 
@@ -1460,6 +2103,11 @@ export function createMastraTurnOwner(
     open: options.open,
     start: (context, request) => start(context, request),
     cancel: (context, request) => cancel(context, request),
+    requestUiTool,
+    answer,
+    setSuccessfulWriteProcessor(processor) {
+      successfulWriteProcessor = processor;
+    },
 
     async quiesceForProfileEgress(context) {
       // Admission first, and for good (a restricted or unavailable profile

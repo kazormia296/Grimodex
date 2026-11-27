@@ -766,6 +766,37 @@ fn native_dispatch_precondition_rejects_missing_or_out_of_order_events() {
 }
 
 #[test]
+fn native_dispatch_precondition_rejects_unbegun_mastra_memory_routes() {
+    let db = migrated_db();
+    // AI audit path: memory_observer
+    // AI audit path: memory_reflector
+    // AI audit path: memory_title
+    // AI audit path: memory_embedding
+    for path_id in [
+        "memory_observer",
+        "memory_reflector",
+        "memory_title",
+        "memory_embedding",
+    ] {
+        let error = db
+            .validate_ai_audit_dispatch_precondition(
+                Some("project-1"),
+                "execution-1",
+                "operation-1",
+                None,
+                path_id,
+            )
+            .expect_err("Native must refuse each memory route without durable audit begin");
+        assert!(
+            error
+                .to_string()
+                .contains("AI_AUDIT_DISPATCH_PRECONDITION_FAILED"),
+            "{path_id}: {error:#}"
+        );
+    }
+}
+
+#[test]
 fn cli_dispatch_claim_is_digest_bound_atomic_and_single_use() {
     let db = migrated_db();
     let mut started = event("cli-start", "execution.started", 1);

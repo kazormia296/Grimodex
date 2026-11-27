@@ -3,6 +3,37 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+/// project_id, surface, entity_kind, entity_id, op_kind, before_json,
+/// after_json, base_version, result_version, change_event_uid, created_at.
+type UndoJournalRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    i64,
+    i64,
+    Option<String>,
+    String,
+);
+
+/// The seeded undo row must stay inside the open-time 90-day undo retention
+/// (`open.rs` maintenance → `lib.rs` pruning of `undo_journal.created_at <
+/// datetime('now', '-90 days')`). A fixed calendar date would silently age out
+/// and make the reopen paths look like they lose author data. Computed once per
+/// test process so the seed and the post-migration check see the same value.
+fn undo_journal_created_at() -> &'static str {
+    static CREATED_AT: OnceLock<String> = OnceLock::new();
+    CREATED_AT.get_or_init(|| {
+        (chrono::Utc::now() - chrono::Duration::days(1))
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string()
+    })
+}
 
 use grimodex_core::{
     workspace_schema::has_current_schema_checkpoint_invariants, LAST_PUBLIC_RELEASE_SCHEMA_VERSION,
@@ -10,8 +41,8 @@ use grimodex_core::{
 };
 use rusqlite::{config::DbConfig, params, Connection, OptionalExtension};
 
-/// Physical DDL for the last public Release (v2.0.10 / Schema 2). SHA-matched
-/// to the tagged seed; do not stamp with rolling PREVIOUS_COMPATIBLE_*.
+/// The schema-seed-ja.sql subset of v2.0.10 (Schema 2); startup-created tables
+/// are added separately below. Do not stamp with rolling PREVIOUS_COMPATIBLE_*.
 const PREVIOUS_RELEASE_SCHEMA_SQL: &str = include_str!("../../../../../scripts/schema-seed-ja.sql");
 
 pub const PROJECT_ID: &str = "gate-a2-project";
@@ -98,6 +129,24 @@ pub const LEGACY_SEED_TABLES: &[LegacySeedTable] = &[
     LegacySeedTable {
         table: "codex_entries",
         order_by: "project_id, id",
+        identity_columns: &["id"],
+        scope: LegacySeedScope::ProjectId,
+    },
+    LegacySeedTable {
+        table: "codex_relations",
+        order_by: "id",
+        identity_columns: &["id"],
+        scope: LegacySeedScope::ProjectId,
+    },
+    LegacySeedTable {
+        table: "change_events",
+        order_by: "id",
+        identity_columns: &["id"],
+        scope: LegacySeedScope::ProjectId,
+    },
+    LegacySeedTable {
+        table: "undo_journal",
+        order_by: "id",
         identity_columns: &["id"],
         scope: LegacySeedScope::ProjectId,
     },
@@ -198,6 +247,12 @@ pub const LEGACY_FTS_TOKEN_CHECKS: &[LegacyFtsTokenCheck] = &[
     LegacyFtsTokenCheck {
         surface_table: "codex_fts",
         source_table: "codex_entries",
+        source_id: "gate-a2-related-codex",
+        token: "gatea2relatedcodexneedle",
+    },
+    LegacyFtsTokenCheck {
+        surface_table: "codex_fts",
+        source_table: "codex_entries",
         source_id: "default-project-codex",
         token: "defaultprojectcodexneedle",
     },
@@ -277,6 +332,8 @@ pub fn seed_previous_release_workspace(workspace: &Path) -> PathBuf {
         let conn = Connection::open(&db_path).expect("open release fixture db");
         conn.execute_batch(PREVIOUS_RELEASE_SCHEMA_SQL)
             .expect("create previous-release seed schema");
+        create_previous_release_startup_schema(&conn)
+            .expect("create previous-release startup schema");
         create_previous_release_ai_audit_schema(&conn)
             .expect("create previous-release AI audit schema");
         let row_counts_before_seed = table_row_counts(&conn);
@@ -295,6 +352,66 @@ pub fn seed_previous_release_workspace(workspace: &Path) -> PathBuf {
         "fixture must keep a committed WAL sidecar"
     );
     db_path
+}
+
+/// Startup DDL from v2.0.10 migrate.rs: codex_relations 1135-1154 and final
+/// rebuilt shape 3001-3027; change_events 1495-1516, event_uid 1535, unique
+/// index 1543-1544; undo_journal 2037-2052.
+fn create_previous_release_startup_schema(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE codex_relations (
+            id                  TEXT PRIMARY KEY,
+            project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            from_codex_id       TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+            to_codex_id         TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+            relation_type       TEXT NOT NULL DEFAULT 'custom',
+            label               TEXT,
+            depth_hint          INTEGER,
+            source_map_edge_id  TEXT,
+            created_at          TEXT NOT NULL,
+            updated_at          TEXT NOT NULL
+        );
+        CREATE INDEX idx_codex_relations_project ON codex_relations(project_id);
+        CREATE INDEX idx_codex_relations_from ON codex_relations(from_codex_id);
+        CREATE INDEX idx_codex_relations_to ON codex_relations(to_codex_id);
+        CREATE TABLE change_events (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_uid    TEXT,
+            project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            scene_id     TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+            domain       TEXT NOT NULL,
+            op_type      TEXT NOT NULL,
+            entity_type  TEXT,
+            entity_id    TEXT,
+            payload      TEXT NOT NULL,
+            session_id   TEXT NOT NULL,
+            sequence     INTEGER NOT NULL,
+            timestamp    INTEGER NOT NULL,
+            prev_hash    TEXT NOT NULL,
+            hash         TEXT NOT NULL
+        );
+        CREATE INDEX idx_change_events_project_ts ON change_events(project_id, timestamp);
+        CREATE INDEX idx_change_events_scene_ts ON change_events(scene_id, timestamp);
+        CREATE UNIQUE INDEX uq_change_events_project_seq ON change_events(project_id, sequence);
+        CREATE UNIQUE INDEX uq_change_events_project_uid ON change_events(project_id, event_uid);
+        CREATE TABLE undo_journal (
+            id                  TEXT PRIMARY KEY,
+            project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            surface             TEXT NOT NULL,
+            entity_kind         TEXT NOT NULL,
+            entity_id           TEXT NOT NULL,
+            op_kind             TEXT NOT NULL,
+            before_json         TEXT,
+            after_json          TEXT,
+            base_version        INTEGER NOT NULL,
+            result_version      INTEGER NOT NULL,
+            change_event_uid    TEXT,
+            created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX idx_undo_journal_project_entity
+            ON undo_journal(project_id, entity_kind, entity_id);",
+    )?;
+    Ok(())
 }
 
 fn table_row_counts(conn: &Connection) -> BTreeMap<String, i64> {
@@ -539,6 +656,40 @@ fn seed_release_rows(conn: &Connection) -> anyhow::Result<()> {
         ],
     )?;
     conn.execute(
+        "INSERT INTO codex_entries (id, project_id, type, name, aliases, summary, content, tags_cache)
+         VALUES ('gate-a2-related-codex', ?1, 'character', '凪', 'Nagi gatea2relatedcodexneedle', 'Related Gate A2 codex', ?2, 'fixture')",
+        params![
+            PROJECT_ID,
+            r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Related codex body"}]}]}"#
+        ],
+    )?;
+    conn.execute(
+        "INSERT INTO codex_relations
+            (id, project_id, from_codex_id, to_codex_id, relation_type, label,
+             depth_hint, source_map_edge_id, created_at, updated_at)
+         VALUES ('gate-a2-relation', ?1, ?2, 'gate-a2-related-codex', 'knows',
+                 'Gate A2 relationship', 2, 'gate-a2-edge', '2026-01-02T03:04:05Z', '2026-01-02T03:04:06Z')",
+        params![PROJECT_ID, CODEX_ID],
+    )?;
+    conn.execute(
+        "INSERT INTO change_events
+            (event_uid, project_id, scene_id, domain, op_type, entity_type, entity_id,
+             payload, session_id, sequence, timestamp, prev_hash, hash)
+         VALUES ('gate-a2-change-uid', ?1, ?2, 'scene', 'update', 'scene', ?2,
+                 '{\"body\":\"Gate A2 change\"}', 'gate-a2-session', 1, 3000,
+                 'gate-a2-prev-hash', 'gate-a2-hash')",
+        params![PROJECT_ID, SCENE_ID],
+    )?;
+    conn.execute(
+        "INSERT INTO undo_journal
+            (id, project_id, surface, entity_kind, entity_id, op_kind, before_json,
+             after_json, base_version, result_version, change_event_uid, created_at)
+         VALUES ('gate-a2-undo', ?1, 'scene', 'scene', ?2, 'update',
+                 '{\"body\":\"before\"}', '{\"body\":\"after\"}', 4, 5,
+                 'gate-a2-change-uid', ?3)",
+        params![PROJECT_ID, SCENE_ID, undo_journal_created_at()],
+    )?;
+    conn.execute(
         "INSERT INTO events (id, project_id, title, note, ordinal, primary_codex_id, start_time, start_granularity, precision, kind)
          VALUES (?1, ?2, '港での邂逅', 'Gate A2 chronicle event', 'a0', ?3, 42, 'day', 'exact', 'generic')",
         params![EVENT_ID, PROJECT_ID, CODEX_ID],
@@ -751,6 +902,164 @@ fn assert_release_rows_on_connection(conn: &Connection) {
         )
         .expect("codex row");
     assert_eq!(codex_summary, "Gate A2 codex summary");
+
+    let relation: (
+        String,
+        String,
+        String,
+        String,
+        Option<i64>,
+        Option<String>,
+        String,
+        String,
+    ) = conn
+        .query_row(
+            "SELECT project_id, from_codex_id, to_codex_id, relation_type,
+                    depth_hint, source_map_edge_id, created_at, updated_at
+               FROM codex_relations WHERE id = 'gate-a2-relation'",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )
+        .expect("codex relation row");
+    assert_eq!(
+        relation,
+        (
+            PROJECT_ID.into(),
+            CODEX_ID.into(),
+            "gate-a2-related-codex".into(),
+            "knows".into(),
+            Some(2),
+            Some("gate-a2-edge".into()),
+            "2026-01-02T03:04:05Z".into(),
+            "2026-01-02T03:04:06Z".into()
+        )
+    );
+    let relation_label: Option<String> = conn
+        .query_row(
+            "SELECT label FROM codex_relations WHERE id = 'gate-a2-relation'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("codex relation label");
+    assert_eq!(relation_label.as_deref(), Some("Gate A2 relationship"));
+
+    let change_event: (
+        i64,
+        String,
+        Option<String>,
+        String,
+        String,
+        String,
+        i64,
+        i64,
+        String,
+        String,
+    ) = conn
+        .query_row(
+            "SELECT id, project_id, scene_id, domain, op_type, entity_id,
+                    sequence, timestamp, event_uid, hash
+               FROM change_events WHERE event_uid = 'gate-a2-change-uid'",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                ))
+            },
+        )
+        .expect("change event row");
+    assert_eq!(
+        change_event,
+        (
+            1,
+            PROJECT_ID.into(),
+            Some(SCENE_ID.into()),
+            "scene".into(),
+            "update".into(),
+            SCENE_ID.into(),
+            1,
+            3000,
+            "gate-a2-change-uid".into(),
+            "gate-a2-hash".into()
+        )
+    );
+    let change_event_body: (Option<String>, String, String, String) = conn
+        .query_row(
+            "SELECT entity_type, payload, session_id, prev_hash
+               FROM change_events WHERE event_uid = 'gate-a2-change-uid'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("change event body columns");
+    assert_eq!(
+        change_event_body,
+        (
+            Some("scene".into()),
+            r#"{"body":"Gate A2 change"}"#.into(),
+            "gate-a2-session".into(),
+            "gate-a2-prev-hash".into()
+        )
+    );
+
+    let undo: UndoJournalRow = conn
+        .query_row(
+            "SELECT project_id, surface, entity_kind, entity_id, op_kind,
+                    before_json, after_json, base_version, result_version,
+                    change_event_uid, created_at
+               FROM undo_journal WHERE id = 'gate-a2-undo'",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                ))
+            },
+        )
+        .expect("undo journal row");
+    assert_eq!(
+        undo,
+        (
+            PROJECT_ID.into(),
+            "scene".into(),
+            "scene".into(),
+            SCENE_ID.into(),
+            "update".into(),
+            Some("{\"body\":\"before\"}".into()),
+            Some("{\"body\":\"after\"}".into()),
+            4,
+            5,
+            Some("gate-a2-change-uid".into()),
+            undo_journal_created_at().into()
+        )
+    );
 
     let event_note: String = conn
         .query_row("SELECT note FROM events WHERE id = ?1", [EVENT_ID], |row| {

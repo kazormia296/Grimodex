@@ -128,6 +128,19 @@ describe("(a)(b) BrowserWindow と webPreferences", () => {
   });
 });
 
+it("keeps local memory embedding out of renderer IPC", () => {
+  const ipcContract = readFileSync(
+    path.resolve(MAIN_DIR, "../shared/ipcContract.ts"),
+    "utf8",
+  );
+  expect(ipcContract).not.toContain("memoryEmbedTexts");
+  expect(
+    mainSources()
+      .filter(({ text }) => text.includes("memoryEmbedTexts"))
+      .map(({ file }) => file),
+  ).toEqual(["mastra/memoryConfiguration.ts", "mastra/napiMemoryBackend.ts"]);
+});
+
 describe("(c) CSP", () => {
   it("script-src は unsafe-inline・unsafe-eval・外部 origin を含まない", () => {
     const scriptSrc = APP_CONTENT_SECURITY_POLICY.split(";")
@@ -244,6 +257,41 @@ describe("(e) packaged で ELECTRON_RENDERER_URL を見ない", () => {
       readFileSync(path.join(MAIN_DIR, "devRendererUrl.ts"), "utf8"),
     );
     expect(text).toMatch(/if \(input\.isPackaged\) return undefined/);
+  });
+});
+
+describe("Main-only native commands", () => {
+  it("Mastra memory N-API は renderer の command contract に登録されない", () => {
+    const repo = path.resolve(MAIN_DIR, "../..");
+    const contract = stripComments(
+      readFileSync(path.join(repo, "electron/shared/ipcContract.ts"), "utf8"),
+    );
+    const commands = [
+      "memoryThreadRead",
+      "memoryThreadWrite",
+      "memoryThreadDelete",
+      "memoryMessageRead",
+      "memoryMessageWrite",
+      "memoryMessageDelete",
+      "memoryResourceRead",
+      "memoryResourceWrite",
+      "memoryObservationalMemoryRead",
+      "memoryObservationalMemoryWrite",
+      "memoryVectorCreateIndex",
+      "memoryVectorUpsert",
+      "memoryVectorQuery",
+      "memoryVectorListIndexes",
+      "memoryVectorDescribeIndex",
+      "memoryVectorDeleteIndex",
+      "memoryVectorUpdate",
+      "memoryVectorDelete",
+      "memoryVectorDeleteMany",
+    ];
+    expect(
+      commands.filter((command) =>
+        new RegExp(`\\b${command}\\b`).test(contract),
+      ),
+    ).toEqual([]);
   });
 });
 
@@ -794,9 +842,7 @@ describe("DA-2: spellchecker、grant を伴わない activation、gate の entry
     // Native module.
     expect(text).not.toMatch(/@mastra\b/);
     expect(text).not.toMatch(/from\s+["'][^"']*native[^"']*["']/i);
-    // The wire module imports nothing but the M4 tool names (the renderer
-    // compiles it). `agentReadToolDefinitions.ts` is itself a leaf with no
-    // import (4c-1 W1: `tools` is a list of M4 names, checked by the parser).
+    // The wire imports only the shared M4 names, UI definitions and settings catalog.
     const wire = stripComments(
       readFileSync(
         path.join(REPO, "electron/shared/mastraAgentTurnWire.ts"),
@@ -806,7 +852,11 @@ describe("DA-2: spellchecker、grant を伴わない activation、gate の entry
     const wireImports = [
       ...wire.matchAll(/^\s*import\b[\s\S]*?from\s+["']([^"']+)["']/gm),
     ].map((match) => match[1]);
-    expect(wireImports).toEqual(["./agentReadToolDefinitions.js"]);
+    expect(wireImports).toEqual([
+      "./agentReadToolDefinitions.js",
+      "./mastraUiToolDefinitions.js",
+      "./agentSettingCatalog.js",
+    ]);
     const toolNames = stripComments(
       readFileSync(
         path.join(REPO, "electron/shared/agentReadToolDefinitions.ts"),
@@ -814,6 +864,14 @@ describe("DA-2: spellchecker、grant を伴わない activation、gate の entry
       ),
     );
     expect(toolNames).not.toMatch(/^\s*import\b/m);
+    const uiDefinitions = stripComments(
+      readFileSync(
+        path.join(REPO, "electron/shared/mastraUiToolDefinitions.ts"),
+        "utf8",
+      ),
+    );
+    expect(uiDefinitions).not.toMatch(/chatAgentIr|chatAgentIR|chat IR/iu);
+    expect(uiDefinitions).not.toMatch(/from\s+["'][^"']*chatAgentIr/iu);
     // Nothing else in the product's Main names the gate or its seam.
     const namers = productSources()
       .filter(

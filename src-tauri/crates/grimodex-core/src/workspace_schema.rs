@@ -794,8 +794,10 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// SCHEMA 46 also carries an in-version repair of the `_en` FTS AFTER DELETE
 /// triggers ([`EN_FTS_DELETE_TRIGGERS`]): the language guard they once had is
 /// gone, and the repair sweeps the orphaned `_en` rows the guard left behind.
+/// Version 47 adds six closed Mastra memory tables and their cascade edges.
+/// Version 48 adds the five immutable ERM tables (DR-M3-39).
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 46
+    Ok(SCHEMA_VERSION == 48
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -860,7 +862,363 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         // AFTER INSERT/UPDATE/DELETE trigger set per real table. Required at the
         // previous marker too, so a marker-only 45 -> 46 step cannot skip the
         // install and an MCP process stays read-only on a DB missing a trigger.
-        && crate::write_clock::has_v46_write_clock(conn)?)
+        && crate::write_clock::has_v46_write_clock(conn)?
+        && has_v47_mastra_memory_storage(conn)?
+        // SCHEMA 48 / DR-M3-39: all five immutable ERM tables, their exact
+        // column names, lookup indexes, and unconditional UPDATE guards must
+        // exist before either open fast path can advance the marker.
+        && has_v48_identity_correction_storage(conn)?)
+}
+
+fn has_v47_mastra_memory_storage(conn: &Connection) -> anyhow::Result<bool> {
+    let names = [
+        "mastra_message_parts",
+        "mastra_thread_metadata",
+        "mastra_resources",
+        "mastra_observational_memory",
+        "mastra_memory_vectors",
+        "mastra_memory_vector_indexes",
+    ];
+    for name in names {
+        if !table_exists(conn, name)? {
+            return Ok(false);
+        }
+    }
+
+    let has_names = |columns: &[ColumnShape], names: &[&str]| {
+        names
+            .iter()
+            .all(|name| columns.iter().any(|column| column.name == *name))
+    };
+    let has_pk = |columns: &[ColumnShape], name: &str| {
+        columns
+            .iter()
+            .any(|column| column.name == name && column.primary_key == 1)
+    };
+    let required_text = |columns: &[ColumnShape], name: &str| {
+        columns.iter().any(|column| {
+            column.name == name && column.declared_type == "TEXT" && column.not_null
+        })
+    };
+
+    let message_parts = table_columns(conn, "mastra_message_parts")?;
+    let thread_metadata = table_columns(conn, "mastra_thread_metadata")?;
+    let resources = table_columns(conn, "mastra_resources")?;
+    let observations = table_columns(conn, "mastra_observational_memory")?;
+    let vectors = table_columns(conn, "mastra_memory_vectors")?;
+    let vector_indexes = table_columns(conn, "mastra_memory_vector_indexes")?;
+    let observation_columns = [
+        "id",
+        "scope",
+        "thread_id",
+        "project_id",
+        "resource_id",
+        "created_at",
+        "updated_at",
+        "last_observed_at",
+        "origin_type",
+        "generation_count",
+        "superseded_by",
+        "active_observations",
+        "buffered_observation_chunks_json",
+        "buffered_observations",
+        "buffered_observation_tokens",
+        "buffered_message_ids_json",
+        "buffered_reflection",
+        "buffered_reflection_tokens",
+        "buffered_reflection_input_tokens",
+        "reflected_observation_line_count",
+        "observed_message_ids_json",
+        "observed_timezone",
+        "total_tokens_observed",
+        "observation_token_count",
+        "pending_message_tokens",
+        "is_reflecting",
+        "is_observing",
+        "is_buffering_observation",
+        "is_buffering_reflection",
+        "last_buffered_at_tokens",
+        "last_buffered_at_time",
+        "config_json",
+        "metadata_json",
+    ];
+
+    if !has_pk(&message_parts, "message_id")
+        || !required_text(&message_parts, "parts_json")
+        || !foreign_key_matches(conn, "mastra_message_parts", "message_id", "chat_messages", "id")?
+        || !has_pk(&thread_metadata, "session_id")
+        || !required_text(&thread_metadata, "metadata_json")
+        || !foreign_key_matches(conn, "mastra_thread_metadata", "session_id", "chat_sessions", "id")?
+        || !has_pk(&resources, "id")
+        || !required_text(&resources, "project_id")
+        || !foreign_key_matches(conn, "mastra_resources", "project_id", "projects", "id")?
+        || !compact_sql(&table_sql(conn, "mastra_resources")?).contains(
+            "project_idtextnotnulluniquereferencesprojects(id)ondeletecascade",
+        )
+        || !has_pk(&observations, "id")
+        || !has_names(&observations, &observation_columns)
+        || !foreign_key_matches(conn, "mastra_observational_memory", "thread_id", "chat_sessions", "id")?
+        || !foreign_key_matches(conn, "mastra_observational_memory", "project_id", "projects", "id")?
+        || !compact_sql(&table_sql(conn, "mastra_observational_memory")?).contains(
+            "check((scope='thread'andthread_idisnotnullandproject_idisnull)or(scope='resource'andthread_idisnullandproject_idisnotnull))",
+        )
+        || !has_names(&vectors, &["index_name", "id", "vector", "metadata_json", "message_id"])
+        || !required_text(&vectors, "index_name")
+        || !required_text(&vectors, "id")
+        || !required_text(&vectors, "message_id")
+        || !vectors.iter().any(|column| {
+            column.name == "vector" && column.declared_type == "BLOB" && column.not_null
+        })
+        || !foreign_key_matches(conn, "mastra_memory_vectors", "message_id", "chat_messages", "id")?
+        || !has_pk(&vector_indexes, "index_name")
+        || !vector_indexes.iter().any(|column| {
+            column.name == "dimension" && column.declared_type == "INTEGER" && column.not_null
+        })
+        || !compact_sql(&table_sql(conn, "mastra_memory_vector_indexes")?)
+            .contains("check(dimension>0)")
+    {
+        return Ok(false);
+    }
+
+    let vector_primary_key = vectors
+        .iter()
+        .filter(|column| column.primary_key > 0)
+        .collect::<Vec<_>>();
+    if vector_primary_key.len() != 2
+        || vector_primary_key[0].name != "index_name"
+        || vector_primary_key[1].name != "id"
+    {
+        return Ok(false);
+    }
+
+    let message_vector_index_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index'
+           AND name = 'idx_mastra_memory_vectors_message'
+           AND tbl_name = 'mastra_memory_vectors')",
+        [],
+        |row| row.get(0),
+    )?;
+    let thread_index_exists = index_columns(conn, "idx_mastra_observational_memory_thread")?
+        .as_slice()
+        == ["thread_id", "updated_at"];
+    let project_index_exists = index_columns(conn, "idx_mastra_observational_memory_project")?
+        .as_slice()
+        == ["project_id", "updated_at"];
+    let message_parts_sql = compact_sql(&table_sql(conn, "mastra_message_parts")?);
+    let thread_metadata_sql = compact_sql(&table_sql(conn, "mastra_thread_metadata")?);
+    Ok(thread_index_exists
+        && project_index_exists
+        && message_parts_sql.contains("check(json_valid(parts_json))")
+        && thread_metadata_sql
+            .contains("check(json_valid(metadata_json)andjson_type(metadata_json)='object')")
+        && message_vector_index_exists
+        && index_columns(conn, "idx_mastra_memory_vectors_message")?.as_slice() == ["message_id"])
+}
+
+fn has_v48_identity_correction_storage(conn: &Connection) -> anyhow::Result<bool> {
+    const TABLES: &[(&str, &[&str])] = &[
+        (
+            "identity_correction_rule_revisions",
+            &[
+                "id",
+                "project_id",
+                "rule_id",
+                "revision_no",
+                "supersedes_revision_id",
+                "state",
+                "kind",
+                "scope_kind",
+                "scope_scene_id",
+                "surface_text",
+                "entry_id",
+                "other_entry_id",
+                "canonical_name",
+                "keep_previous_as_alias",
+                "reason",
+                "provenance_kind",
+                "provenance_ref",
+                "actor_id",
+                "created_at",
+                "request_id",
+            ],
+        ),
+        (
+            "identity_lineage_operations",
+            &[
+                "id",
+                "project_id",
+                "op_kind",
+                "undoes_operation_id",
+                "reason",
+                "actor_id",
+                "created_at",
+                "request_id",
+                "narrative_commit_id",
+                "applied_change_sequence",
+                "ai_disclosure_choice",
+            ],
+        ),
+        (
+            "identity_lineage_mappings",
+            &[
+                "operation_id",
+                "ordinal",
+                "source_entry_id",
+                "target_entry_id",
+                "source_disposition",
+            ],
+        ),
+        (
+            "identity_lineage_reference_assignments",
+            &[
+                "operation_id",
+                "ordinal",
+                "reference_kind",
+                "reference_id",
+                "from_entry_id",
+                "to_entry_id",
+            ],
+        ),
+        (
+            "identity_correction_applications",
+            &[
+                "id",
+                "project_id",
+                "origin_proposal_revision_id",
+                "input_proposal_revision_id",
+                "output_proposal_revision_id",
+                "rule_revision_id",
+                "route",
+                "outcome",
+                "reason_code",
+                "reapply_batch_id",
+                "created_at",
+            ],
+        ),
+    ];
+    for (table, expected_columns) in TABLES {
+        if !table_exists(conn, table)? {
+            return Ok(false);
+        }
+        let columns = table_columns(conn, table)?;
+        if !columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .eq(expected_columns.iter().copied())
+        {
+            return Ok(false);
+        }
+    }
+
+    const TRIGGERS: &[(&str, &str)] = &[
+        (
+            "identity_correction_rule_revisions_immutable_update",
+            "identity_correction_rule_revisions",
+        ),
+        (
+            "identity_lineage_operations_immutable_update",
+            "identity_lineage_operations",
+        ),
+        (
+            "identity_lineage_mappings_immutable_update",
+            "identity_lineage_mappings",
+        ),
+        (
+            "identity_lineage_reference_assignments_immutable_update",
+            "identity_lineage_reference_assignments",
+        ),
+        (
+            "identity_correction_applications_immutable_update",
+            "identity_correction_applications",
+        ),
+    ];
+    for (trigger, table) in TRIGGERS {
+        let sql = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
+                [trigger],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(sql) = sql else {
+            return Ok(false);
+        };
+        let sql = compact_sql(&sql);
+        if !sql.contains(&format!("beforeupdateon{table}")) || !sql.contains("selectraise(abort,") {
+            return Ok(false);
+        }
+    }
+
+    const INDEXES: &[(&str, &str, &[&str])] = &[
+        (
+            "idx_identity_correction_rules_project_kind",
+            "identity_correction_rule_revisions",
+            &["project_id", "kind"],
+        ),
+        (
+            "idx_identity_correction_rules_project_entry",
+            "identity_correction_rule_revisions",
+            &["project_id", "entry_id"],
+        ),
+        (
+            "idx_identity_correction_rules_project_other_entry",
+            "identity_correction_rule_revisions",
+            &["project_id", "other_entry_id"],
+        ),
+        (
+            "idx_identity_correction_rules_project_scope_scene",
+            "identity_correction_rule_revisions",
+            &["project_id", "scope_scene_id"],
+        ),
+        (
+            "idx_identity_lineage_reference_assignments_reference",
+            "identity_lineage_reference_assignments",
+            &["reference_kind", "reference_id"],
+        ),
+        (
+            "idx_identity_correction_applications_project_batch",
+            "identity_correction_applications",
+            &["project_id", "reapply_batch_id"],
+        ),
+        (
+            "idx_identity_correction_applications_origin_revision",
+            "identity_correction_applications",
+            &["origin_proposal_revision_id"],
+        ),
+        (
+            "idx_identity_correction_applications_input_revision",
+            "identity_correction_applications",
+            &["input_proposal_revision_id"],
+        ),
+        (
+            "idx_identity_correction_applications_output_revision",
+            "identity_correction_applications",
+            &["output_proposal_revision_id"],
+        ),
+        (
+            "idx_identity_correction_applications_rule_revision",
+            "identity_correction_applications",
+            &["rule_revision_id"],
+        ),
+    ];
+    for (index, table, expected_columns) in INDEXES {
+        let actual_table = conn
+            .query_row(
+                "SELECT tbl_name FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                [index],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if actual_table.as_deref() != Some(*table)
+            || !index_columns(conn, index)?
+                .iter()
+                .map(String::as_str)
+                .eq(expected_columns.iter().copied())
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn has_v37_generation_storage(conn: &Connection) -> anyhow::Result<bool> {

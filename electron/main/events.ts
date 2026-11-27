@@ -14,9 +14,11 @@ import { BrowserWindow, ipcMain } from "electron";
 
 import {
   IPC,
+  MASTRA_AGENT_WRITE_COMPLETED_EVENT,
   isAllowedBackendEventChannel,
   isAllowedMainEventChannel,
   isAllowedRendererEventChannel,
+  parseMastraAgentWriteCompletedEvent,
 } from "../shared/ipcContract.js";
 import type { NapiBackendLike } from "../shared/ipcContract.js";
 import {
@@ -284,11 +286,30 @@ export function sendAiStreamTerminalToWindow(
 
 /** Electron main 専用イベントを検証して配信する。 */
 export function broadcastMainEvent(channel: string, payload: unknown): void {
-  if (!isAllowedMainEventChannel(channel)) {
+  if (
+    channel === MASTRA_AGENT_WRITE_COMPLETED_EVENT ||
+    !isAllowedMainEventChannel(channel)
+  ) {
     console.warn(`[main:event] rejected non-main channel: ${String(channel)}`);
     return;
   }
   broadcastEvent(channel, payload);
+}
+
+/** Sends a validated, body-free write receipt only to the originating window. */
+export function sendMastraAgentWriteCompletedToWindow(
+  webContentsId: number,
+  payload: unknown,
+): boolean {
+  const parsed = parseMastraAgentWriteCompletedEvent(payload);
+  return (
+    parsed !== null &&
+    sendMainEventToWindow(
+      webContentsId,
+      MASTRA_AGENT_WRITE_COMPLETED_EVENT,
+      parsed,
+    )
+  );
 }
 
 /**
@@ -300,21 +321,23 @@ export function sendMainEventToWindow(
   webContentsId: number,
   channel: string,
   payload: unknown,
-): void {
+): boolean {
   if (!isAllowedMainEventChannel(channel)) {
     console.warn(`[main:event] rejected non-main channel: ${String(channel)}`);
-    return;
+    return false;
   }
   const target = BrowserWindow.getAllWindows().find(
     (win) => !win.isDestroyed() && win.webContents.id === webContentsId,
   );
-  if (!target) return;
+  if (!target) return false;
   try {
     target.webContents.send(IPC.event, channel, payload);
+    return true;
   } catch (cause) {
     console.warn(
       `[main:event] target ${webContentsId} became unavailable: ${cause instanceof Error ? cause.message : String(cause)}`,
     );
+    return false;
   }
 }
 
