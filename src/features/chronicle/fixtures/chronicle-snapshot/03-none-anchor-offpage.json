@@ -7,24 +7,56 @@
       { "id": "s2", "parentId": null, "nodeType": "scene", "sortOrder": "a1" }
     ],
     "events": [
-      { "id": "eb", "title": "Born", "note": null, "ordinal": "a0", "primaryCodexId": "hero", "locationCodexId": null, "startTime": 0, "startGranularity": "day", "kind": "birth", "precision": "exact" },
-      { "id": "e1", "title": "Secret meeting", "note": "offpage", "ordinal": "a1", "primaryCodexId": "hero", "locationCodexId": null, "startTime": 50, "startGranularity": "day", "kind": "generic", "precision": "exact" }
+      {
+        "id": "eb",
+        "title": "Born",
+        "note": null,
+        "ordinal": "a0",
+        "primaryCodexId": "hero",
+        "locationCodexId": null,
+        "startTime": 0,
+        "startGranularity": "day",
+        "kind": "birth",
+        "precision": "exact"
+      },
+      {
+        "id": "e1",
+        "title": "Secret meeting",
+        "note": "offpage",
+        "ordinal": "a1",
+        "primaryCodexId": "hero",
+        "locationCodexId": null,
+        "startTime": 50,
+        "startGranularity": "day",
+        "kind": "generic",
+        "precision": "exact"
+      }
     ],
     "participants": [],
     "relations": [],
-    "sceneEvents": [
-      { "sceneId": "s2", "eventId": "e1" }
-    ],
+    "sceneEvents": [{ "sceneId": "s2", "eventId": "e1" }],
     "calendar": null,
     "codexNames": { "hero": "Hero" }
   },
   "expected": {
-    "time": { "source": "none", "startTime": null, "season": null, "precision": null, "formattedDate": null },
+    "time": {
+      "source": "none",
+      "startTime": null,
+      "season": null,
+      "precision": null,
+      "formattedDate": null
+    },
     "characters": [],
     "recentEvents": [],
     "unresolvedCausal": [],
     "offpage": [
-      { "eventId": "eb", "title": "Born", "note": null, "relTime": null, "precision": "exact" }
+      {
+        "eventId": "eb",
+        "title": "Born",
+        "note": null,
+        "relTime": null,
+        "precision": "exact"
+      }
     ]
   }
 }

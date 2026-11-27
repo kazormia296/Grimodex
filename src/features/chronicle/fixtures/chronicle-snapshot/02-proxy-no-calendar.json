@@ -7,23 +7,50 @@
       { "id": "s2", "parentId": null, "nodeType": "scene", "sortOrder": "a1" }
     ],
     "events": [
-      { "id": "e1", "title": "Meeting", "note": null, "ordinal": "a1", "primaryCodexId": "hero", "locationCodexId": null, "startTime": 100, "startGranularity": "day", "kind": "generic", "precision": "unknown" }
+      {
+        "id": "e1",
+        "title": "Meeting",
+        "note": null,
+        "ordinal": "a1",
+        "primaryCodexId": "hero",
+        "locationCodexId": null,
+        "startTime": 100,
+        "startGranularity": "day",
+        "kind": "generic",
+        "precision": "unknown"
+      }
     ],
     "participants": [],
     "relations": [],
-    "sceneEvents": [
-      { "sceneId": "s1", "eventId": "e1" }
-    ],
+    "sceneEvents": [{ "sceneId": "s1", "eventId": "e1" }],
     "calendar": null,
     "codexNames": { "hero": "Hero" }
   },
   "expected": {
-    "time": { "source": "proxy", "startTime": 100, "season": null, "precision": "unknown", "formattedDate": null },
+    "time": {
+      "source": "proxy",
+      "startTime": 100,
+      "season": null,
+      "precision": "unknown",
+      "formattedDate": null
+    },
     "characters": [
-      { "codexId": "hero", "name": "Hero", "status": "unknown", "age": null, "location": null }
+      {
+        "codexId": "hero",
+        "name": "Hero",
+        "status": "unknown",
+        "age": null,
+        "location": null
+      }
     ],
     "recentEvents": [
-      { "eventId": "e1", "title": "Meeting", "note": null, "relTime": null, "precision": "unknown" }
+      {
+        "eventId": "e1",
+        "title": "Meeting",
+        "note": null,
+        "relTime": null,
+        "precision": "unknown"
+      }
     ],
     "unresolvedCausal": [],
     "offpage": []

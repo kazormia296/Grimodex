@@ -23,8 +23,10 @@
         "ordinal": "a0",
         "primaryCodexId": "hero",
         "locationCodexId": null,
-        "startTime": 89012, "startGranularity": "day",
-        "kind": "birth", "precision": "exact"
+        "startTime": 89012,
+        "startGranularity": "day",
+        "kind": "birth",
+        "precision": "exact"
       },
       {
         "id": "e1",
@@ -33,8 +35,10 @@
         "ordinal": "a1",
         "primaryCodexId": "hero",
         "locationCodexId": null,
-        "startTime": 96000, "startGranularity": "day",
-        "kind": "generic", "precision": "exact"
+        "startTime": 96000,
+        "startGranularity": "day",
+        "kind": "generic",
+        "precision": "exact"
       },
       {
         "id": "e2",
@@ -43,8 +47,10 @@
         "ordinal": "a2",
         "primaryCodexId": "mentor",
         "locationCodexId": null,
-        "startTime": 96212, "startGranularity": "day",
-        "kind": "generic", "precision": "exact"
+        "startTime": 96212,
+        "startGranularity": "day",
+        "kind": "generic",
+        "precision": "exact"
       },
       {
         "id": "e3",
@@ -53,8 +59,10 @@
         "ordinal": "a3",
         "primaryCodexId": "hero",
         "locationCodexId": null,
-        "startTime": 96500, "startGranularity": "day",
-        "kind": "generic", "precision": "exact"
+        "startTime": 96500,
+        "startGranularity": "day",
+        "kind": "generic",
+        "precision": "exact"
       }
     ],
     "participants": [],
@@ -112,14 +120,51 @@
       }
     ],
     "recentEvents": [
-      { "eventId": "e2", "title": "邂逅", "note": null, "relTime": "同日", "precision": "exact" },
-      { "eventId": "e1", "title": "出立", "note": "故郷を発つ", "relTime": "約7ヶ月前", "precision": "exact" }
+      {
+        "eventId": "e2",
+        "title": "邂逅",
+        "note": null,
+        "relTime": "同日",
+        "precision": "exact"
+      },
+      {
+        "eventId": "e1",
+        "title": "出立",
+        "note": "故郷を発つ",
+        "relTime": "約7ヶ月前",
+        "precision": "exact"
+      }
     ],
-    "unresolvedCausal": [{ "causeTitle": "出立", "effectTitle": "決戦", "causePrecision": "exact", "effectPrecision": "exact" }],
+    "unresolvedCausal": [
+      {
+        "causeTitle": "出立",
+        "effectTitle": "決戦",
+        "causePrecision": "exact",
+        "effectPrecision": "exact"
+      }
+    ],
     "offpage": [
-      { "eventId": "eb", "title": "勇者誕生", "note": null, "relTime": "約20年前", "precision": "exact" },
-      { "eventId": "e2", "title": "邂逅", "note": null, "relTime": "同日", "precision": "exact" },
-      { "eventId": "e1", "title": "出立", "note": "故郷を発つ", "relTime": "約7ヶ月前", "precision": "exact" }
+      {
+        "eventId": "eb",
+        "title": "勇者誕生",
+        "note": null,
+        "relTime": "約20年前",
+        "precision": "exact"
+      },
+      {
+        "eventId": "e2",
+        "title": "邂逅",
+        "note": null,
+        "relTime": "同日",
+        "precision": "exact"
+      },
+      {
+        "eventId": "e1",
+        "title": "出立",
+        "note": "故郷を発つ",
+        "relTime": "約7ヶ月前",
+        "precision": "exact"
+      }
     ]
   }
 }
