@@ -16,6 +16,13 @@ interface CompletedTurnPersistenceSteps {
   finalize?: () => Promise<void>;
 }
 
+/** M turns are persisted by the main adapter; legacy turns stay renderer-owned. */
+export function shouldPersistChatTurnInRenderer(
+  isMastraMemoryTurn: boolean,
+): boolean {
+  return !isMastraMemoryTurn;
+}
+
 /**
  * Preserves per-row progress across lifecycle retries. Message IDs are stable,
  * but a user insert can succeed before the assistant insert fails; retrying
