@@ -1,0 +1,177 @@
+[
+  {
+    "id": "name-identity",
+    "scene": {
+      "id": "scene-name",
+      "title": "駅の再会",
+      "content": "澪（みお）と澪（れい）が駅で会い、旧澪の記録も見つけた。"
+    },
+    "codexEntries": [
+      {
+        "id": "mio-mi",
+        "type": "character",
+        "name": "澪",
+        "aliases": ["みお"],
+        "summary": "みお。今の職業は灯台守。"
+      },
+      {
+        "id": "mio-rei",
+        "type": "character",
+        "name": "澪",
+        "aliases": ["れい"],
+        "summary": "れい。今の職業は時計職人。"
+      },
+      {
+        "id": "mio-old",
+        "type": "character",
+        "name": "澪",
+        "aliases": ["旧澪"],
+        "summary": "旧設定では灯台守ではなく船大工。"
+      }
+    ],
+    "approvedCodexEntryIds": ["mio-rei"],
+    "userMessage": "澪の今の職業を一言で答えて。",
+    "expected": ["時計職人"],
+    "forbidden": ["灯台守", "船大工"]
+  },
+  {
+    "id": "alias-near-match",
+    "scene": {
+      "id": "scene-alias",
+      "title": "二人の案内人",
+      "content": "白鷺（しらさぎ）と白萩（しらはぎ）、白萩（しろはぎ）の三人が道を案内する。"
+    },
+    "codexEntries": [
+      {
+        "id": "shirasagi",
+        "type": "character",
+        "name": "白鷺",
+        "aliases": ["しらさぎ"],
+        "summary": "しらさぎは北門を開ける。"
+      },
+      {
+        "id": "shiraha",
+        "type": "character",
+        "name": "白萩",
+        "aliases": ["しらはぎ"],
+        "summary": "しらはぎは南門を開ける。"
+      },
+      {
+        "id": "shirohagi",
+        "type": "character",
+        "name": "白萩",
+        "aliases": ["しろはぎ"],
+        "summary": "しろはぎは西門を開ける。"
+      }
+    ],
+    "approvedCodexEntryIds": ["shiraha"],
+    "userMessage": "白萩が開ける門はどこ？一言で答えて。",
+    "expected": ["南門"],
+    "forbidden": ["北門", "西門"]
+  },
+  {
+    "id": "old-current",
+    "scene": {
+      "id": "scene-version",
+      "title": "青い薬",
+      "content": "薬師の凛（りん）が青い薬を調合する。旧りんの記録と草案りんの案も残っている。"
+    },
+    "codexEntries": [
+      {
+        "id": "rin-old",
+        "type": "character",
+        "name": "凛",
+        "aliases": ["旧りん"],
+        "summary": "旧設定：青い薬の材料は銀杏。"
+      },
+      {
+        "id": "rin-current",
+        "type": "character",
+        "name": "凛",
+        "aliases": ["りん"],
+        "summary": "現行設定：青い薬の材料は月桂樹。"
+      },
+      {
+        "id": "rin-draft",
+        "type": "character",
+        "name": "凛",
+        "aliases": ["草案りん"],
+        "summary": "草案：青い薬の材料は薄荷。"
+      }
+    ],
+    "approvedCodexEntryIds": ["rin-current"],
+    "userMessage": "凛の青い薬に使う材料は？一言で答えて。",
+    "expected": ["月桂樹"],
+    "forbidden": ["銀杏", "薄荷"]
+  },
+  {
+    "id": "near-alias",
+    "scene": {
+      "id": "scene-alias2",
+      "title": "橋の合図",
+      "content": "灯（あかり）と燈（ともしび）が橋の両側に立ち、あかり旧の記録も参照する。"
+    },
+    "codexEntries": [
+      {
+        "id": "akari",
+        "type": "character",
+        "name": "灯",
+        "aliases": ["あかり"],
+        "summary": "あかりは青い旗を振る。"
+      },
+      {
+        "id": "tomoshibi",
+        "type": "character",
+        "name": "燈",
+        "aliases": ["ともしび"],
+        "summary": "ともしびは白い旗を振る。"
+      },
+      {
+        "id": "akari-old",
+        "type": "character",
+        "name": "灯",
+        "aliases": ["あかり旧"],
+        "summary": "旧案では赤い旗を振る。"
+      }
+    ],
+    "approvedCodexEntryIds": ["tomoshibi"],
+    "userMessage": "灯・燈が振る旗の色は？一言で答えて。",
+    "expected": ["白い旗"],
+    "forbidden": ["青い旗", "赤い旗"]
+  },
+  {
+    "id": "role-ambiguity",
+    "scene": {
+      "id": "scene-role",
+      "title": "薬草庫",
+      "content": "医師の七海（ななみ）と庭師の七海（なな）が薬草庫を調べ、旧ななみの記録も確認する。"
+    },
+    "codexEntries": [
+      {
+        "id": "nanami-医",
+        "type": "character",
+        "name": "七海",
+        "aliases": ["ななみ"],
+        "summary": "ななみは医師。鍵は銅製。"
+      },
+      {
+        "id": "nanami-garden",
+        "type": "character",
+        "name": "七海",
+        "aliases": ["なな"],
+        "summary": "ななは庭師。鍵は木製。"
+      },
+      {
+        "id": "nanami-old",
+        "type": "character",
+        "name": "七海",
+        "aliases": ["旧ななみ"],
+        "summary": "以前の設定では鍵は鉄製。"
+      }
+    ],
+    "approvedCodexEntryIds": ["nanami-garden"],
+    "userMessage": "七海が持つ鍵の材質は？一言で答えて。",
+    "expected": ["木製"],
+    "forbidden": ["銅製", "鉄製"]
+  }
+]
