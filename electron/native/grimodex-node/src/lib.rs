@@ -14205,6 +14205,26 @@ impl Backend {
         serde_json::to_string(&status).map_err(|error| Error::from_reason(error.to_string()))
     }
 
+    /// Embed arbitrary bounded text locally for main-process memory adapters.
+    #[napi]
+    pub async fn memory_embed_texts(&self, language: String, texts: Vec<String>) -> Result<String> {
+        if !(1..=64).contains(&texts.len())
+            || texts
+                .iter()
+                .any(|text| text.is_empty() || text.chars().count() > 16_384)
+        {
+            return Err(Error::from_reason("MEMORY_EMBED_INVALID_INPUT"));
+        }
+        let semantic = Arc::clone(&self.state.semantic);
+        run_blocking(move || {
+            let response = semantic
+                .memory_embed_texts(&language, &texts)
+                .map_err(anyhow::Error::from)?;
+            Ok(serde_json::to_string(&response).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
     #[napi]
     pub async fn semantic_index_scene(
         &self,

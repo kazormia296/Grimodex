@@ -1093,7 +1093,6 @@ export function createMastraTurnOwner(
 
   const admissionRefusal = (
     context: MastraTurnInvokeContext,
-    request: MastraAgentTurnStartRequest,
   ): MastraAgentTurnStartResult | null => {
     if (!options.open) return refusal("gate-closed");
     if (closed === "quit") return refusal("unsupported");
@@ -1110,6 +1109,14 @@ export function createMastraTurnOwner(
     ) {
       return refusal("sender-refused");
     }
+    return null;
+  };
+
+  const busyRefusal = (
+    context: MastraTurnInvokeContext,
+    request: MastraAgentTurnStartRequest,
+  ): MastraAgentTurnStartResult | null => {
+    const { sender } = context;
     if (switchDepth > 0) return refusal("busy");
     if (
       attached.has(request.turnId) ||
@@ -1126,7 +1133,7 @@ export function createMastraTurnOwner(
     context: MastraTurnInvokeContext,
     request: MastraAgentTurnStartRequest,
   ): Promise<MastraAgentTurnStartResult> {
-    const refused = admissionRefusal(context, request);
+    const refused = admissionRefusal(context);
     if (refused !== null) return refused;
     const model = request.route.model;
     if (typeof model !== "string" || model.trim() === "") {
@@ -1160,6 +1167,8 @@ export function createMastraTurnOwner(
     }
     const tokenizer = options.tokenizer;
     if (!tokenizer) return refusal("unsupported");
+    const busy = busyRefusal(context, request);
+    if (busy !== null) return busy;
     const uiTools = request.tools.some((name) =>
       (MASTRA_UI_TOOL_NAMES as readonly string[]).includes(name),
     )

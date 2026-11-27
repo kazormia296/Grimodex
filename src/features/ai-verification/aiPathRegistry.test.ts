@@ -55,6 +55,9 @@ const REQUIRED_AUDITED_PATH_IDS = [
   "context_creator",
   "synopsis",
   "session_title",
+  "memory_observer",
+  "memory_reflector",
+  "memory_title",
   "summarization",
   "foreshadow_audit_chapter",
   "foreshadow_propose_past_setups",
@@ -95,6 +98,7 @@ const REQUIRED_AUDITED_PATH_IDS = [
   "post_effect_impact_review",
   "semantic_search",
   "semantic_embedding_index",
+  "memory_embedding",
   "semantic_reranker",
   "semantic_reranker_shadow",
 ] as const;
@@ -647,6 +651,25 @@ describe("AI path registry — the main-agent audit owner (MP-3b, DR-MP3-23)", (
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("AI path registry — MP-10 memory routes", () => {
+  it("keeps memory_title dormant while M is closed and preserves session_title", () => {
+    const memoryTitle = AI_PATHS.find((path) => path.id === "memory_title");
+    expect(memoryTitle?.note).toContain("旗 M が閉じている間は dispatch せず");
+    expect(AI_PATHS.some((path) => path.id === "session_title")).toBe(true);
+    expect(
+      AI_AUDIT_RENDERER_CALLSITES.some(
+        (callsite) => callsite.pathId === "session_title",
+      ),
+    ).toBe(true);
+
+    const agentRuntime = readFileSync(
+      join(REPO_ROOT, "electron/main/mastra/agentRuntime.ts"),
+      "utf8",
+    );
+    expect(agentRuntime).not.toMatch(/memory_title|\bmemory\s*:/u);
   });
 });
 

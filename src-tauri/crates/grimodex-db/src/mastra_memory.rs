@@ -271,9 +271,10 @@ fn vector_values(bytes: &[u8]) -> Result<Vec<f32>> {
     if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
         return refuse(MemoryRefusal::InvalidRequest);
     }
-    let values = bytes
-        .chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+    let (chunks, _) = bytes.as_chunks::<4>();
+    let values = chunks
+        .iter()
+        .map(|chunk| f32::from_le_bytes(*chunk))
         .collect::<Vec<_>>();
     valid_vector(&values)?;
     Ok(values)
