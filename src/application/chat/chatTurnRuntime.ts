@@ -7,6 +7,7 @@ import {
   createQuiescenceProviderId,
   registerQuiescenceProvider,
 } from "@/lib/quiescenceProviders";
+import { debugLog, errorDetail } from "@/lib/debugLog";
 import {
   createPendingCompletedTurnPersistenceRegistry,
   pendingCompletedTurnPersistence as productionPendingCompletedTurnPersistence,
@@ -14,6 +15,8 @@ import {
   type PendingCompletedTurnPersistenceRegistry,
   type PendingCompletedTurnPersistenceTarget,
 } from "./pendingCompletedTurnPersistence";
+import { shouldAbortMastraTurn } from "./shouldAbortMastraTurn";
+export { shouldAbortMastraTurn } from "./shouldAbortMastraTurn";
 
 export interface ChatTurnRuntime {
   coordinator: TurnCoordinator;
@@ -216,21 +219,22 @@ export function createChatTurnRuntime(options?: {
     },
 
     shouldAbortMastraTurn(input) {
-      return (
-        input.explicitlyAborted ||
-        !input.isCurrentTurn ||
-        !input.workspaceIsCurrent ||
-        !input.projectIsCurrent ||
-        !input.chatPolicyAllows ||
-        !input.licenseAllows ||
-        !input.quiescenceAllowsMutation
-      );
+      return shouldAbortMastraTurn(input);
     },
 
     async tryMastraTurn(input) {
-      const { createMastraTurnAttempt } =
-        await import("./chatTurnMastraEngine");
-      return createMastraTurnAttempt(input, runtime);
+      try {
+        const { createMastraTurnAttempt } =
+          await import("./chatTurnMastraEngine");
+        return createMastraTurnAttempt(input, runtime);
+      } catch (error) {
+        debugLog.warn(
+          "ChatStore",
+          "Mastra turn setup failed",
+          errorDetail(error),
+        );
+        return null;
+      }
     },
 
     claimMastraTurn(turnId) {

@@ -29,9 +29,6 @@ import { resolve } from "node:path";
 import {
   _pendingAiAuditExecutionCountForTests,
   _resetPendingAiAuditExecutionsForTests,
-  abandonPendingAiAuditExecution,
-  completePendingAiAuditExecution,
-  reservePendingAiAuditExecution,
 } from "@/features/ai-audit/executionRegistry";
 
 const eligibility = {
@@ -293,27 +290,96 @@ describe("Mastra turn wiring", () => {
     );
   });
 
-  it.each([
-    ["start rejected", "complete"],
-    ["invalid response", "complete"],
-    ["started turn exits in finally", "complete"],
-    ["refused before start", "abandon"],
-    ["pre-start failure in finally", "abandon"],
-  ] as const)("leaves no registry entry after %s", (_path, disposition) => {
+  it("reserves and closes the audit registry through the production engine", async () => {
     _resetPendingAiAuditExecutionsForTests();
-    reservePendingAiAuditExecution("mastra-turn");
-
-    if (disposition === "complete") {
-      completePendingAiAuditExecution("mastra-turn");
-    } else {
-      abandonPendingAiAuditExecution("mastra-turn");
-    }
-
+    mastraMocks.start.mockReset().mockResolvedValue({
+      kind: "completed",
+      response: { blocks: [] },
+    });
+    mastraMocks.registerQuestion.mockReset().mockResolvedValue(vi.fn());
+    mastraMocks.listenProgress.mockReset().mockResolvedValue(vi.fn());
+    mastraMocks.flushSceneWrites.mockReset().mockResolvedValue(undefined);
+    const runtime = {
+      claimMastraTurn: vi.fn(() => true),
+      hasActiveMastraTurn: vi.fn(() => false),
+      releaseMastraTurn: vi.fn(),
+      setStreamCleanup: vi.fn(),
+      clearStreamCleanupIf: vi.fn(),
+    };
+    const attempt = createMastraTurnAttempt(admission, runtime as never)!;
+    await attempt.preflight;
+    await expect(attempt.run(executionContext())).resolves.toMatchObject({
+      kind: "completed",
+    });
     expect(_pendingAiAuditExecutionCountForTests()).toBe(0);
   });
 });
 
 describe("Mastra attempt terminal cleanup", () => {
+  it.each([
+    ["scene-write preflight", "preflight"],
+    ["listener registration", "listener"],
+  ] as const)(
+    "falls back and releases after %s failure",
+    async (_label, failure) => {
+      const runtime = {
+        claimMastraTurn: vi.fn(() => true),
+        hasActiveMastraTurn: vi.fn(() => false),
+        releaseMastraTurn: vi.fn(),
+        setStreamCleanup: vi.fn(),
+        clearStreamCleanupIf: vi.fn(),
+      };
+      const unregisterQuestion = vi.fn();
+      mastraMocks.flushSceneWrites.mockReset();
+      mastraMocks.registerQuestion.mockReset();
+      mastraMocks.listenProgress.mockReset();
+      if (failure === "preflight") {
+        mastraMocks.flushSceneWrites.mockRejectedValueOnce(new Error("flush"));
+      } else {
+        mastraMocks.flushSceneWrites.mockResolvedValue(undefined);
+        mastraMocks.registerQuestion.mockResolvedValue(unregisterQuestion);
+        mastraMocks.listenProgress.mockRejectedValueOnce(new Error("listener"));
+      }
+      const attempt = createMastraTurnAttempt(admission, runtime as never)!;
+      await expect(attempt.preflight).resolves.toBe(false);
+      const context = executionContext();
+      await expect(attempt.run(context)).resolves.toMatchObject({
+        kind: "fallback",
+      });
+      expect(context.onLegacyFallback).toHaveBeenCalledOnce();
+      expect(runtime.releaseMastraTurn).toHaveBeenCalledOnce();
+      if (failure === "listener")
+        expect(unregisterQuestion).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("recovers an assistant row in the start session", async () => {
+    mastraMocks.start.mockReset().mockResolvedValue({
+      kind: "completed",
+      response: { blocks: [] },
+    });
+    mastraMocks.registerQuestion.mockReset().mockResolvedValue(vi.fn());
+    mastraMocks.listenProgress.mockReset().mockResolvedValue(vi.fn());
+    mastraMocks.flushSceneWrites.mockReset().mockResolvedValue(undefined);
+    const runtime = {
+      claimMastraTurn: vi.fn(() => true),
+      hasActiveMastraTurn: vi.fn(() => false),
+      releaseMastraTurn: vi.fn(),
+      setStreamCleanup: vi.fn(),
+      clearStreamCleanupIf: vi.fn(),
+    };
+    const attempt = createMastraTurnAttempt(admission, runtime as never)!;
+    await attempt.preflight;
+    await attempt.run(executionContext());
+
+    expect(
+      attempt.recoverAssistant(undefined, "recovered", "gpt-test", "{}"),
+    ).toMatchObject({
+      sessionId: admission.chatSessionId,
+      content: "recovered",
+    });
+  });
+
   it.each([
     ["completed", { kind: "completed", response: { blocks: [] } }],
     ["refused", { kind: "refused", reason: "unsupported" }],

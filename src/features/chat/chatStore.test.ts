@@ -22,6 +22,7 @@ import type { AiModel } from "./types";
 import { toast } from "sonner";
 import { collectQuiescenceProviderRecovery } from "@/lib/quiescenceProviders";
 import { registerChatContextPreparation } from "@/application/chat/chatContextPreparation";
+import { trackSceneContentWrite } from "@/features/tree/pendingSceneWrites";
 import { chatContextPreparationComposition } from "@/application/composition/chatContextPreparationComposition";
 import { IpcInvokeError } from "@/lib/tauri";
 import { DrizzleQueryError } from "drizzle-orm/errors";
@@ -3853,6 +3854,54 @@ describe("useChatStore", () => {
   // --- sendMessage tests ---
 
   describe("sendMessage", () => {
+    it("keeps legacy authority while the first Mastra turn waits for scene writes", async () => {
+      let releaseSceneWrite!: () => void;
+      let resolveWaitStarted!: () => void;
+      let catchCalls = 0;
+      const waitStarted = new Promise<void>((resolve) => {
+        resolveWaitStarted = resolve;
+      });
+      const sceneWrite = new Promise<void>((resolve) => {
+        releaseSceneWrite = resolve;
+      });
+      const originalCatch = sceneWrite.catch.bind(sceneWrite);
+      sceneWrite.catch = ((onRejected) => {
+        if (++catchCalls === 2) resolveWaitStarted();
+        return originalCatch(onRejected);
+      }) as typeof sceneWrite.catch;
+      trackSceneContentWrite("scene-1", sceneWrite);
+      useProjectStore.setState({ currentProjectId: "proj-1" });
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openrouter",
+          model: "openrouter/anthropic/claude-sonnet-4.6",
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        activeSceneId: "scene-1",
+        messages: [],
+        agentMode: true,
+        sessionAgentToolsSnapshot: [{ name: "search_codex" } as never],
+      });
+
+      const send = useChatStore
+        .getState()
+        .sendMessage("hold during preparation");
+      await waitStarted;
+      expect(mockSendAgentMessage).not.toHaveBeenCalled();
+      useAiSettingsStore.setState({ chatModelOverride: "changed-model" });
+      releaseSceneWrite();
+      await send;
+
+      expect(mockSendAgentMessage).not.toHaveBeenCalled();
+      expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+      expect(chatApi.listSummaries).not.toHaveBeenCalled();
+      expect(useChatStore.getState().isStreaming).toBe(false);
+    });
+
     it("does not admit a turn while Tree navigation holds authority", async () => {
       useChatStore.setState({
         sessions: [session1],

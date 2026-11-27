@@ -359,7 +359,7 @@ function createChatTurnStoreActions(
       };
       let mastraTurnAdmitted = false;
       const capturedTurnAuthorityIsCurrent = (): boolean =>
-        mastraTurnAdmitted
+        mastraTurnAdmitted && transportStarted
           ? !shouldAbortTurn()
           : capturedWorkspaceIsCurrent() &&
             capturedProjectIsCurrent() &&
@@ -395,7 +395,7 @@ function createChatTurnStoreActions(
         }
       };
       const shouldAbortTurn = (): boolean =>
-        mastraTurnAdmitted
+        mastraTurnAdmitted && transportStarted
           ? turnRuntime.shouldAbortMastraTurn({
               explicitlyAborted: sendControl.aborted,
               isCurrentTurn: isCurrentTurn(),

@@ -16,6 +16,7 @@ import type {
   MastraAgentTurnLoopResult,
 } from "@/../electron/shared/mastraAgentTurnWire";
 import type { ChatMessage } from "@/features/chat/chatTypes";
+import { shouldAbortMastraTurn } from "./shouldAbortMastraTurn";
 import type { ResolvedChatTurnRoute } from "@/features/chat/turn/resolveTurnRoute";
 import type { ChatStoreSet } from "./chatStoreActionPorts";
 import type { ChatTurnRuntime } from "./chatTurnRuntime";
@@ -128,26 +129,6 @@ function shouldUse(input: EligibilityInput): boolean {
 function hasAttachments(message: ChatMessage): boolean {
   const attachments = parseMetadataRecord(message.metadata).attachments;
   return Array.isArray(attachments) && attachments.length > 0;
-}
-
-function shouldAbort(input: {
-  explicitlyAborted: boolean;
-  isCurrentTurn: boolean;
-  workspaceIsCurrent: boolean;
-  projectIsCurrent: boolean;
-  chatPolicyAllows: boolean;
-  licenseAllows: boolean;
-  quiescenceAllowsMutation: boolean;
-}): boolean {
-  return (
-    input.explicitlyAborted ||
-    !input.isCurrentTurn ||
-    !input.workspaceIsCurrent ||
-    !input.projectIsCurrent ||
-    !input.chatPolicyAllows ||
-    !input.licenseAllows ||
-    !input.quiescenceAllowsMutation
-  );
 }
 
 function toSettingProposal(
@@ -309,10 +290,21 @@ export function createMastraTurnAttempt(
   };
 
   const preflight = (async () => {
-    await dependencies.awaitPendingSceneContentWrite(input.activeSceneId);
-    if (!input.cancelBeforeTransport()) return false;
-    release();
-    return true;
+    try {
+      await dependencies.awaitPendingSceneContentWrite(input.activeSceneId);
+      if (!input.cancelBeforeTransport()) return false;
+      release();
+      return true;
+    } catch (error) {
+      admitted = false;
+      debugLog.warn(
+        "ChatStore",
+        "Mastra turn preflight failed",
+        errorDetail(error),
+      );
+      release();
+      return false;
+    }
   })();
   void preflight.catch(() => undefined);
 
@@ -334,6 +326,12 @@ export function createMastraTurnAttempt(
 
     async run(context) {
       recoveryContext = context;
+      if (!admitted) {
+        context.onLegacyFallback();
+        return context.cancelBeforeTransport()
+          ? { kind: "cancelled" }
+          : { kind: "fallback" };
+      }
       const route = context.route;
       if (!route)
         throw new Error("Mastra agent turn prerequisites unavailable");
@@ -497,6 +495,15 @@ export function createMastraTurnAttempt(
         const result = toAgentLoopResult(outcome.response, outcome.loopResult);
         context.onResponseText(result.finalText);
         return { kind: "completed", result };
+      } catch (error) {
+        if (!startInvoked) {
+          admitted = false;
+          context.onLegacyFallback();
+          return context.cancelBeforeTransport()
+            ? { kind: "cancelled" }
+            : { kind: "fallback" };
+        }
+        throw error;
       } finally {
         release();
       }
@@ -507,7 +514,7 @@ export function createMastraTurnAttempt(
 }
 
 export const chatTurnMastraEngine = {
-  shouldAbort,
+  shouldAbort: shouldAbortMastraTurn,
   shouldUse,
   hasAttachments,
   toAgentLoopResult,

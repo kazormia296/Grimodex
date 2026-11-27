@@ -32,6 +32,7 @@ PR 3 は MP-5 の 5c と `chatTurnStoreActions.ts` を共有する。5c が turn
 - **DR-MP4C2-3 lease と abort。** watcher が失効を検知したら既存 cancel 経路を呼ぶ。lease 取得時にも cancel し、start 時点で lease active なら start しない。drain の対象や意味は変えない（[DR-MP4-29](mastra-mp4-decisions.md:784-791)）。
 - **DR-MP4C2-4 進捗・結果。** `send-accepted` は audit begin と送信直前の再確認が成功した後、provider 呼出しの直前に出す。begin 待ち中に Stop された未送信 request の通知を残さない。`finishReason: "length"` は通常完了と区別できる結果値として保持し、画面に途中終了を示す。途中本文の逐次表示は承認済みで、PR③で開始した窓だけに送る。
 - **DR-MP4C2-5 共有部。** MP-5 5c の callback が closure を渡す形を先に統合し、PR 3 はその呼出し形に合わせる。handler 前後の authority 確認を維持する（[MP-5 判断](mastra-mp5-decisions.md:85)）。
+- **DR-MP4C2-6 Stop の未配達窓。** 旗 L が開いた後、`send-accepted` 後の Stop は `chatTurnLifecycle.ts` の `agentTransportWillFinalize` により main への cancel が飛ばない。軽微事項として記録し、PR②で必ず修正する。
 
 ## 4. owner／lifecycle の表（GDX-PRECHECK-001）
 
