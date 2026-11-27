@@ -16,9 +16,27 @@
       }
     ],
     "revealNodes": [
-      { "id": "s1", "parentId": null, "nodeType": "scene", "title": "第一章", "sortOrder": "a0" },
-      { "id": "s2", "parentId": null, "nodeType": "scene", "title": "第二章", "sortOrder": "a1" },
-      { "id": "s3", "parentId": null, "nodeType": "scene", "title": "第三章", "sortOrder": "a2" }
+      {
+        "id": "s1",
+        "parentId": null,
+        "nodeType": "scene",
+        "title": "第一章",
+        "sortOrder": "a0"
+      },
+      {
+        "id": "s2",
+        "parentId": null,
+        "nodeType": "scene",
+        "title": "第二章",
+        "sortOrder": "a1"
+      },
+      {
+        "id": "s3",
+        "parentId": null,
+        "nodeType": "scene",
+        "title": "第三章",
+        "sortOrder": "a2"
+      }
     ],
     "events": [
       {
@@ -108,7 +126,12 @@
       }
     ],
     "unresolvedCausal": [
-      { "causeTitle": "秘密の計画", "effectTitle": "計画の帰結", "causePrecision": "exact", "effectPrecision": "exact" }
+      {
+        "causeTitle": "秘密の計画",
+        "effectTitle": "計画の帰結",
+        "causePrecision": "exact",
+        "effectPrecision": "exact"
+      }
     ],
     "offpage": [
       {

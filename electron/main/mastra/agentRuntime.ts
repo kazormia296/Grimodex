@@ -38,6 +38,7 @@ import type {
   AgentSend,
   AgentWireToolDefinition,
 } from "./agentWire.js";
+import { MASTRA_AGENT_WRITE_TOOL_NAMES } from "../../shared/mastraWriteToolDefinitions.js";
 
 export type { MastraAgentToolBinding } from "./agentToolAdapter.js";
 
@@ -71,6 +72,7 @@ export const MASTRA_AGENT_TOOL_ALLOWLIST: readonly string[] = Object.freeze([
   "get_ui_state",
   "get_app_help_index",
   "get_app_help",
+  ...MASTRA_AGENT_WRITE_TOOL_NAMES,
 ] as string[]);
 
 /** Agent が持つ tool 名が許可リストに収まらないとき投げる。名前だけを載せる。 */

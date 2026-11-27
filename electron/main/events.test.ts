@@ -55,6 +55,7 @@ const {
   sendAiStreamTerminalToWindow,
   sendBackendEventToWindow,
   sendMainEventToWindow,
+  sendMastraAgentWriteCompletedToWindow,
   setBackendEventEgressGate,
 } = await import("./events.js");
 const { createMastraAgentTurnProgressSender } =
@@ -438,12 +439,42 @@ describe("trusted event broadcast", () => {
 
     broadcastMainEvent("updater:download-progress", { downloaded: 1 });
     broadcastMainEvent("backend:ready", { fake: true });
+    broadcastMainEvent("mastra:agent-write-completed", {
+      targetId: "entry-1",
+      undoId: "undo-1",
+    });
 
     expect(w.webContents.send).toHaveBeenCalledExactlyOnceWith(
       IPC.event,
       "updater:download-progress",
       { downloaded: 1 },
     );
+  });
+
+  it("Mastra write completion は本文を拒否し、開始窓だけに送る", () => {
+    const owner = makeWindow(31);
+    const other = makeWindow(32);
+    allWindows.push(owner, other);
+
+    expect(
+      sendMastraAgentWriteCompletedToWindow(31, {
+        targetId: "entry-1",
+        undoId: "undo-1",
+        content: "private body",
+      }),
+    ).toBe(false);
+    expect(
+      sendMastraAgentWriteCompletedToWindow(31, {
+        targetId: "entry-1",
+        undoId: "undo-1",
+      }),
+    ).toBe(true);
+    expect(owner.webContents.send).toHaveBeenCalledExactlyOnceWith(
+      IPC.event,
+      "mastra:agent-write-completed",
+      { targetId: "entry-1", undoId: "undo-1" },
+    );
+    expect(other.webContents.send).not.toHaveBeenCalled();
   });
 
   it("targeted main event は指定した main window だけへ配信する", () => {

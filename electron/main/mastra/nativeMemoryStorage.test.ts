@@ -28,6 +28,8 @@ function mockedStorage() {
     memoryMessageDelete: method("messageDelete"),
     memoryResourceRead: method("resourceRead"),
     memoryResourceWrite: method("resourceWrite"),
+    memoryObservationalMemoryRead: method("omRead"),
+    memoryObservationalMemoryWrite: method("omWrite"),
   } as unknown as NapiMemoryBackendLike;
   return { calls, backend, storage: new NativeMemoryStorage(backend, "p1") };
 }
@@ -155,18 +157,119 @@ describe("NativeMemoryStorage", () => {
     expect(storage.supportsAtomicWorkingMemoryMerge).toBe(false);
   });
 
-  it("keeps regular memory usable while rejecting OM and clear operations", async () => {
-    const { storage } = mockedStorage();
-    expect(storage.supportsObservationalMemory).toBe(false);
+  it("maps OM reads and writes while keeping global clear unsupported", async () => {
+    const { calls, storage } = mockedStorage();
+    expect(storage.supportsObservationalMemory).toBe(true);
     await expect(
       storage.getThreadById({ threadId: "t1" }),
     ).resolves.toBeTruthy();
-    await expect(storage.getObservationalMemory(null, "r1")).rejects.toThrow(
-      /not implemented/,
-    );
+    await storage.getResourceById({ resourceId: "r1" });
+    await storage.getObservationalMemory(null, "r1");
+    await storage.getObservationalMemoryHistory(null, "r1", 5);
+    await storage.initializeObservationalMemory({
+      id: "om1",
+      resourceId: "r1",
+    } as never);
+    await storage.updateActiveObservations({
+      id: "om1",
+      activeObservations: "active",
+    } as never);
+    await storage.setObservingFlag("om1", true as never);
+    await storage.clearObservationalMemory(null, "r1");
+    expect(calls).toEqual([
+      ["threadRead", { operation: "get", threadId: "t1" }],
+      ["resourceRead", { operation: "get", projectId: "p1" }],
+      ["omRead", { operation: "get", threadId: undefined, resourceId: "r1" }],
+      [
+        "omRead",
+        {
+          operation: "history",
+          threadId: undefined,
+          resourceId: "r1",
+          limit: 5,
+        },
+      ],
+      [
+        "omWrite",
+        { operation: "save", record: { id: "om1", resourceId: "r1" } },
+      ],
+      [
+        "omWrite",
+        {
+          operation: "update",
+          id: "om1",
+          fields: { activeObservations: "active" },
+        },
+      ],
+      [
+        "omWrite",
+        { operation: "update", id: "om1", fields: { isObserving: true } },
+      ],
+      ["omWrite", { operation: "clear", threadId: null, resourceId: "r1" }],
+    ]);
+    expect(storage.supportsPartialThreadUpdate).toBe(true);
+    expect(storage.supportsRunFencing()).toBe(false);
     await expect(storage.dangerouslyClearAll()).rejects.toThrow(
       /not implemented/,
     );
+  });
+
+  it("routes each of the 19 OM methods through the typed read/write commands", async () => {
+    const { calls, storage } = mockedStorage();
+    const record = { id: "om1", resourceId: "r1" };
+    await storage.getObservationalMemory(null, "r1");
+    await storage.getObservationalMemoryHistory(null, "r1", 10);
+    await storage.initializeObservationalMemory(record as never);
+    await storage.updateActiveObservations({
+      id: "om1",
+      activeObservations: "a",
+    } as never);
+    await storage.commitActiveObservations({
+      id: "om1",
+      activeObservations: "a",
+    } as never);
+    await storage.updateBufferedObservations({
+      id: "om1",
+      bufferedObservations: "b",
+    } as never);
+    await storage.appendBufferedObservations({
+      id: "om1",
+      bufferedObservations: "b",
+    } as never);
+    await storage.swapBufferedToActive({
+      id: "om1",
+      activeObservations: "b",
+    } as never);
+    await storage.createReflectionGeneration({
+      id: "om1",
+      generationCount: 2,
+    } as never);
+    await storage.updateBufferedReflection({
+      id: "om1",
+      bufferedReflection: "r",
+    } as never);
+    await storage.swapBufferedReflectionToActive({
+      id: "om1",
+      activeObservations: "r",
+    } as never);
+    await storage.setReflectingFlag("om1", true as never);
+    await storage.setObservingFlag("om1", true as never);
+    await storage.setBufferingObservationFlag("om1", true as never);
+    await storage.setBufferingReflectionFlag("om1", true as never);
+    await storage.insertObservationalMemoryRecord(record as never);
+    await storage.clearObservationalMemory(null, "r1");
+    await storage.setPendingMessageTokens("om1", 4 as never);
+    await storage.updateObservationalMemoryConfig({
+      id: "om1",
+      config: { enabled: true },
+    } as never);
+
+    expect(calls).toHaveLength(19);
+    expect(calls.filter(([name]) => name === "omRead")).toHaveLength(2);
+    expect(calls.filter(([name]) => name === "omWrite")).toHaveLength(17);
+    expect(
+      calls.every(([name]) => name === "omRead" || name === "omWrite"),
+    ).toBe(true);
   });
 
   it("provides an InMemory comparison frame for the same thread/message sequence", async () => {
@@ -326,5 +429,76 @@ describe("NativeMemoryStorage", () => {
         memory.getThreadById({ threadId: "t1" }),
       ]),
     ).toEqual([null, null]);
+  });
+
+  it("compares empty OM reads against InMemoryMemory", async () => {
+    const om = new Map<string, Record<string, unknown>>();
+    const backend = {
+      memoryThreadRead: vi.fn(async () => json(null)),
+      memoryThreadWrite: vi.fn(async () => json(null)),
+      memoryThreadDelete: vi.fn(async () => json(null)),
+      memoryMessageRead: vi.fn(async () =>
+        json({
+          messages: [],
+          total: 0,
+          page: 0,
+          perPage: false,
+          hasMore: false,
+        }),
+      ),
+      memoryMessageWrite: vi.fn(async () => json({ messages: [] })),
+      memoryMessageDelete: vi.fn(async () => json({ deleted: 0 })),
+      memoryResourceRead: vi.fn(async () => json(null)),
+      memoryResourceWrite: vi.fn(async () => json(null)),
+      memoryObservationalMemoryRead: vi.fn(
+        async (payload: { operation: string; resourceId: string }) => {
+          const records = [...om.values()].filter(
+            (record) => record.resourceId === payload.resourceId,
+          );
+          return json(
+            payload.operation === "history" ? records : (records[0] ?? null),
+          );
+        },
+      ),
+      memoryObservationalMemoryWrite: vi.fn(
+        async (payload: Record<string, unknown>) => {
+          if (payload.operation === "save") {
+            const record = payload.record as Record<string, unknown>;
+            om.set(String(record.id), record);
+            return json(record);
+          }
+          if (payload.operation === "update") {
+            const current = om.get(String(payload.id))!;
+            const record = { ...current, ...(payload.fields as object) };
+            om.set(String(payload.id), record);
+            return json(record);
+          }
+          om.clear();
+          return json(null);
+        },
+      ),
+    };
+    const native = new NativeMemoryStorage(
+      backend as unknown as NapiMemoryBackendLike,
+      "p1",
+    );
+    const memory = new InMemoryMemory({
+      db: {
+        threads: new Map(),
+        messages: new Map(),
+        resources: new Map(),
+        observationalMemory: new Map(),
+      } as never,
+    });
+    const current = await Promise.all([
+      native.getObservationalMemory(null, "r1"),
+      memory.getObservationalMemory(null, "r1"),
+    ]);
+    expect(current).toEqual([null, null]);
+    const history = await Promise.all([
+      native.getObservationalMemoryHistory(null, "r1", 10),
+      memory.getObservationalMemoryHistory(null, "r1", 10),
+    ]);
+    expect(history).toEqual([[], []]);
   });
 });

@@ -1,6 +1,9 @@
 /** Shared definitions for the 15 legacy write tools; kept byte-equivalent to the renderer golden. */
 import type { AgentReadToolDefinition } from "./agentReadToolDefinitions.js";
 
+export { MASTRA_AGENT_WRITE_TOOL_NAMES } from "./mastraAgentTurnWire.js";
+export type { MastraAgentWriteToolName } from "./mastraAgentTurnWire.js";
+
 export const MASTRA_WRITE_TOOL_NAMES = [
   "create_codex_entry",
   "update_codex_entry",

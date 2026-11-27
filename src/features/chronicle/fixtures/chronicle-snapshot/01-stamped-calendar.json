@@ -8,11 +8,66 @@
       { "id": "s2", "parentId": "f1", "nodeType": "scene", "sortOrder": "a1" }
     ],
     "events": [
-      { "id": "eb", "title": "Hero born", "note": null, "ordinal": "a0", "primaryCodexId": "hero", "locationCodexId": null, "startTime": 0, "startGranularity": "day", "kind": "birth", "precision": "exact" },
-      { "id": "eoff", "title": "Rumor spreads", "note": "spread fast", "ordinal": "a0G", "primaryCodexId": "mentor", "locationCodexId": null, "startTime": 100, "startGranularity": "day", "kind": "generic", "precision": "exact" },
-      { "id": "e1", "title": "Departure", "note": "leaves home", "ordinal": "a1", "primaryCodexId": "hero", "locationCodexId": "castle", "startTime": 7200, "startGranularity": "day", "kind": "generic", "precision": "approx" },
-      { "id": "e2", "title": "Training", "note": null, "ordinal": "a2", "primaryCodexId": "mentor", "locationCodexId": null, "startTime": 7250, "startGranularity": "day", "kind": "generic", "precision": "exact" },
-      { "id": "e3", "title": "Final battle", "note": null, "ordinal": "a3", "primaryCodexId": "hero", "locationCodexId": null, "startTime": 7300, "startGranularity": "day", "kind": "generic", "precision": "exact" }
+      {
+        "id": "eb",
+        "title": "Hero born",
+        "note": null,
+        "ordinal": "a0",
+        "primaryCodexId": "hero",
+        "locationCodexId": null,
+        "startTime": 0,
+        "startGranularity": "day",
+        "kind": "birth",
+        "precision": "exact"
+      },
+      {
+        "id": "eoff",
+        "title": "Rumor spreads",
+        "note": "spread fast",
+        "ordinal": "a0G",
+        "primaryCodexId": "mentor",
+        "locationCodexId": null,
+        "startTime": 100,
+        "startGranularity": "day",
+        "kind": "generic",
+        "precision": "exact"
+      },
+      {
+        "id": "e1",
+        "title": "Departure",
+        "note": "leaves home",
+        "ordinal": "a1",
+        "primaryCodexId": "hero",
+        "locationCodexId": "castle",
+        "startTime": 7200,
+        "startGranularity": "day",
+        "kind": "generic",
+        "precision": "approx"
+      },
+      {
+        "id": "e2",
+        "title": "Training",
+        "note": null,
+        "ordinal": "a2",
+        "primaryCodexId": "mentor",
+        "locationCodexId": null,
+        "startTime": 7250,
+        "startGranularity": "day",
+        "kind": "generic",
+        "precision": "exact"
+      },
+      {
+        "id": "e3",
+        "title": "Final battle",
+        "note": null,
+        "ordinal": "a3",
+        "primaryCodexId": "hero",
+        "locationCodexId": null,
+        "startTime": 7300,
+        "startGranularity": "day",
+        "kind": "generic",
+        "precision": "exact"
+      }
     ],
     "participants": [
       { "eventId": "e1", "codexEntryId": "mentor", "role": null }
@@ -37,21 +92,68 @@
     "codexNames": { "hero": "Hero", "mentor": "Mentor", "castle": "Castle" }
   },
   "expected": {
-    "time": { "source": "stamped", "startTime": 7200, "season": "Spring", "precision": "approx", "formattedDate": "20年第1日" },
+    "time": {
+      "source": "stamped",
+      "startTime": 7200,
+      "season": "Spring",
+      "precision": "approx",
+      "formattedDate": "20年第1日"
+    },
     "characters": [
-      { "codexId": "hero", "name": "Hero", "status": "alive", "age": 20, "location": "Castle" },
-      { "codexId": "mentor", "name": "Mentor", "status": "unknown", "age": null, "location": "Castle" }
+      {
+        "codexId": "hero",
+        "name": "Hero",
+        "status": "alive",
+        "age": 20,
+        "location": "Castle"
+      },
+      {
+        "codexId": "mentor",
+        "name": "Mentor",
+        "status": "unknown",
+        "age": null,
+        "location": "Castle"
+      }
     ],
     "recentEvents": [
-      { "eventId": "e1", "title": "Departure", "note": "leaves home", "relTime": "同日", "precision": "approx" },
-      { "eventId": "eoff", "title": "Rumor spreads", "note": "spread fast", "relTime": "約20年前", "precision": "exact" }
+      {
+        "eventId": "e1",
+        "title": "Departure",
+        "note": "leaves home",
+        "relTime": "同日",
+        "precision": "approx"
+      },
+      {
+        "eventId": "eoff",
+        "title": "Rumor spreads",
+        "note": "spread fast",
+        "relTime": "約20年前",
+        "precision": "exact"
+      }
     ],
     "unresolvedCausal": [
-      { "causeTitle": "Departure", "effectTitle": "Final battle", "causePrecision": "approx", "effectPrecision": "exact" }
+      {
+        "causeTitle": "Departure",
+        "effectTitle": "Final battle",
+        "causePrecision": "approx",
+        "effectPrecision": "exact"
+      }
     ],
     "offpage": [
-      { "eventId": "eb", "title": "Hero born", "note": null, "relTime": "約20年前", "precision": "exact" },
-      { "eventId": "eoff", "title": "Rumor spreads", "note": "spread fast", "relTime": "約20年前", "precision": "exact" }
+      {
+        "eventId": "eb",
+        "title": "Hero born",
+        "note": null,
+        "relTime": "約20年前",
+        "precision": "exact"
+      },
+      {
+        "eventId": "eoff",
+        "title": "Rumor spreads",
+        "note": "spread fast",
+        "relTime": "約20年前",
+        "precision": "exact"
+      }
     ]
   }
 }

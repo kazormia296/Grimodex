@@ -1,6 +1,6 @@
 # Mastra 移行 MP-8 の判断記録（TS storage／vector adapter）
 
-- 状態：**起案**。コードは変えていない。実装は確認事項の回答後、MP-7 の schema／Rust writer／N-API command が揃ってから。
+- 状態：DR-MP8-1〜7 は起案時点の判断案。実装時の適用内容は末尾の MP-8b 追記に記録する。
 - 基点：`origin/master` `2db49f806`（2026-11-26）。作業枝 `claude/mp8-design`。
 - 前提：[移行計画](mastra-migration-plan.md) MP-7／MP-8、[MP-4 の判断記録](mastra-mp4-decisions.md)、[脅威モデル](mastra-migration-threat-model.md)。MP-4 の MP-8 申し送りは該当記述を確認できなかった。
 
@@ -79,3 +79,11 @@ MP-8 は `grimodex-node`／shared IPC contract の command、Rust DB、main adap
 - 全 turn 共有の cache：書込み後の無効化漏れで別 turn に古い値を見せる。
 - vector の ID／削除保証なしに接続する：削除済み本文が残りうるため、R-15 を閉じるまで待つ。
 - 未確認：16差分の全操作別一覧は `RESULTS.md` に集約されていない。named fixture 化の前に spike の生 JSON／実装を照合する。実 Mastra 呼び順、#940 予約行、Rust の並行性と clock／freshness への影響も未確認。[計画:745-747,758; 704-719]
+
+## MP-8b 実装追記（2026-11-27、`claude/mp8b`）
+
+- 基点は MP-8a commit `28b1c677f`。M は閉じたまま、adapter の呼び手は追加しない。
+- resource は Rust の `mastra_resources.created_at`／`updated_at` を UTC ISO 文字列で返し、TS で `Date` に戻す。
+- OM adapter は observational-memory の read／write command に写す。OM capability は true、partial thread update は true、run fencing と atomic WM merge は false。WM は Mastra API が文字列 callback で Rust merge が JSON object patch のため、atomic を宣言しない。`dangerouslyClearAll` は専用 clear command が無いため拒否を維持。
+- Vector index は project ID で namespace 化する。upsert は metadata の `messageId` を Rust の `message_id` に写し、Rust が同一 project の非 restricted message であることを検証する。`deleteVectors` は ID と `message_id.$in` の両方を扱い、message delete の FK cascade を実 N-API pipeline で確認する。
+- 新しい保存表・送信先・provider dispatch は加えない。既存の Mastra 脅威モデルと M closed の範囲内で、main-only adapter の試験を追加した。実 Mastra の呼び順は本変更では検証していない。
