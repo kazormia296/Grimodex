@@ -3,6 +3,37 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+/// project_id, surface, entity_kind, entity_id, op_kind, before_json,
+/// after_json, base_version, result_version, change_event_uid, created_at.
+type UndoJournalRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    i64,
+    i64,
+    Option<String>,
+    String,
+);
+
+/// The seeded undo row must stay inside the open-time 90-day undo retention
+/// (`open.rs` maintenance → `lib.rs` pruning of `undo_journal.created_at <
+/// datetime('now', '-90 days')`). A fixed calendar date would silently age out
+/// and make the reopen paths look like they lose author data. Computed once per
+/// test process so the seed and the post-migration check see the same value.
+fn undo_journal_created_at() -> &'static str {
+    static CREATED_AT: OnceLock<String> = OnceLock::new();
+    CREATED_AT.get_or_init(|| {
+        (chrono::Utc::now() - chrono::Duration::days(1))
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string()
+    })
+}
 
 use grimodex_core::{
     workspace_schema::has_current_schema_checkpoint_invariants, LAST_PUBLIC_RELEASE_SCHEMA_VERSION,
@@ -655,8 +686,8 @@ fn seed_release_rows(conn: &Connection) -> anyhow::Result<()> {
              after_json, base_version, result_version, change_event_uid, created_at)
          VALUES ('gate-a2-undo', ?1, 'scene', 'scene', ?2, 'update',
                  '{\"body\":\"before\"}', '{\"body\":\"after\"}', 4, 5,
-                 'gate-a2-change-uid', '2026-01-02T03:05:00Z')",
-        params![PROJECT_ID, SCENE_ID],
+                 'gate-a2-change-uid', ?3)",
+        params![PROJECT_ID, SCENE_ID, undo_journal_created_at()],
     )?;
     conn.execute(
         "INSERT INTO events (id, project_id, title, note, ordinal, primary_codex_id, start_time, start_granularity, precision, kind)
@@ -989,19 +1020,7 @@ fn assert_release_rows_on_connection(conn: &Connection) {
         )
     );
 
-    let undo: (
-        String,
-        String,
-        String,
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        i64,
-        i64,
-        Option<String>,
-        String,
-    ) = conn
+    let undo: UndoJournalRow = conn
         .query_row(
             "SELECT project_id, surface, entity_kind, entity_id, op_kind,
                     before_json, after_json, base_version, result_version,
@@ -1038,7 +1057,7 @@ fn assert_release_rows_on_connection(conn: &Connection) {
             4,
             5,
             Some("gate-a2-change-uid".into()),
-            "2026-01-02T03:05:00Z".into()
+            undo_journal_created_at().into()
         )
     );
 
