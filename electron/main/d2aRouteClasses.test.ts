@@ -199,6 +199,14 @@ const DENIED = (route: string) =>
   new RegExp(`^${D2A_EGRESS_DENIED_MARKER} ${route}:`);
 
 describe("own-data-read ledger (K3/2 区分の構成)", () => {
+  it("classifies identity correction rules list by command name", () => {
+    const command = "identity_correction_rules_list";
+    const ledgers = d2aRouteLedgersForTest();
+    expect(ledgers.ownDataRead, command).toContain(command);
+    expect(ledgers.internal, command).not.toContain(command);
+    expect(route(command), command).toBe("own-data-read");
+  });
+
   it("holds exactly the 45 confirmed commands, each a real NAPI command", () => {
     const ledgers = d2aRouteLedgersForTest();
     expect(OWN_DATA_READ_COMMANDS).toHaveLength(45);
@@ -330,7 +338,11 @@ describe("own-data-read ledger (K3/2 区分の構成)", () => {
     }
   });
 
-  it("keeps identity correction revision writes internal in restricted profiles", () => {
+  it.each([
+    "identity_correction_rule_create",
+    "identity_correction_rule_supersede",
+    "identity_correction_rule_retire",
+  ] as const)("keeps %s internal in restricted profiles", (command) => {
     const ledgers = d2aRouteLedgersForTest();
     const restricted = {
       restricted: true,
@@ -338,17 +350,9 @@ describe("own-data-read ledger (K3/2 区分の構成)", () => {
       activating: false,
       identityIssued: true,
     } as const;
-    for (const command of [
-      "identity_correction_rule_create",
-      "identity_correction_rule_supersede",
-      "identity_correction_rule_retire",
-    ]) {
-      expect(ledgers.internal, command).toContain(command);
-      expect(route(command), command).toBe("internal");
-      expect(d2aRouteDecision("internal", restricted).allow, command).toBe(
-        true,
-      );
-    }
+    expect(ledgers.internal, command).toContain(command);
+    expect(route(command), command).toBe("internal");
+    expect(d2aRouteDecision("internal", restricted).allow, command).toBe(true);
   });
 
   it("holds the seven NIR commands in nir1-publication and the six local generation commands in nir1-restricted-only", () => {
@@ -765,6 +769,21 @@ describe("gate: own-data-read with the opening forced off (test seam)", () => {
 
 describe("gate: own-data-read with the opening on", () => {
   const open = { ownDataReadOpen: true } as const;
+
+  it("requires a Main-issued identity for identity correction rules list in restricted profiles", async () => {
+    const command = "identity_correction_rules_list";
+    const gate = await createProfileEgressGate(backend(true), open);
+    const callerIdentity = gate.issueCallerIdentity(11);
+    expect(() => gate.assertInvoke(command, {})).toThrow(
+      DENIED("own-data-read"),
+    );
+    expect(() => gate.assertInvoke(command, { callerIdentity })).not.toThrow();
+    expect(() =>
+      gate.assertInvoke(command, {
+        callerIdentity: { ...callerIdentity, callerId: "forged" },
+      }),
+    ).toThrow(DENIED("unclassified"));
+  });
 
   it("passes ledger commands and own-data SQL with a Main-issued identity", async () => {
     const gate = await createProfileEgressGate(backend(true), open);

@@ -9567,6 +9567,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     };
     const createPayload = {
       ...mutationIdentity("rule-create"),
+      sessionId: "writer-session",
       writerSessionId: "writer-session",
       fields,
       context: { sessionId: "writer-session" },
@@ -9584,13 +9585,18 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
         "identity_correction_rule_supersede",
         {
           previousRevisionId: "rule-revision-1",
-          payload: { ...createPayload, ...mutationIdentity("rule-supersede") },
+          payload: {
+            ...createPayload,
+            ...mutationIdentity("rule-supersede"),
+            sessionId: "writer-session",
+          },
         },
         { backend, shell: noShell },
       ),
     ).toEqual({ ok: true, value: row });
     const retirePayload = {
       ...mutationIdentity("rule-retire"),
+      sessionId: "writer-session",
       writerSessionId: "writer-session",
       previousRevisionId: "rule-revision-2",
       context: { sessionId: "writer-session" },
@@ -9617,6 +9623,44 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     );
     expect(retire).toHaveBeenCalledWith(retirePayload);
     expect(list).toHaveBeenCalledWith("p1");
+  });
+
+  it.each([
+    "identity_correction_rule_create",
+    "identity_correction_rule_supersede",
+    "identity_correction_rule_retire",
+  ] as const)("%s rejects a mismatched context sessionId", async (command) => {
+    const create = vi.fn(async () => "{}");
+    const supersede = vi.fn(async () => "{}");
+    const retire = vi.fn(async () => "{}");
+    const { backend } = fakeBackend({
+      identityCorrectionRuleCreate: create,
+      identityCorrectionRuleSupersede: supersede,
+      identityCorrectionRuleRetire: retire,
+    });
+    const payload = {
+      ...mutationIdentity(command),
+      sessionId: "writer-session",
+      writerSessionId: "writer-session",
+      context: { sessionId: "different-session" },
+      ...(command === "identity_correction_rule_retire"
+        ? { previousRevisionId: "rule-revision-1" }
+        : { fields: { kind: "must-link-surface", scopeKind: "any" } }),
+    };
+    const args =
+      command === "identity_correction_rule_supersede"
+        ? { previousRevisionId: "rule-revision-1", payload }
+        : { payload };
+    const result = await dispatchInvoke(command, args, {
+      backend,
+      shell: noShell,
+    });
+
+    expect(result).toMatchObject({ ok: false });
+    if (!result.ok) expect(result.error).toContain("context.sessionId");
+    expect(create).not.toHaveBeenCalled();
+    expect(supersede).not.toHaveBeenCalled();
+    expect(retire).not.toHaveBeenCalled();
   });
 
   it("identity correction rules reject invalid and unknown nested arguments", async () => {

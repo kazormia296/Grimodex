@@ -2481,6 +2481,14 @@ function requireIdentityCorrectionWritePayload(
   requireExactKeys(context, ["sessionId"], command);
   requireNonEmptyString(context, "sessionId", command);
   if (
+    Object.hasOwn(payload, "sessionId") &&
+    payload.sessionId !== context.sessionId
+  ) {
+    throw new Error(
+      `invalid args \`context.sessionId\` for command \`${command}\`: expected to match \`sessionId\``,
+    );
+  }
+  if (
     requireString(payload, "origin", command) !== "human" ||
     requireString(payload, "authorityRoute", command) !== "human-direct"
   ) {
