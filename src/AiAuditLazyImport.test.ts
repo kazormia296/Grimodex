@@ -51,7 +51,15 @@ describe("AI audit startup lazy-import boundaries", () => {
     );
     expect(responder).toContain('import("@/features/chat/agent/appHelpTools")');
     expect(responder).toContain('import("./chatAgentToolHandlers")');
-    expect(productImporters("mastraAgentTurnResponder")).toEqual([]);
+    // 4c-2：応答側を静的に import してよいのは engine だけ。engine 自体は
+    // chatTurnRuntime から動的 import でだけ読まれるので、起動時の graph に入らない。
+    expect(productImporters("mastraAgentTurnResponder")).toEqual([
+      "application/chat/chatTurnMastraEngine.ts",
+    ]);
+    expect(productImporters("chatTurnMastraEngine")).toEqual([]);
+    expect(source("application/chat/chatTurnRuntime.ts")).toContain(
+      'await import("./chatTurnMastraEngine")',
+    );
   });
 
   it("keeps chat execution transports out of the static startup graph", () => {
