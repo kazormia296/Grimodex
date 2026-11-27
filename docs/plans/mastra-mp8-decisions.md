@@ -26,7 +26,7 @@ MP-7a は進行中。schema 案の5表（`mastra_message_parts`、`mastra_thread
 
 - **DR-MP8-1 N-API 境界。** MP-7b に `memory_*` の型付き command 群を要求する。thread、message、resource、OM、vector の read／write／delete と memory 表だけの clear を、操作別の引数・戻り値で表す。任意 SQL、汎用 query、renderer からの呼出しは設けない。Rust が検証・SQL・transaction・typed refusal を所有し、main の薄い TS adapter は Mastra の形へ写すだけにする。payload と個々の command 名は MP-7b で確定し、本案は wire 契約を先取りしない。
 - **DR-MP8-2 差分16件。** 全16件を本番 adapter の特性試験に移し、実 Rust 経路で再分類する。実 DB の表現差（title `""` 等）は Mastra から見た意味を保てば許容。順序・更新・削除・scope は同じ入力で同じ結果を要求し、同時刻は rowid／id の tie-breaker を明記する。人工エラー、InMemory の system 除外は製品要件にしない。clone／copy は未使用を確認し、必要になるまで未実装で拒否する。atomic merge は capability を true にするなら Rust 側で原子的に実装する。run fencing は有効化する場合だけ true とし、なしなら false を明示する。全16件の個別入力と期待値が揃うまでは parity 完了としない。
-- **DR-MP8-3 capability と写像。** OM は true を宣言する。partial thread update は title 省略を「変更しない」として実装し true を宣言する。atomic merge／run fencing は実装済みの意味と一致させる。`title_manual`、metadata、空 title の往復を固定し、`nir1-local-*`／restricted は読み書きしない。`dangerouslyClearAll` は Mastra の専用表だけを消し、`chat_*` は残す。[計画:455-460]
+- **DR-MP8-3 capability と写像。** OM を実装する段階では true を宣言する。thread／message／resource だけを載せる MP-8a の先行差分では false とし、thread／message の通常操作を利用可能なままにする。partial thread update は title 省略を「変更しない」として実装し true を宣言する。atomic merge／run fencing は実装済みの意味と一致させる。`title_manual`、metadata、空 title の往復を固定し、`nir1-local-*`／restricted は読み書きしない。`memory_clear_all` がない MP-8a では `dangerouslyClearAll` を throw し、command 実装後に Mastra 専用表だけを消して `chat_*` を残す。[計画:455-460]
 - **DR-MP8-4 本文と入力。** 保存前に tool result を digest 化し、`providerMetadata.mastra.modelOutput` も保存しない。message の user／assistant／system 以外と差し込み user 行は Rust writer の条件に従い保存しない。attachment を memory message に通さない。[計画:461-462, MP-7 435-440; 脅威モデル D4、D9]
 - **DR-MP8-5 cache。** 往復削減の read cache は main adapter 内、turn 単位で所有・破棄する。書込み後は該当値を無効化する。全 turn 共用 cache は置かない。キャッシュ有無で結果が変わらないことを試験する。[計画:466]
 - **DR-MP8-6 呼出し・保存。** 実 Mastra の呼び順を記録し、1 turn の1〜8回の `saveMessages` と1〜2 assistant 行を前提に、buffer の commit／abort と #940 予約行の整合を定める。turn terminal の1 transaction、IMMEDIATE、workspace lease との合成は実 Rust で確かめるまで確定扱いしない。[計画:439-440,468; 脅威モデル W3]
@@ -46,7 +46,7 @@ MP-7a は進行中。schema 案の5表（`mastra_message_parts`、`mastra_thread
 ## 5. 影響と PR の分け方
 
 1. **MP-7b**：schema（7a）、Rust typed writer、main 専用 N-API `memory_*` command とその拒否・transaction 試験を先に揃える。MP-8 は payload を推測して追加しない。
-2. **MP-8a**：thread／message／resource／OM adapter、capability、thread 写像、turn buffer／cache。fake ではなく Rust 経路で差分試験。
+2. **MP-8a**：thread／message／resource adapter、通常 memory capability、thread 写像。今回の先行差分では OM と turn read cache を含めず、OM capability は false。fake ではなく Rust 経路で差分試験。
 3. **MP-8b**：vector adapter、message ID の対応と削除保証。R-15 が解決してから接続。
 4. **MP-8c**：実 Mastra の呼び順、R-2 の保存回数・行分割、R-4 の複数 session／window・WAL／busy・background／foreground 並行試験。全件が M 閉で通ってから後続 MP の統合へ。
 
