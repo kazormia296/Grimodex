@@ -863,6 +863,8 @@ export declare class Backend {
    * installed/unavailable/downloading または明示エラーとして扱う。
    */
   semanticDownloadModel(language: string): Promise<string>
+  /** Embed arbitrary bounded text locally for main-process memory adapters. */
+  memoryEmbedTexts(language: string, texts: Array<string>): Promise<string>
   semanticIndexScene(expectedWorkspacePath: string, projectId: string, sceneId: string): Promise<string>
   semanticSearch(expectedWorkspacePath: string, projectId: string, query: string, limit: number, sceneScope?: string | undefined | null, descriptionMode?: boolean | undefined | null): Promise<string>
   /**
