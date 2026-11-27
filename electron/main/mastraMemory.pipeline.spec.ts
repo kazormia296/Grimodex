@@ -4,11 +4,11 @@ import os from "node:os";
 import path from "node:path";
 
 import { afterAll, describe, expect, it, vi } from "vitest";
+import type { NapiBackendLike } from "../shared/ipcContract.js";
 import type {
-  NapiBackendLike,
   NapiMemoryBackendLike,
   NapiMemoryVectorBackendLike,
-} from "../shared/ipcContract.js";
+} from "./mastra/napiMemoryBackend.js";
 import { NativeMemoryStorage } from "./mastra/nativeMemoryStorage.js";
 import { NativeMemoryVector } from "./mastra/nativeMemoryVector.js";
 
