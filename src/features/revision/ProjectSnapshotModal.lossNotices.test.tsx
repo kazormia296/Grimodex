@@ -690,3 +690,115 @@ describe("ProjectSnapshotModal restore loss notices", () => {
     });
   });
 });
+
+describe("ProjectSnapshotModal approval loss count (SRD/1 RD6)", () => {
+  it("says how many proposals lose their approval when Native counts one or more", async () => {
+    mocks.preview.mockResolvedValue({
+      structural: true,
+      lossNotices: [],
+      approvalLossCount: 3,
+    });
+    await openRestoreConfirm();
+    expect(
+      await screen.findByTestId("snapshot-restore-approval-loss"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "snapshot.restoreConfirm" }),
+    ).toBeEnabled();
+  });
+
+  it("says nothing for zero, or when an older Native build does not say", async () => {
+    mocks.preview.mockResolvedValue({
+      structural: true,
+      lossNotices: [],
+      approvalLossCount: 0,
+    });
+    await openRestoreConfirm();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "snapshot.restoreConfirm" }),
+      ).toBeEnabled(),
+    );
+    expect(
+      screen.queryByTestId("snapshot-restore-approval-loss"),
+    ).not.toBeInTheDocument();
+
+    cleanup();
+    mocks.preview.mockResolvedValue({
+      structural: true,
+      lossNotices: [],
+      approvalLossCount: null,
+    });
+    await openRestoreConfirm();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "snapshot.restoreConfirm" }),
+      ).toBeEnabled(),
+    );
+    expect(
+      screen.queryByTestId("snapshot-restore-approval-loss"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("cannot restore while counting", async () => {
+    const pending = deferred<{
+      structural: boolean;
+      lossNotices: never[];
+      approvalLossCount: number;
+    }>();
+    mocks.preview.mockReturnValueOnce(pending.promise);
+    await openRestoreConfirm();
+    const button = screen.getByRole("button", {
+      name: "snapshot.restoreConfirm",
+    });
+    expect(button).toBeDisabled();
+    await act(async () => {
+      pending.resolve({
+        structural: true,
+        lossNotices: [],
+        approvalLossCount: 2,
+      });
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(
+      screen.getByTestId("snapshot-restore-approval-loss"),
+    ).toBeInTheDocument();
+  });
+
+  it("says it could not check, and still lets the author restore, when the read fails", async () => {
+    mocks.preview.mockRejectedValueOnce(new Error("context unavailable"));
+    await openRestoreConfirm();
+    expect(
+      await screen.findByTestId("snapshot-restore-approval-loss-unknown"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("snapshot-restore-approval-loss"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "snapshot.restoreConfirm" }),
+    ).toBeEnabled();
+  });
+
+  it("recounts for the chosen scopes: no body, no count", async () => {
+    mocks.preview.mockImplementation(
+      async (_snapshotId: string, scopes: ReadonlySet<string>) => ({
+        structural: true,
+        lossNotices: [],
+        approvalLossCount: scopes.has("body") ? 4 : 0,
+      }),
+    );
+    await openRestoreConfirm();
+    expect(
+      await screen.findByTestId("snapshot-restore-approval-loss"),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "snapshot.scopeBody" }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("snapshot-restore-approval-loss"),
+      ).not.toBeInTheDocument(),
+    );
+  });
+});
