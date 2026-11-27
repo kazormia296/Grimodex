@@ -184,6 +184,41 @@ roadmap の A3 の出口条件との対応：
    - W12 と DR-MP5-11 の改訂は、Mastra の担当が port の接続の PR で行い、独立レビューを通す。
    - 再起動の後の回答は、新しい Run の中で受ける（DR-A3-6）。
 
-### advisor（read-only）
+### advisor（Fable、effort high、read-only、2026-11-27。範囲の拡張の前の版 58c21dcef を点検）
 
-（記入待ち）
+blocker（実装の前に文書を直す）：
+
+- **B1 回収の起点。** DB はアプリの起動時ではなく `open_workspace` で開く（`electron/main/ipc.ts:2533`）。回収は「main がその workspace の DB を開いた後」に置く。Mastra の担当の指摘と同じ（DR-A3-4 に反映済み）。
+- **B2 Electron が 2 つ起動している場合。**
+  - dev 版と packaged 版は、単一起動の lock が別々で、同じ workspace を開けうる。
+  - 「今の起動の ID でない owner」を条件にすると、後から開いた側が、相手の生きた Run を interrupted にしてしまう。
+  - 直し方：owner ごとの OS の lock で、相手の起動が生きているかを見る。すべての書込みの CAS に `execution_owner` を入れる。
+- **B3 main が生きたまま renderer を失う場合。**
+  - reload・render-process-gone・窓の close・navigation・同じ起動の中での workspace の切替について、表に行が無い。
+  - Run の開始時に、sender と navigation の世代に束縛する。
+- **B4（拡張で形が変わる）再起動の後に答えられるもの。** `approval` の扱い、回答を tool の結果として渡すか、再送信の前の門の 3 条件を書く。
+- **B5（拡張で形が変わる）回答の消費と再開の原子性。** 二重回答で再開が 2 本できないよう、pending の CAS と再開の claim を 1 つの tx で、冪等の key つきで行う。
+- **B6 AWA/1 の承認との関係。** AWA/1 の承認を Interaction に記録するなら、AWA/1 の R4 と ADR 007／008 の追補を実装より先に改訂する。AWA/1 には「却下・時間切れは DB の行を足さない」という規則（確認 69）があり、これとの食い違いは統合者に照合を求める。
+
+懸念：
+
+- **C1 束縛。** project と session は、renderer から受けずに行から引く。会話がその project に属することを、Native が同じ tx で検査する。`request` には上限の長さを置く。
+- **C2 status と terminal_reason の対応表と CHECK。** policy・license の取り消し、permission の境界、timeout、記録の失敗に当たる値を足す。
+- **C3 終端の一回性。** 「非終端であること」の検査を必須にする。activity の更新では version を上げない。Run の状態と Interaction は同じ tx で変える。
+- **C4 message の二重保存。** message は renderer の Drizzle が別の tx で保存する。終端の CAS の勝者だけが保存するのかを書く。
+- **C5 pending の 1 件の制約。** `root_run_id` の列が要る。古い pending を superseded にする規則が無い。
+- **C6 kind。** permission 要求が無い。Mastra の UI 系（10 秒）は記録しない。
+- **C7 AI Audit とのつなぎ。** Run と `execution_id` は 1 対多なので、1 列では表せない。
+- **C8 ApprovalRequest の列。** canonical args などの列は、承認済みの保存の範囲を超える。
+- **C9 ADR 003 の手当て。** Drizzle parity、schema-contract、D2a の台帳の写し。
+- **C10 削除。** 会話や作品の削除で生きた Run の行が消えたときの扱いと、backup・export に入るかが未回答。
+- **C11 記録の失敗。** 開始以外の記録が失敗したときの扱い。recorder の書込みが、自分の書込み行列の枠を待たないこと。
+
+問題なしと判断された点：
+
+- 置き場所と書き手（ADR 007・003 と整合）。
+- MCP では回収しないこと。
+- 複数の窓（main は 1 つ）。
+- DR-A3-5 と DR-MP5-11・W12 の整合。
+
+扱い：B1〜B3・B6・C1〜C11 は、拡張を入れた改訂版に取り込む。B4・B5 は、再開の形に合わせて書き直したうえで、改訂版を再び諮問にかける。
