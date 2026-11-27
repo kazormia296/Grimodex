@@ -388,6 +388,41 @@ describe("the runtime tool allow-list (DR-MP3-14, layer 2)", () => {
       ...MASTRA_UI_TOOL_NAMES,
       ...MASTRA_AGENT_WRITE_TOOL_NAMES,
     ]);
+    expect([...MASTRA_AGENT_TOOL_ALLOWLIST]).toEqual([
+      "search_codex",
+      "search_events",
+      "list_codex_by_type",
+      "get_codex_entry",
+      "list_codex_tags",
+      "search_codex_by_tags",
+      "find_related_entries",
+      "list_chapters",
+      "get_scene",
+      "search_scenes",
+      "list_plot_threads",
+      "get_thread_scenes",
+      "search_snippets",
+      "get_chapter_summaries",
+      "list_open_foreshadows",
+      "get_foreshadow_detail",
+      "get_scene_timeline_neighbors",
+      "list_events",
+      "get_event_detail",
+      "get_character_timeline",
+      "get_chronicle_state",
+      "ask_user",
+      "run_app_command",
+      "apply_layout_preset",
+      "propose_setting_change",
+      "get_ui_state",
+      "get_app_help_index",
+      "get_app_help",
+    ]);
+    expect(
+      MASTRA_AGENT_TOOL_ALLOWLIST.some((name) =>
+        name.includes("identity_correction"),
+      ),
+    ).toBe(false);
     expect(MASTRA_AGENT_TOOL_ALLOWLIST).not.toContain(
       "narrative_extraction_list_redecidable_proposals",
     );

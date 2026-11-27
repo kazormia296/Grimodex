@@ -1,9 +1,64 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+
+type MockRow = Record<string, unknown>;
+type MockFilter = { matches: (row: MockRow) => boolean };
+
+const h = vi.hoisted(() => ({
+  rows: [] as Array<Record<string, unknown>>,
+}));
+
+vi.mock("drizzle-orm", () => ({
+  and: (...conditions: MockFilter[]) => ({
+    matches: (row: MockRow) =>
+      conditions.every((condition) => condition.matches(row)),
+  }),
+  eq: (column: { name: string }, value: unknown) => ({
+    matches: (row: MockRow) => row[column.name] === value,
+  }),
+  gte: (column: { name: string }, value: number) => ({
+    matches: (row: MockRow) => Number(row[column.name]) >= value,
+  }),
+}));
+
+vi.mock("@/db/client", () => ({
+  db: {
+    select: () => {
+      const query: Record<string, unknown> = {};
+      query.from = () => query;
+      query.where = (filter: MockFilter) =>
+        Promise.resolve(h.rows.filter((row) => filter.matches(row)));
+      return query;
+    },
+  },
+}));
+
+vi.mock("@/db/schema", () => {
+  const column = (name: string) => ({ name });
+  return {
+    changeEvents: {
+      id: column("id"),
+      timestamp: column("timestamp"),
+      payload: column("payload"),
+      projectId: column("projectId"),
+      domain: column("domain"),
+    },
+  };
+});
+
+vi.mock("@/features/attribution/projectStats", () => ({
+  loadProjectAttributionStats: async () => ({}),
+}));
+
+vi.mock("@/features/ai-usage/usageQuery", () => ({
+  getProjectUsageSummary: async () => null,
+}));
+
 import {
   insertedCharsFromPayload,
   insertedCharsForEvent,
   INSERTED_CHARS_CACHE_MAX,
   _clearInsertedCharsCache,
+  loadWritingStatsData,
 } from "./writingStatsQuery";
 
 describe("insertedCharsFromPayload", () => {
@@ -95,5 +150,47 @@ describe("insertedCharsForEvent", () => {
     expect(
       insertedCharsForEvent(INSERTED_CHARS_CACHE_MAX, payloadOf("wxyz")),
     ).toBe(1);
+  });
+});
+
+describe("loadWritingStatsData", () => {
+  it("keeps identity-correction rows out of the existing editor statistics", async () => {
+    const now = 1_800_000_000_000;
+    const timestamp = now - 1_000;
+    _clearInsertedCharsCache();
+    h.rows = [
+      {
+        id: 1,
+        projectId: "p1",
+        domain: "editor",
+        timestamp,
+        payload: JSON.stringify({
+          steps: [
+            {
+              stepType: "replace",
+              slice: { content: [{ type: "text", text: "abc" }] },
+            },
+          ],
+        }),
+      },
+      {
+        id: 2,
+        projectId: "p1",
+        domain: "identity-correction",
+        opType: "rule.revise",
+        sceneId: null,
+        timestamp,
+        payload: JSON.stringify({
+          ruleRevisionId: "r1",
+          kind: "must-link-surface",
+        }),
+      },
+    ];
+
+    await expect(loadWritingStatsData("p1", [], now)).resolves.toEqual({
+      events: [{ timestamp, chars: 3 }],
+      attribution: { human: 0, ai: 0, unknown: 0, total: 0 },
+      usage: null,
+    });
   });
 });
