@@ -387,6 +387,9 @@ describe("the runtime tool allow-list (DR-MP3-14, layer 2)", () => {
       ...MASTRA_UI_TOOL_NAMES,
     ]);
     expect(MASTRA_AGENT_TOOL_ALLOWLIST).not.toContain(
+      "narrative_extraction_list_redecidable_proposals",
+    );
+    expect(MASTRA_AGENT_TOOL_ALLOWLIST).not.toContain(
       "narrative_extraction_reapprove_applied_proposals",
     );
     expect(() =>

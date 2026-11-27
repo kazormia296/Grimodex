@@ -1074,6 +1074,8 @@ export declare class Backend {
    * binding and caps the page size.
    */
   narrativeExtractionListSceneProposals(payload: any): Promise<string>
+  /** Read-only: list applied proposals eligible for reapproval in one project, one page. */
+  narrativeExtractionListRedecidableProposals(payload: any): Promise<string>
   narrativeExtractionIsRunResumableForReview(payload: any): Promise<string>
   narrativeExtractionListChronicleTaskResumeCandidates(payload: any): Promise<string>
   narrativeExtractionCancelRun(payload: any, workspaceBinding: any): Promise<string>
