@@ -602,6 +602,7 @@ test("every file a skippable lane's JS tests import stays outside that lane's ne
         "src/AiAuditLazyImport.test.ts -> ./aiScaffold/AiTreeDialog",
         "src/AiAuditLazyImport.test.ts -> ./chatAgentToolHandlers",
         "src/AiAuditLazyImport.test.ts -> ./chatStreamTransport",
+        "src/AiAuditLazyImport.test.ts -> ./chatTurnMastraEngine",
         "src/AiAuditLazyImport.test.ts -> ./cliApi",
         "src/AiAuditLazyImport.test.ts -> ./codexAppApi",
         "src/AiAuditLazyImport.test.ts -> ./lazyTransportApi",
