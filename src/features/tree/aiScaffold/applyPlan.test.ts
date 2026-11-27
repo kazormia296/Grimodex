@@ -217,6 +217,7 @@ describe("applyAiTreePlan — orchestration", () => {
     expect(invoke).toHaveBeenCalledTimes(1);
     expect((invoke as Mock).mock.calls[0][0]).toBe("ai_tree_plan_apply");
     expect(h.reloadImpl).toHaveBeenCalledTimes(1);
+    expect(res.undoId).toBe("tree-journal-1");
     const payload = (invoke as Mock).mock.calls[0][1].payload;
     expect(payload).toMatchObject({
       projectId: "proj-1",

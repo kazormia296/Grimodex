@@ -93,6 +93,19 @@ export interface Nir1EntityRelationRevisionReadRequest {
   readonly revisionId: string;
 }
 
+export interface Nir1EntityRelationApprovedCodexFilterRequest {
+  readonly expectedWorkspacePath: string;
+  readonly projectId: string;
+  readonly codexEntryIds: readonly string[];
+}
+
+export type Nir1EntityRelationApprovedCodexFilterResponse =
+  | {
+      readonly status: "available";
+      readonly approvedCodexEntryIds: readonly string[];
+    }
+  | { readonly status: "unavailable"; readonly reason: string };
+
 export interface Nir1EntityRelationRevisionCurrentReadRequest {
   readonly expectedWorkspacePath: string;
   readonly projectId: string;
@@ -231,6 +244,17 @@ export function readNir1EntityRelationRevision(
     expectedWorkspacePath: request.expectedWorkspacePath,
     projectId: request.projectId,
     revisionId: request.revisionId,
+  });
+}
+
+/** Filter Codex IDs through current, human-approved typed Entity/Relation Revisions. */
+export function readApprovedNir1EntityRelationCodexEntryIds(
+  request: Nir1EntityRelationApprovedCodexFilterRequest,
+): Promise<Nir1EntityRelationApprovedCodexFilterResponse> {
+  return invoke("nir1_entity_relation_approved_codex_filter", {
+    expectedWorkspacePath: request.expectedWorkspacePath,
+    projectId: request.projectId,
+    codexEntryIds: request.codexEntryIds,
   });
 }
 

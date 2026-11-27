@@ -82,8 +82,16 @@
 
 - Release B は、Decision Gate A（Release A を約 10 件使った記録）を待たない。Gate A の問いは、Release B を作った後の振り返りの観点として残す。
 - 確認待ちを会話の外に保存すること（Release B の product promise の一部）は、Release A の A3（durable AgentRun と durable interaction）と、その前提の R1・F0-lite を先に作って使う。Release A のうち A4a 以降（Background Session、UI、hardening）は待たない。Roadmap の principle 2（Task の進捗の表示より前に Background execution を成立させる）の例外として扱う。
-- Release B の前提：Write-Safety Roadmap の Gate A（A1・A2）、Release A の A3（と R1・F0-lite）、Mastra 移行の MP-6（write tool と capability）と MP-9（履歴の持ち主と保存の移動）。
+- Release B の前提：Write-Safety Roadmap の Gate A（A1・A2）、Release A の A3（と R1・F0-lite）、Mastra 移行の MP-6（write tool と capability）と MP-9（履歴の持ち主と保存の移動）。担当と範囲は DR-ST-10。
 - ADR 007 と ADR 012 の Consequences（実運用で問題が観測された後に評価、既存の Decision Gate を維持）は、この決定に合わせて追補した。
+
+### DR-ST-10 前提の範囲と担当（2026-11-27）
+
+利用者の回答（統合者の構造化質問、2026-11-27。記録は `claude/nir1-contracts` の commit `e5d93dca8` の問 8〜10）：
+
+- 問 8「SessionTasks の試験」は「Release B の機能まるごと」（書き換えの承認、連続実行、再起動をまたぐ確認待ち、続行の引き継ぎまで）。DR-ST-6 の前提 4 つ（Write-Safety の Gate A、Release A の A3、MP-6、MP-9）は全部要る。
+- 問 9 Write-Safety の Gate A（A1・A2）は Release B の前提として確定した（「前提にする、担当は Mastra (Recommended)」）。担当は Mastra 移行の lane で、MP-6 の後に続けて持つ。authority の変更なので、設計ができたら利用者に伺う。
+- 問 10 Release A の A3（R1・F0-lite を含む）は「新しい lane で実装まで」。保存の範囲の拡大と DR-MP5-11 の変更は、その lane が起案の段で利用者に伺う（委任の外）。
 
 ### DR-ST-9 作者が書く目的と条件の欄は作らない
 
@@ -134,15 +142,18 @@ Mastra 組込みの task／plan の tool、Goals、AgentController は使わな�
 
 - この文書は要件と順序の記録で、製品の挙動、wire、保存、送信先を変えない。脅威モデルの確定文書も変えない。
 - 新しい送信先は無い。実 API の測定は Anthropic の API だけに送る。
-- 確認待ちの保存（DR-ST-6・DR-ST-7）と、suspend の snapshot の永続化（DR-ST-4）は保存の範囲の拡大にあたり、実装の前に利用者の確認が要る。
+- 確認待ちの保存（DR-ST-6・DR-ST-7）と、suspend の snapshot の永続化（DR-ST-4）は保存の範囲の拡大にあたり、実装の前に利用者の確認が要る。確認待ちの保存は、A3 の lane が起案の段で DR-MP5-11 の変更と合わせて伺う（DR-ST-10）。
+- Write-Safety の Gate A（A1・A2）は承認と Capability の発行の authority を変える。Mastra の lane が設計を終えた段で利用者に伺う（DR-ST-10）。
 - 回数の上限の撤廃（DR-ST-5）は製品の挙動と wire の契約の変更で、撤廃の PR で条件を満たしてから行う。
 
 ## 8. 未確認
 
-- DR-ST-4 の mock の結果。
+- DR-ST-4 の mock は Mastra の担当が 2026-11-26 に回した（作業記録はリポジトリの外）。報告の要点：モデルの `approved`・`resumeData` では承認は解けない。承認の後も `resumeData` と引数はモデルの値なので、引数の digest の固定と実行の直前の照合が要る。承認待ちは同じ turn の読み取りも止める。abort しても run は suspended のままで、保留は main の側で閉じる。MP-6 で採るかと W12・DR-MP5-7 の改訂は、MP-6 の設計で利用者に伺う。
+- Task の保存先（Native の独立した表。schema の版上げ）。
 - `limit_tokens` で止まったとき・文脈が埋まったときの扱い（DR-ST-5 の条件 2）の方式。
 - 結果の小さい tool を繰り返し呼ぶ turn は `limit_tokens` に届きにくい。回数の上限を外した後に、これを止める手段を置くか。
 - wire で「上限なし」をどう表すか。
 - Run 単位の費用や時間の grant を新しく置くか。
-- Write-Safety Roadmap の Gate A の今の実装の状態。この文書では確かめていない（同 roadmap の snapshot は 2026-08-19 の時点で Planned）。
+- Write-Safety Roadmap の Gate A は 2026-11-27 の時点で Planned（統合者の確認）。担当と順序は DR-ST-10。
+- 実 API の測定の API キーの置き場所と、費用の上限。
 - Release B を作った後の振り返り（Gate A の問い）の時期と方法。

@@ -1027,6 +1027,8 @@ describe("D2a profile egress gate", () => {
     // Unclassified on purpose until its renderer caller exists (DR-M4PF-11):
     // a restricted profile must deny it before dispatch.
     ["nir1_change_review_read", {}],
+    // Same for the B1a approved-Codex reader (DR-M2R-11): no K3/2 class change.
+    ["nir1_entity_relation_approved_codex_filter", {}],
     ["db_execute", { method: "all", sql: "SELECT body FROM messages" }],
     ["db_execute", { method: "all", sql: "SELECT 1" }],
     [

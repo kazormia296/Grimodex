@@ -7,6 +7,10 @@ use crate::narrative_extraction::{
     narrative_extraction_apply_commit, narrative_extraction_prepare_commit,
 };
 
+use crate::project_snapshots::{
+    create_project_snapshot, project_snapshot_restore_context, RestoreScope,
+};
+
 const PROJECT: &str = "project-1";
 
 /// Two separate approvals and Applications, sharing one real Prepare/Apply transaction.
@@ -19,10 +23,23 @@ fn human_import_ids(
     configure_envelope: impl FnOnce(&mut Value),
 ) -> anyhow::Result<Database> {
     let db = current_schema_full_db();
-    enable_manual_apply_for_test(&db);
-    create_run_with_task(&db, "existence-run", "existence-task");
     seed_scene(&db, "source");
-    let mut envelope = scene_body_envelope(&db, "existence-run", "existence-task", "source");
+    import_events_with(&db, ids, configure_envelope)?;
+    Ok(db)
+}
+
+fn import_events(db: &Database, ids: &[&str]) -> anyhow::Result<()> {
+    import_events_with(db, ids, |_| {})
+}
+
+fn import_events_with(
+    db: &Database,
+    ids: &[&str],
+    configure_envelope: impl FnOnce(&mut Value),
+) -> anyhow::Result<()> {
+    enable_manual_apply_for_test(db);
+    create_run_with_task(db, "existence-run", "existence-task");
+    let mut envelope = scene_body_envelope(db, "existence-run", "existence-task", "source");
     envelope["changeKind"] = json!("add");
     configure_envelope(&mut envelope);
     let mut seeds = Vec::new();
@@ -41,7 +58,7 @@ fn human_import_ids(
         });
     }
     let saved = save_proposal_set(
-        &db,
+        db,
         SaveProposalSetPayload {
             run_id: "existence-run".into(),
             project_id: PROJECT.into(),
@@ -61,7 +78,7 @@ fn human_import_ids(
         let revision = saved["revisionId"].as_str().unwrap().to_owned();
         assert_eq!(saved["proposalId"], proposal);
         append_human_decision(
-            &db,
+            db,
             AppendDecisionPayload {
                 project_id: PROJECT.into(),
                 run_id: "existence-run".into(),
@@ -84,7 +101,7 @@ fn human_import_ids(
         });
     }
     let prepared = narrative_extraction_prepare_commit(
-        &db,
+        db,
         PrepareCommitPayload {
             project_id: PROJECT.into(),
             run_id: "existence-run".into(),
@@ -101,7 +118,7 @@ fn human_import_ids(
         },
     )?;
     narrative_extraction_apply_commit(
-        &db,
+        db,
         ApplyCommitPayload {
             project_id: PROJECT.into(),
             prepared_commit_id: prepared["preparedCommitId"].as_str().unwrap().into(),
@@ -110,7 +127,7 @@ fn human_import_ids(
             expected_version: prepared["version"].as_i64(),
         },
     )?;
-    Ok(db)
+    Ok(())
 }
 
 #[test]
@@ -699,8 +716,8 @@ fn commit_undo_rolls_back_and_revokes_each_removed_import_once() -> anyhow::Resu
 #[test]
 fn restore_revokes_only_before_minus_after_and_rolls_back_on_failure() -> anyhow::Result<()> {
     use crate::project_snapshots::{
-        apply_project_snapshot_restore, build_canonical_restore_plan, create_project_snapshot,
-        ApplyProjectSnapshotRestorePayload, RestoreScope,
+        apply_project_snapshot_restore, build_canonical_restore_plan,
+        ApplyProjectSnapshotRestorePayload,
     };
     for keep_two in [false, true] {
         let db = human_import()?;
@@ -712,15 +729,7 @@ fn restore_revokes_only_before_minus_after_and_rolls_back_on_failure() -> anyhow
         if !keep_two {
             execute(&db, "DELETE FROM events WHERE id='event-two'")?;
         }
-        create_project_snapshot(
-            &db,
-            serde_json::from_value(json!({
-                "projectId":PROJECT, "snapshotId":"snapshot","name":"snapshot","createdAt":"2026-11-25",
-                "treeRows":[{"snapshot_id":"snapshot","node_id":"source","node_type":"scene",
-                             "title":"Scene","sort_order":"a"}],
-                "codexRows":[],"snippetRows":[],"versionIds":[]
-            }))?,
-        )?;
+        capture_rd6_snapshot(&db, None)?;
         db.with_conn(|conn| {
             crate::agent_writes::apply_event_snapshot(conn, PROJECT, &one, Some(1), true)
         })?;
@@ -1068,6 +1077,155 @@ fn reapproval_honors_stop_policy_and_rollback() -> anyhow::Result<()> {
     assert_eq!(stopped["skipped"], json!([]));
     assert_eq!(stopped["failed"], json!([]));
     Ok(())
+}
+
+fn capture_rd6_snapshot(db: &Database, version: Option<&str>) -> anyhow::Result<()> {
+    create_project_snapshot(
+        db,
+        serde_json::from_value(json!({
+            "projectId": PROJECT, "snapshotId": "snapshot", "name": "snapshot",
+            "createdAt": "2026-11-25",
+            "treeRows": [{"snapshot_id":"snapshot", "node_id":"source", "node_type":"scene",
+                          "title":"Scene", "sort_order":"a", "body_version_id":version}],
+            "codexRows": [], "snippetRows": [], "versionIds": version.into_iter().collect::<Vec<_>>()
+        }))?,
+    )
+}
+
+fn preview_loss(db: &Database, scope: RestoreScope) -> anyhow::Result<usize> {
+    let context =
+        project_snapshot_restore_context(db, PROJECT.into(), "snapshot".into(), vec![scope])?;
+    Ok(context.approval_loss_count)
+}
+
+#[test]
+fn restore_approval_loss_matches_new_rejections() -> anyhow::Result<()> {
+    use crate::project_snapshots::{
+        apply_project_snapshot_restore, build_canonical_restore_plan,
+        ApplyProjectSnapshotRestorePayload,
+    };
+    let db = current_schema_full_db();
+    seed_scene(&db, "source");
+    capture_rd6_snapshot(&db, None)?;
+    import_events(&db, &["one", "two", "three", "four"])?;
+    db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        assert_eq!(revoke(&tx, &["event-one".into()])?, 1);
+        tx.commit()?;
+        Ok(())
+    })?;
+    assert_eq!(preview_loss(&db, RestoreScope::Codex)?, 0);
+    let count = preview_loss(&db, RestoreScope::Body)?;
+    assert_eq!(count, 3);
+    let rejections = || {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT count(*) FROM narrative_proposal_decisions WHERE decision='rejected'
+               AND actor_id='native:event-existence-sync'
+               AND json_extract(decision_json, '$.removedVia')='snapshot-restore'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )? as usize)
+        })
+    };
+    let before = rejections()?;
+    assert_eq!(before, 1);
+    let scopes = [RestoreScope::Body];
+    let plan = db.with_conn(|conn| {
+        build_canonical_restore_plan(conn, PROJECT, "snapshot", &scopes.into_iter().collect())
+    })?;
+    apply_project_snapshot_restore(
+        &db,
+        ApplyProjectSnapshotRestorePayload {
+            project_id: PROJECT.into(),
+            session_id: "session".into(),
+            request_id: "restore".into(),
+            snapshot_id: "snapshot".into(),
+            scopes: scopes.to_vec(),
+            inserts: plan.inserts,
+        },
+    )?;
+    assert_eq!(rejections()? - before, count);
+    Ok(())
+}
+
+#[test]
+fn restore_approval_loss_skips_retained_and_handwritten() -> anyhow::Result<()> {
+    let db = human_import()?;
+    capture_rd6_snapshot(&db, None)?;
+    assert_eq!(preview_loss(&db, RestoreScope::Body)?, 0);
+    handwritten(&db)?;
+    assert_eq!(preview_loss(&db, RestoreScope::Body)?, 0);
+    Ok(())
+}
+
+#[test]
+fn restore_approval_loss_skips_missing_events_aux() -> anyhow::Result<()> {
+    let db = current_schema_full_db();
+    seed_scene(&db, "source");
+    capture_rd6_snapshot(&db, None)?;
+    import_events(&db, &["one"])?;
+    assert_eq!(preview_loss(&db, RestoreScope::Body)?, 1);
+    execute(
+        &db,
+        "DELETE FROM project_snapshot_aux WHERE snapshot_id='snapshot' AND scope='events'",
+    )?;
+    assert_eq!(preview_loss(&db, RestoreScope::Body)?, 0);
+    Ok(())
+}
+
+#[test]
+#[ignore = "timing with 60 imported events and a large scene"]
+fn measure_restore_approval_loss_context() -> anyhow::Result<()> {
+    use std::time::Instant;
+    let db = current_schema_full_db();
+    seed_scene(&db, "source");
+    let body = json!({"type":"doc", "content":[{"type":"paragraph", "content":[
+        {"type":"text", "text":"本文。".repeat(128 * 1024)}
+    ]}]})
+    .to_string();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO content_versions
+                (id, entity_type, entity_id, content, version_number, snapshot_type, created_at)
+             VALUES ('body', 'scene', 'source', ?1, 1, 'manual', '2026-11-25')",
+            [&body],
+        )?;
+        Ok(())
+    })?;
+    capture_rd6_snapshot(&db, Some("body"))?;
+    // 60, not 2,000: Native's append ordinals fail past "az" (it makes "b0"
+    // where JS fractional-indexing makes "b00", and rejects "b00"), a
+    // separate defect that stops one import of more than ~61 events.
+    let proposals: Vec<_> = (0..60).map(|i| format!("proposal-{i}")).collect();
+    import_events(
+        &db,
+        &proposals.iter().map(String::as_str).collect::<Vec<_>>(),
+    )?;
+    let ids: Vec<_> = proposals.iter().map(|id| format!("event-{id}")).collect();
+    for scope in [RestoreScope::Body, RestoreScope::Codex, RestoreScope::Body] {
+        let start = Instant::now();
+        let context =
+            project_snapshot_restore_context(&db, PROJECT.into(), "snapshot".into(), vec![scope])?;
+        let elapsed = start.elapsed();
+        assert_eq!(
+            context.approval_loss_count,
+            if scope == RestoreScope::Body { 60 } else { 0 }
+        );
+        assert_eq!(context.content_rows[0].content.len(), body.len());
+        eprintln!("context {scope:?}, {} body bytes: {elapsed:?}", body.len());
+    }
+    db.with_conn(|conn| {
+        let start = Instant::now();
+        let count = count_removed_event_proposals(conn, PROJECT, &ids)?;
+        eprintln!(
+            "count only, {} applications: {:?}",
+            ids.len(),
+            start.elapsed()
+        );
+        assert_eq!(count, 60);
+        Ok(())
+    })
 }
 
 mod redecidable {

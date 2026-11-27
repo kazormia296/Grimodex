@@ -149,12 +149,34 @@ describe("projectSnapshotApi", () => {
 
     await expect(
       previewProjectSnapshotRestoreLoss(snapshot.id, new Set(RESTORE_SCOPES)),
-    ).resolves.toEqual({ structural: true, lossNotices: [] });
+    ).resolves.toEqual({
+      structural: true,
+      lossNotices: [],
+      approvalLossCount: null,
+    });
     expect(loadContext).toHaveBeenCalledOnce();
     expect(createSpy).not.toHaveBeenCalled();
     expect(applySpy).not.toHaveBeenCalled();
     expect(bodyReplacementSpy).not.toHaveBeenCalled();
     expect(topologyMutationSpy).not.toHaveBeenCalled();
+  });
+
+  it("passes Native's approval loss count through (SRD/1 RD6)", async () => {
+    await seedScene('{"type":"doc","content":[]}');
+    const snapshot = await createProjectSnapshot({ name: "preview-approvals" });
+    const context =
+      await snapshotNative.loadNativeProjectSnapshotRestoreContext(
+        PROJECT_ID,
+        snapshot.id,
+        new Set(RESTORE_SCOPES),
+      );
+    vi.spyOn(
+      snapshotNative,
+      "loadNativeProjectSnapshotRestoreContext",
+    ).mockResolvedValueOnce({ ...context, approvalLossCount: 5 });
+    await expect(
+      previewProjectSnapshotRestoreLoss(snapshot.id, new Set(RESTORE_SCOPES)),
+    ).resolves.toMatchObject({ approvalLossCount: 5 });
   });
 
   it("returns the Native context's lossNotices unchanged and passes the chosen scopes", async () => {
@@ -177,7 +199,11 @@ describe("projectSnapshotApi", () => {
 
     await expect(
       previewProjectSnapshotRestoreLoss(snapshot.id, chosenScopes),
-    ).resolves.toEqual({ structural: true, lossNotices: notices });
+    ).resolves.toEqual({
+      structural: true,
+      lossNotices: notices,
+      approvalLossCount: null,
+    });
     expect(loadContext).toHaveBeenCalledWith(
       PROJECT_ID,
       snapshot.id,

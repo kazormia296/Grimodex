@@ -164,13 +164,15 @@ describe("the owner module", () => {
     expect(OWNER).toMatch(/JSON\.stringify\(result\.content\)/);
   });
 
-  it("binds only the approved main-owned write tools through one-shot Native writes", () => {
+  it("binds approved main-owned writes and routes tree/body tools through their existing writers", () => {
     expect([...MASTRA_AGENT_WRITE_TOOL_NAMES]).toEqual([
       "create_codex_entry",
       "update_codex_entry",
       "create_foreshadow",
       "update_foreshadow",
       "create_snippet",
+      "apply_ai_tree_plan",
+      "propose_scene_body",
       "create_event",
       "update_event",
       "delete_event",
@@ -186,6 +188,8 @@ describe("the owner module", () => {
       "agent_foreshadow_create",
       "agent_foreshadow_update",
       "agent_snippet_create",
+      "ai_tree_plan_apply",
+      "agent_propose_scene_body",
       "agent_event_create",
       "agent_event_update",
       "agent_event_delete",
