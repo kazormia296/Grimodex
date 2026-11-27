@@ -2,7 +2,7 @@ import { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { getSchema } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
-import { agentMarkdownToProseMirrorJson as normalizeMarkdown } from "@/../electron/shared/agentWriteNormalization";
+import { agentMarkdownToProseMirrorJson as normalizeMarkdown } from "@/../electron/shared/agentMarkdownToProseMirror";
 
 /** Same order of magnitude as the MCP sanitizer; measured as UTF-8 bytes. */
 export const MAX_AGENT_RICH_TEXT_BYTES = 1_000_000;
