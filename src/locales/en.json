@@ -4738,6 +4738,8 @@
     "restoreTitle": "Restore Project",
     "restoreDesc": "Restore to \"{{name}}\"?",
     "restoreDescSub": "The current state will be auto-saved as a snapshot.",
+    "approvalLoss": "Imported AI-extracted events will be removed from the chronicle, and {{count}} proposals will no longer be approved.",
+    "approvalLossUnknown": "Could not check whether imported events lose their approval.",
     "restoring": "Restoring…",
     "restoreConfirm": "Restore",
     "deleteTitle": "Delete Snapshot",

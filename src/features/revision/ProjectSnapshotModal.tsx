@@ -348,6 +348,30 @@ export function ProjectSnapshotModal({
             {t("snapshot.restoreDesc", { name: confirmRestoreSnap?.name })}
             <br />
             {t("snapshot.restoreDescSub")}
+            {lossPreview.status === "ready" &&
+              (lossPreview.approvalLossCount ?? 0) > 0 && (
+                <>
+                  <br />
+                  <span data-testid="snapshot-restore-approval-loss">
+                    {t(
+                      "snapshot.approvalLoss",
+                      "年表に取り込んだ AI 抽出の出来事が無くなり、{{count}} 件の提案の承認が外れます。",
+                      { count: lossPreview.approvalLossCount ?? 0 },
+                    )}
+                  </span>
+                </>
+              )}
+            {lossPreview.status === "error" && (
+              <>
+                <br />
+                <span data-testid="snapshot-restore-approval-loss-unknown">
+                  {t(
+                    "snapshot.approvalLossUnknown",
+                    "取り込んだ出来事の承認が外れるかを確かめられませんでした。",
+                  )}
+                </span>
+              </>
+            )}
           </>
         }
         className="w-[480px] max-w-[95vw] max-h-[90vh] overflow-y-auto"
@@ -439,6 +463,8 @@ export function ProjectSnapshotModal({
             onClick={handleRestoreConfirm}
             disabled={
               isRestoring ||
+              // SRD/1 RD6 (確認 133 (4)): not before the count is shown.
+              lossPreview.status === "loading" ||
               (confirmRestoreSnap?.isStructural === true &&
                 restoreScopes.size === 0)
             }
