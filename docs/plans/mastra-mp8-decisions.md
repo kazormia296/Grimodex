@@ -31,6 +31,7 @@ MP-7a は進行中。schema 案の5表（`mastra_message_parts`、`mastra_thread
 - **DR-MP8-5 cache。** 往復削減の read cache は main adapter 内、turn 単位で所有・破棄する。書込み後は該当値を無効化する。全 turn 共用 cache は置かない。キャッシュ有無で結果が変わらないことを試験する。[計画:466]
 - **DR-MP8-6 呼出し・保存。** 実 Mastra の呼び順を記録し、1 turn の1〜8回の `saveMessages` と1〜2 assistant 行を前提に、buffer の commit／abort と #940 予約行の整合を定める。turn terminal の1 transaction、IMMEDIATE、workspace lease との合成は実 Rust で確かめるまで確定扱いしない。[計画:439-440,468; 脅威モデル W3]
 - **DR-MP8-7 vector 削除。** `message_id` と保存行の ID 対応を Rust の正本で定義し、message 削除後に該当 chunk が残らないことを受入れにする。R-15 の原因と保証が解けなければ vector を有効化せず、旗 M は閉じたまま U-13 に戻す。[計画:463,476; R-15]
+- **DR-MP8-8 storage／vector import 許可。** storage・vector の import の閉包の picomatch と workspace の chunk は agent と同じで、到達を防ぐのはこの静的検査と mastra-ee-check の importer の pin（DR-MP3-14・15）。
 
 ## 4. owner／lifecycle の表（GDX-PRECHECK-001）
 

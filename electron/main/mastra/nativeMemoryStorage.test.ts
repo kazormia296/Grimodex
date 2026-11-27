@@ -1,6 +1,6 @@
 import { InMemoryMemory } from "@mastra/core/storage";
 import { describe, expect, it, vi } from "vitest";
-import type { Backend } from "../../native/grimodex-node/index.js";
+import type { NapiMemoryBackendLike } from "../../shared/ipcContract.js";
 import { NativeMemoryStorage } from "./nativeMemoryStorage.js";
 
 const json = (value: unknown) => JSON.stringify(value);
@@ -28,7 +28,7 @@ function mockedStorage() {
     memoryMessageDelete: method("messageDelete"),
     memoryResourceRead: method("resourceRead"),
     memoryResourceWrite: method("resourceWrite"),
-  } as unknown as Backend;
+  } as unknown as NapiMemoryBackendLike;
   return { calls, backend, storage: new NativeMemoryStorage(backend, "p1") };
 }
 
@@ -254,7 +254,10 @@ describe("NativeMemoryStorage", () => {
       memoryResourceRead: vi.fn(async () => json(null)),
       memoryResourceWrite: vi.fn(async () => json(null)),
     };
-    const native = new NativeMemoryStorage(backend as unknown as Backend, "p1");
+    const native = new NativeMemoryStorage(
+      backend as unknown as NapiMemoryBackendLike,
+      "p1",
+    );
     const memory = new InMemoryMemory({
       db: {
         threads: new Map(),

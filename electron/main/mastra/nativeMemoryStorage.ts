@@ -1,17 +1,5 @@
 import { MemoryStorage } from "@mastra/core/storage";
-import type { Backend } from "../../native/grimodex-node/index.js";
-
-type NativeMemoryBackend = Pick<
-  Backend,
-  | "memoryThreadRead"
-  | "memoryThreadWrite"
-  | "memoryThreadDelete"
-  | "memoryMessageRead"
-  | "memoryMessageWrite"
-  | "memoryMessageDelete"
-  | "memoryResourceRead"
-  | "memoryResourceWrite"
->;
+import type { NapiMemoryBackendLike } from "../../shared/ipcContract.js";
 
 function decode<T>(wire: string): T {
   const fromWire = (value: unknown): unknown => {
@@ -53,7 +41,7 @@ export class NativeMemoryStorage extends MemoryStorage {
   }
 
   constructor(
-    private readonly backend: NativeMemoryBackend,
+    private readonly backend: NapiMemoryBackendLike,
     private readonly projectId: string,
   ) {
     super();

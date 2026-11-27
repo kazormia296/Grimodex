@@ -568,6 +568,18 @@ export interface CancelCurrentChatInputReceipt {
   readonly messageId: string;
 }
 
+/** Main-only typed Mastra memory commands exposed by the Native backend. */
+export interface NapiMemoryBackendLike {
+  memoryThreadRead(payload: unknown): Promise<string>;
+  memoryThreadWrite(payload: unknown): Promise<string>;
+  memoryThreadDelete(payload: unknown): Promise<string>;
+  memoryMessageRead(payload: unknown): Promise<string>;
+  memoryMessageWrite(payload: unknown): Promise<string>;
+  memoryMessageDelete(payload: unknown): Promise<string>;
+  memoryResourceRead(payload: unknown): Promise<string>;
+  memoryResourceWrite(payload: unknown): Promise<string>;
+}
+
 export interface NapiBackendLike {
   /** Main-only D2a startup barrier; never registered in renderer IPC. */
   initializeProfileEgress?(): Promise<string>;
