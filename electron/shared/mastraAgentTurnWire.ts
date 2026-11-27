@@ -36,6 +36,8 @@ export const MASTRA_AGENT_WRITE_TOOL_NAMES = [
   "create_foreshadow",
   "update_foreshadow",
   "create_snippet",
+  "apply_ai_tree_plan",
+  "propose_scene_body",
   "create_event",
   "update_event",
   "delete_event",
@@ -286,6 +288,8 @@ export interface MastraAgentTurnStartRequest {
   readonly turnId: string;
   /** The chat session (`sessionIdForPersist ?? activeSessionId`); one turn per sender and session. */
   readonly chatSessionId: string;
+  /** Renderer recorder session used as the native writerSessionId. */
+  readonly writerSessionId: string;
   /**
    * The project the turn's audit rows are chained to (`project:<id>`, as the
    * legacy route does; MP-4a, DR-MP4-1, -2). The renderer's own claim: Main
@@ -323,7 +327,18 @@ export interface MastraAgentTurnStartRequest {
   )[];
 }
 
-export type MastraAgentTurnQuestionToolName = MastraUiToolName;
+export type MastraAgentTurnQuestionToolName =
+  | MastraUiToolName
+  | "apply_ai_tree_plan"
+  | "propose_scene_body";
+
+export interface MastraAgentTurnQuestionAuthorization {
+  readonly capability: string;
+  readonly executionId: string;
+  readonly chatMessageId: string;
+  readonly mainOwnedProvenanceId: string;
+  readonly expectedEntityId?: string;
+}
 
 export interface MastraAgentTurnQuestionPayload {
   readonly turnId: string;
@@ -331,6 +346,7 @@ export interface MastraAgentTurnQuestionPayload {
   readonly toolCallId: string;
   readonly toolName: MastraAgentTurnQuestionToolName;
   readonly args: Readonly<Record<string, unknown>>;
+  readonly authorization?: MastraAgentTurnQuestionAuthorization;
   /** Absolute Unix time in milliseconds. */
   readonly deadlineAt: number;
 }
@@ -391,6 +407,7 @@ export type MastraAgentTurnQuestionParse<T> =
 const START_KEYS = [
   "turnId",
   "chatSessionId",
+  "writerSessionId",
   "projectId",
   "currentSceneId",
   "chatMessageId",
@@ -527,6 +544,7 @@ export type MastraAgentTurnWireIssue =
   | "forbidden-key"
   | "turn-id"
   | "chat-session-id"
+  | "writer-session-id"
   | "project-id"
   | "current-scene-id"
   | "chat-message-id"
@@ -888,6 +906,9 @@ export function parseMastraAgentTurnStartRequest(
   if (!isTrimmedId(entries.get("chatSessionId"))) {
     return fail("chat-session-id");
   }
+  if (!isTrimmedId(entries.get("writerSessionId"))) {
+    return fail("writer-session-id");
+  }
   if (!isScopeId(entries.get("projectId"))) return fail("project-id");
   const currentSceneId = entries.get("currentSceneId");
   // An empty string is "no scene" (the chat store's `activeSceneId` can be
@@ -1193,6 +1214,26 @@ function hasMastraUiToolArgumentBounds(
   toolName: MastraAgentTurnQuestionToolName,
   args: Readonly<Record<string, unknown>>,
 ): boolean {
+  const entries = plainEntries(args);
+  if (entries === null) return false;
+  if (toolName === "apply_ai_tree_plan") {
+    return (
+      questionKeyIssue(entries, ["kind", "ops"]) === null &&
+      (args.kind === "scaffold" || args.kind === "reorganize") &&
+      Array.isArray(args.ops) &&
+      args.ops.length <= 200 &&
+      args.ops.every((op) => plainEntries(op) !== null)
+    );
+  }
+  if (toolName === "propose_scene_body") {
+    return (
+      questionKeyIssue(entries, ["sceneId", "text"], ["mode"]) === null &&
+      typeof args.sceneId === "string" &&
+      args.sceneId.length <= MASTRA_AGENT_TURN_QUESTION_FIELD_UTF16_MAX &&
+      typeof args.text === "string" &&
+      (args.mode === undefined || args.mode === "append" || args.mode === "insert")
+    );
+  }
   if (toolName === "get_app_help_index") {
     return (
       args.query === undefined ||
@@ -1271,7 +1312,7 @@ export function parseMastraAgentTurnQuestionPayload(
     "toolName",
     "args",
     "deadlineAt",
-  ]);
+  ], ["authorization"]);
   if (issue !== null) return questionFail(issue);
   const turnId = entries.get("turnId");
   const requestId = entries.get("requestId");
@@ -1282,23 +1323,58 @@ export function parseMastraAgentTurnQuestionPayload(
   if (!isMastraAgentTurnId(turnId)) return questionFail("turn-id");
   if (!isMastraAgentTurnId(requestId)) return questionFail("request-id");
   if (!isQuestionWireId(toolCallId)) return questionFail("tool-call-id");
-  if (!(MASTRA_UI_TOOL_NAMES as readonly unknown[]).includes(toolName)) {
+  const isWriteQuestion =
+    toolName === "apply_ai_tree_plan" || toolName === "propose_scene_body";
+  if (isWriteQuestion !== entries.has("authorization")) {
+    return questionFail("args");
+  }
+  if (
+    !(MASTRA_UI_TOOL_NAMES as readonly unknown[]).includes(toolName) &&
+    !isWriteQuestion
+  ) {
     return questionFail("tool-name");
   }
   const tool = MASTRA_UI_TOOL_DEFINITION_MAP.get(toolName as string);
+  const authorization = entries.get("authorization");
+  const authEntries = isWriteQuestion ? plainEntries(authorization) : null;
+  const authValid =
+    !isWriteQuestion ||
+    (authEntries !== null &&
+      questionKeyIssue(
+        authEntries,
+        ["capability", "executionId", "chatMessageId", "mainOwnedProvenanceId"],
+        ["expectedEntityId"],
+      ) === null &&
+      [
+        "capability",
+        "executionId",
+        "chatMessageId",
+        "mainOwnedProvenanceId",
+      ].every((key) => isQuestionWireId(authEntries.get(key))) &&
+      (!authEntries.has("expectedEntityId") ||
+        isQuestionWireId(authEntries.get("expectedEntityId"))));
   if (
-    !tool ||
-    !matchesMastraUiSchema(args, tool.inputSchema) ||
+    !authValid ||
+    (isWriteQuestion
+      ? !hasMastraUiToolArgumentBounds(
+          toolName as MastraAgentTurnQuestionToolName,
+          args as Readonly<Record<string, unknown>>,
+        )
+      : !tool ||
+        !matchesMastraUiSchema(args, tool.inputSchema) ||
+        !hasMastraUiToolArgumentBounds(
+          toolName as MastraAgentTurnQuestionToolName,
+          args as Readonly<Record<string, unknown>>,
+        )) ||
     !isBoundedQuestionJson(args, {
       text: MASTRA_AGENT_TURN_QUESTION_ARGS_UTF16_MAX,
       nodes: MASTRA_AGENT_TURN_QUESTION_JSON_NODES_MAX,
       depth: MASTRA_AGENT_TURN_QUESTION_JSON_DEPTH_MAX,
-      array: MASTRA_AGENT_TURN_QUESTION_OPTIONS_MAX,
-    }) ||
-    !hasMastraUiToolArgumentBounds(
-      toolName as MastraAgentTurnQuestionToolName,
-      args as Readonly<Record<string, unknown>>,
-    )
+      array:
+        toolName === "apply_ai_tree_plan"
+          ? 200
+          : MASTRA_AGENT_TURN_QUESTION_OPTIONS_MAX,
+    })
   ) {
     return questionFail("args");
   }
@@ -1335,7 +1411,9 @@ function isMastraAgentTurnUiToolResult(
   const tokensUsed = entries.get("tokensUsed");
   if (
     !isQuestionWireId(entries.get("toolCallId")) ||
-    !(MASTRA_UI_TOOL_NAMES as readonly unknown[]).includes(name) ||
+    (!(MASTRA_UI_TOOL_NAMES as readonly unknown[]).includes(name) &&
+      name !== "apply_ai_tree_plan" &&
+      name !== "propose_scene_body") ||
     !isBoundedQuestionJson(content, {
       text: MASTRA_AGENT_TURN_ANSWER_CONTENT_UTF16_MAX,
       nodes: MASTRA_AGENT_TURN_ANSWER_JSON_NODES_MAX,

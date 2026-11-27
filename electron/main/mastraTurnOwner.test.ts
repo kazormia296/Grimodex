@@ -170,6 +170,7 @@ function startRequest(
   return {
     turnId,
     chatSessionId: `session-${turnId}`,
+    writerSessionId: `writer-${turnId}`,
     projectId: PROJECT_ID,
     currentSceneId: "scene-1",
     chatMessageId: `message-${turnId}`,
@@ -266,7 +267,13 @@ function harness(
       >
     >;
     nativeWriterMethods?: Partial<
-      Pick<NapiBackendLike, "agentForeshadowCreate" | "agentEventCreate">
+      Pick<
+        NapiBackendLike,
+        | "agentForeshadowCreate"
+        | "agentEventCreate"
+        | "agentEventUpdate"
+        | "eventGetVersion"
+      >
     >;
   } = {},
 ): Harness {
@@ -5710,6 +5717,251 @@ describe("MP-5 main-owned question holds", () => {
       name: "create_event",
       undoId: "undo-event-1",
       content: { entityId: "event-1", undoJournalId: "undo-event-1" },
+    });
+  });
+
+  it.each([
+    {
+      name: "update_foreshadow",
+      input: { id: "foreshadow-1", baseVersion: 4, title: "Revised" },
+      method: "agentForeshadowUpdate",
+      check: (payload: Record<string, unknown>) => {
+        expect(payload).toMatchObject({
+          foreshadowId: "foreshadow-1",
+          baseVersion: 4,
+        });
+        expect(payload).not.toHaveProperty("id");
+      },
+    },
+    {
+      name: "create_codex_entry",
+      input: {
+        type: "character",
+        name: "Mina",
+        content: "# Bio\n\nText",
+        aliases: [" Mina ", ""],
+      },
+      method: "agentCodexCreate",
+      check: (payload: Record<string, unknown>) => {
+        expect(payload).toMatchObject({
+          typeSlug: "character",
+          aliases: '["Mina"]',
+        });
+        expect(payload).not.toHaveProperty("type");
+        expect(JSON.parse(String(payload.content))).toMatchObject({
+          type: "doc",
+        });
+      },
+    },
+    {
+      name: "update_codex_entry",
+      input: { id: "entry-1", name: "Mina" },
+      method: "agentCodexUpdate",
+      check: (payload: Record<string, unknown>) => {
+        expect(payload).toMatchObject({ entryId: "entry-1", baseVersion: 7 });
+        expect(payload).not.toHaveProperty("id");
+      },
+    },
+    {
+      name: "update_event",
+      input: { eventId: "event-1", title: "Arrival" },
+      method: "agentEventUpdate",
+      check: (payload: Record<string, unknown>) => {
+        expect(payload).toMatchObject({
+          eventId: "event-1",
+          title: "Arrival",
+          baseVersion: 3,
+        });
+      },
+    },
+  ] as const)(
+    "normalizes $name before capability binding and Native dispatch",
+    async ({ name, input, method, check }) => {
+      const writer = vi.fn(async (_payload: unknown) =>
+        JSON.stringify({
+          entityId: `${name}-entity`,
+          version: 8,
+          changeEventUid: "write-event",
+          undoJournalId: "write-undo",
+        }),
+      );
+      const response: AgentWireResponse = {
+        blocks: [{ type: "tool_use", id: `call-${name}`, name, input }],
+        stopReason: "tool_use",
+      };
+      const h = harness({
+        responses: [response],
+        nativeWriterMethods: {
+          [method]: writer,
+          eventGetVersion: async () => "3",
+        } as never,
+        readDbExecute: async () =>
+          JSON.stringify({
+            __grimodexDbResultKind: "read",
+            rows: [{ version: 7 }],
+          }),
+        issueWriteCapabilities: (senderId, args, result, backend, identity) =>
+          issueAgentAuthorityCapabilitiesForSender(
+            senderId,
+            args as never,
+            result,
+            backend,
+            identity as never,
+          ),
+        agentAuthorityRequestId,
+        bindWriteCapability: consumeAndBindAgentAuthorityCapability,
+        sendWriteCompleted: vi.fn(() => true),
+        runTurn: async (turn) => {
+          await sendPreparedRequest(turn, auditRequestFor(turn), 0);
+          const binding = turn.bindings?.find(
+            (candidate) => candidate.name === name,
+          );
+          if (!binding) throw new Error("write binding missing");
+          await binding.execute(input, {
+            toolCallId: `call-${name}`,
+            signal: turn.signal,
+          });
+        },
+      });
+      const { context } = h.newContext();
+      await h.owner.start(
+        context,
+        startRequest(TURN_A, { tools: [name] as never }),
+      );
+
+      expect(writer).toHaveBeenCalledOnce();
+      const payload = writer.mock.calls[0]?.[0] as Record<string, unknown>;
+      check(payload);
+      expect(payload).toMatchObject({
+        projectId: "project-1",
+        writerSessionId: expect.any(String),
+      });
+    },
+  );
+});
+
+describe("MP-6 Main bindings for the tree plan and staged scene body", () => {
+  async function startWrite(
+    name: "apply_ai_tree_plan" | "propose_scene_body",
+    args: Record<string, unknown>,
+    sendWriteCompleted: (senderId: number, payload: unknown) => boolean,
+  ) {
+    const response: AgentWireResponse = {
+      blocks: [{ type: "tool_use", id: `call-${name}`, name, input: args }],
+      stopReason: "tool_use",
+    };
+    const h = harness({
+      responses: [response, { blocks: [], stopReason: "end_turn" }],
+      issueWriteCapabilities: (senderId, request, result, backend, identity) =>
+        issueAgentAuthorityCapabilitiesForSender(
+          senderId,
+          request as never,
+          result,
+          backend,
+          identity as never,
+        ),
+      agentAuthorityRequestId,
+      bindWriteCapability: consumeAndBindAgentAuthorityCapability,
+      sendWriteCompleted,
+      runTurn: async (input) => {
+        const first = await sendPreparedRequest(
+          input,
+          auditRequestFor(input),
+          0,
+        );
+        const tool = first.response.blocks[0];
+        if (tool?.type !== "tool_use") throw new Error("write tool missing");
+        const binding = input.bindings?.find((item) => item.name === name);
+        if (!binding) throw new Error("write binding missing");
+        const result = await binding.execute(tool.input, {
+          toolCallId: tool.id,
+          signal: input.signal,
+        });
+        input.onToolResult?.({
+          toolCallId: tool.id,
+          toolName: name,
+          tokens: result.tokensUsed,
+          summary: result.summary,
+        });
+        await sendPreparedRequest(input, auditRequestFor(input), 1);
+      },
+    });
+    const { context } = h.newContext();
+    const started = h.owner.start(
+      context,
+      startRequest(TURN_A, { tools: [name] as never }),
+    );
+    await vi.waitFor(() => expect(questionDeliveries).toHaveLength(1));
+    return {
+      h,
+      context,
+      started,
+      question: questionDeliveries[0]?.[2] as MastraAgentTurnQuestionPayload,
+    };
+  }
+
+  it("routes propose_scene_body to the renderer staging handler without completing a body write", async () => {
+    const sendWriteCompleted = vi.fn(() => true);
+    const { h, context, started, question } = await startWrite(
+      "propose_scene_body",
+      { sceneId: "scene-1", text: "Proposal", mode: "append" },
+      sendWriteCompleted,
+    );
+    expect(question).toMatchObject({
+      toolName: "propose_scene_body",
+      args: { sceneId: "scene-1", text: "Proposal", mode: "append" },
+      authorization: { capability: expect.any(String) },
+    });
+    await h.owner.answer(context, {
+      requestId: question.requestId,
+      result: {
+        toolCallId: question.toolCallId,
+        name: "propose_scene_body",
+        content: { stagingId: "stage-1", sceneId: "scene-1", status: "proposed" },
+        summary: "staged",
+        tokensUsed: 1,
+      },
+    });
+    const result = completed(await started);
+    expect(result.loopResult?.toolCallRecords[0]).toMatchObject({
+      name: "propose_scene_body",
+      content: { stagingId: "stage-1", status: "proposed" },
+    });
+    expect(sendWriteCompleted).not.toHaveBeenCalled();
+  });
+
+  it("records the native tree plan undo id and emits the identifier-only completion", async () => {
+    const sendWriteCompleted = vi.fn(() => true);
+    const { h, context, started, question } = await startWrite(
+      "apply_ai_tree_plan",
+      { kind: "scaffold", ops: [{ op: "create" }] },
+      sendWriteCompleted,
+    );
+    await h.owner.answer(context, {
+      requestId: question.requestId,
+      result: {
+        toolCallId: question.toolCallId,
+        name: "apply_ai_tree_plan",
+        content: {
+          createdIds: ["scene-1"],
+          movedIds: [],
+          renamedIds: [],
+          undoId: "undo-tree-1",
+        },
+        summary: "Applied tree plan",
+        tokensUsed: 4,
+        undoId: "undo-tree-1",
+      },
+    });
+    const result = completed(await started);
+    expect(result.loopResult?.toolCallRecords[0]).toMatchObject({
+      name: "apply_ai_tree_plan",
+      undoId: "undo-tree-1",
+      content: { createdIds: ["scene-1"], undoId: "undo-tree-1" },
+    });
+    expect(sendWriteCompleted).toHaveBeenCalledExactlyOnceWith(context.sender.id, {
+      targetId: "scene-1",
+      undoId: "undo-tree-1",
     });
   });
 });

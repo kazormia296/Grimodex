@@ -121,6 +121,7 @@ function start(overrides: Record<string, unknown> = {}) {
   return {
     turnId: TURN_ID,
     chatSessionId: "session-1",
+    writerSessionId: "writer-session-1",
     projectId: "project-1",
     currentSceneId: "scene-1",
     chatMessageId: "message-1",
@@ -305,6 +306,7 @@ describe("parseMastraAgentTurnStartRequest", () => {
     for (const key of [
       "turnId",
       "chatSessionId",
+      "writerSessionId",
       "projectId",
       "currentSceneId",
       "chatMessageId",
@@ -484,7 +486,7 @@ describe("parseMastraAgentTurnStartRequest", () => {
     expect(issueOf(start({ currentSceneId: false }))).toBe("current-scene-id");
   });
 
-  it("the three scope fields are required keys (START_KEYS is twelve)", () => {
+  it("the start request has thirteen exact required keys", () => {
     const wire = readFileSync(
       new URL("./mastraAgentTurnWire.ts", import.meta.url),
       "utf8",
@@ -492,7 +494,7 @@ describe("parseMastraAgentTurnStartRequest", () => {
     const keys = /const START_KEYS = \[([^\]]*)\]/u
       .exec(wire)?.[1]
       ?.match(/"([A-Za-z]+)"/gu);
-    expect(keys).toHaveLength(12);
+    expect(keys).toHaveLength(13);
     expect(Object.keys(start()).sort()).toEqual(
       keys?.map((key) => key.slice(1, -1)).sort(),
     );
@@ -878,6 +880,17 @@ describe("parseMastraAgentTurnStartRequest", () => {
     ).toBeNull();
   });
 
+  it("requires the renderer recorder session for Native write attribution", () => {
+    for (const writerSessionId of [
+      "",
+      " writer",
+      "writer ",
+      "w".repeat(MASTRA_AGENT_TURN_ID_UTF16_MAX + 1),
+    ]) {
+      expect(issueOf(start({ writerSessionId }))).toBe("writer-session-id");
+    }
+  });
+
   it("accepts messages of text only", () => {
     expect(issueOf(start({ messages: [] }))).toBe("messages");
     expect(issueOf(start({ messages: "x" }))).toBe("messages");
@@ -1076,7 +1089,7 @@ describe("parseMastraAgentTurnStartRequest", () => {
     expect(
       issueOf(start({ tools: [...MASTRA_AGENT_WRITE_TOOL_NAMES] })),
     ).toBeNull();
-    expect(MASTRA_AGENT_TURN_TOOLS_MAX).toBe(41);
+    expect(MASTRA_AGENT_TURN_TOOLS_MAX).toBe(43);
     expect(issueOf(start({ tools: ["get_scene"] }))).toBeNull();
     expect(issueOf(start({ tools: ["not_a_tool"] }))).toBe("tools");
     expect(issueOf(start({ tools: ["get_scene", "get_scene"] }))).toBe("tools");
@@ -1250,7 +1263,7 @@ describe("parseMastraAgentTurnCancelRequest", () => {
 });
 
 describe("MP-5 UI question and answer wire", () => {
-  it("accepts the seven closed tool names with their exact argument schemas", () => {
+  it("accepts the closed tool names with their exact argument schemas", () => {
     const args: Record<string, unknown> = {
       ask_user: { questions: [{ question: "Pick", kind: "text" }] },
       run_app_command: { command: "focusScenes" },
@@ -1273,7 +1286,7 @@ describe("MP-5 UI question and answer wire", () => {
       parseMastraAgentTurnQuestionPayload(
         question({ toolName: "propose_scene_body" }),
       ),
-    ).toEqual({ ok: false, issue: "tool-name" });
+    ).toEqual({ ok: false, issue: "args" });
     expect(
       parseMastraAgentTurnQuestionPayload(question({ approved: true })),
     ).toEqual({ ok: false, issue: "unknown-key" });
@@ -1364,6 +1377,34 @@ describe("MP-5 UI question and answer wire", () => {
               },
             ],
           },
+        }),
+      ),
+    ).toEqual({ ok: false, issue: "args" });
+  });
+
+  it("carries a Main grant for tree and staged scene-body questions", () => {
+    const authorization = {
+      capability: "cap-1",
+      executionId: "execution-1",
+      chatMessageId: "message-1",
+      mainOwnedProvenanceId: "provenance-1",
+    };
+    for (const [toolName, args] of [
+      ["apply_ai_tree_plan", { kind: "scaffold", ops: [{ op: "create" }] }],
+      ["propose_scene_body", { sceneId: "scene-1", text: "Proposal" }],
+    ] as const) {
+      expect(
+        parseMastraAgentTurnQuestionPayload(
+          question({ toolName, args, authorization }),
+        ).ok,
+      ).toBe(true);
+    }
+    expect(
+      parseMastraAgentTurnQuestionPayload(
+        question({
+          toolName: "propose_scene_body",
+          args: { sceneId: "scene-1", text: "Proposal" },
+          authorization: { ...authorization, extra: true },
         }),
       ),
     ).toEqual({ ok: false, issue: "args" });

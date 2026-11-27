@@ -177,6 +177,7 @@ const request = (
 ): MastraAgentTurnStartRequest => ({
   turnId: TURN,
   chatSessionId: "s1",
+  writerSessionId: "writer-session-1",
   projectId: "project-1",
   currentSceneId: null,
   chatMessageId: "message-1",

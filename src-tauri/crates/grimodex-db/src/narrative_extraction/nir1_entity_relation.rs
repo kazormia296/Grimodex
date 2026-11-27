@@ -77,9 +77,9 @@ use super::task_leases::with_immediate_transaction;
 use crate::narrative_runtime_policy::require_narrative_extraction_allowed;
 use crate::Database;
 
-mod project_reads;
 #[cfg(test)]
 mod a3_axis_reason_tests;
+mod project_reads;
 use project_reads::{load_a3_query_context, A3QueryOutcome, SceneScopes};
 #[cfg(feature = "native-current-human-capture")]
 pub(crate) use project_reads::{
@@ -96,6 +96,9 @@ pub const NIR1_ENTITY_RELATION_PROPOSAL_KIND: &str = "nir1.entity-relation@1";
 pub const NIR1_ENTITY_RELATION_REVISION_ORIGIN: &str = "nir1-typed";
 pub const NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH: &str = "nir1/entity-relation-review";
 pub const NIR1_ENTITY_RELATION_DECISION_LOCKED: &str = "NEX_NIR1_ENTITY_RELATION_DECISION_LOCKED";
+pub const NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_MAX_IDS: usize = 64;
+pub const NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_EDGE_CANDIDATES_PER_ID: usize = 16;
+const NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_MAX_ID_UTF16_UNITS: usize = 512;
 
 type TypedCanonicalFreshnessRow = (
     String,
@@ -2059,6 +2062,114 @@ pub fn read_nir1_entity_relation_revision(
             Ok(Nir1EntityRelationRevisionRead::Unavailable { reason })
         }
     }
+}
+
+/// Return the input Codex IDs which belong to at least one current, human-
+/// approved typed Revision whose persisted Codex dependency token is live.
+pub fn read_nir1_entity_relation_approved_codex_filter(
+    conn: &Connection,
+    project_id: &str,
+    codex_entry_ids: &[String],
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        !conn.is_autocommit(),
+        "NIR1_ENTITY_RELATION_REQUIRES_READ_TRANSACTION"
+    );
+    anyhow::ensure!(
+        !project_id.is_empty() && project_id.trim() == project_id,
+        "NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_INVALID_PROJECT_ID"
+    );
+    anyhow::ensure!(
+        !codex_entry_ids.is_empty()
+            && codex_entry_ids.len() <= NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_MAX_IDS,
+        "NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_INVALID_ID_COUNT"
+    );
+    let mut seen = HashSet::with_capacity(codex_entry_ids.len());
+    for id in codex_entry_ids {
+        anyhow::ensure!(
+            !id.is_empty()
+                && id.trim() == id
+                && id.encode_utf16().count()
+                    <= NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_MAX_ID_UTF16_UNITS,
+            "NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_INVALID_ID"
+        );
+        anyhow::ensure!(
+            seen.insert(id.as_str()),
+            "NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_DUPLICATE_ID"
+        );
+    }
+
+    let mut approved_codex_entry_ids = Vec::new();
+    let mut revision_entities = HashMap::<String, Option<HashSet<String>>>::new();
+    for id in codex_entry_ids {
+        let source_identity = format!("codex:{id}");
+        let Some(current_token) =
+            resolve_typed_source_token(conn, project_id, &source_identity, None)?
+        else {
+            continue;
+        };
+        let candidates = {
+            let mut statement = conn.prepare(
+                "SELECT consumer_key, read_set_json
+                   FROM narrative_dependency_edges
+                  WHERE project_id = ?1
+                    AND source_object_identity = ?2
+                    AND consumer_kind = 'proposal-revision'
+                  ORDER BY created_at DESC, id
+                  LIMIT ?3",
+            )?;
+            let candidates = statement
+                .query_map(
+                    params![
+                        project_id,
+                        source_identity,
+                        NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_EDGE_CANDIDATES_PER_ID as i64
+                    ],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            candidates
+        };
+        for (revision_id, read_set_json) in candidates {
+            let Ok(read_set) = serde_json::from_str::<Vec<String>>(&read_set_json) else {
+                continue;
+            };
+            if read_set.len() != 1 || read_set[0] != current_token {
+                continue;
+            }
+            if !revision_entities.contains_key(&revision_id) {
+                let entities = match read_typed_revision_core(
+                    conn,
+                    project_id,
+                    &revision_id,
+                    false,
+                    DecisionRead::Approval,
+                )? {
+                    Nir1EntityRelationRevisionCurrentRead::Available(revision) => Some(
+                        revision
+                            .bundle
+                            .entities
+                            .into_iter()
+                            .map(|entity| entity.entity_id)
+                            .collect(),
+                    ),
+                    _ => None,
+                };
+                revision_entities.insert(revision_id.clone(), entities);
+            }
+            if revision_entities[&revision_id]
+                .as_ref()
+                .is_some_and(|entities| entities.contains(id))
+            {
+                approved_codex_entry_ids.push(id.clone());
+                break;
+            }
+        }
+    }
+    Ok(json!({
+        "status": "available",
+        "approvedCodexEntryIds": approved_codex_entry_ids,
+    }))
 }
 
 /// Read the current typed Revision for a dedicated Entity/Relation review
@@ -4821,13 +4932,17 @@ pub(super) mod tests {
     use super::{
         create_nir1_entity_relation_revision, evaluate_nir1_entity_relation_disclosure,
         find_nir1_entity_relation_revision_run, prepare_nir1_entity_relation_revision,
-        read_nir1_entity_relation_revision, read_nir1_entity_relation_revision_current,
+        read_nir1_entity_relation_approved_codex_filter, read_nir1_entity_relation_revision,
+        read_nir1_entity_relation_revision_current,
         read_nir1_entity_relation_revision_current_for_revision, resolve_a3_phase_value,
-        revalidate_nir1_entity_relation_disclosure, A3PhaseRow, Nir1EntityRelationDisclosureRead,
-        Nir1EntityRelationRevisionCurrentRead, Nir1EntityRelationRevisionPrepareRequest,
-        Nir1EntityRelationRevisionRead, Nir1EntityRelationRevisionRequest,
-        NIR1_ENTITY_RELATION_DECISION_LOCKED, NIR1_ENTITY_RELATION_PROPOSAL_KIND,
-        NIR1_ENTITY_RELATION_REVISION_ORIGIN, NIR1_ENTITY_RELATION_SET_KIND,
+        resolve_typed_source_token, revalidate_nir1_entity_relation_disclosure, A3PhaseRow,
+        Nir1EntityRelationDisclosureRead, Nir1EntityRelationRevisionCurrentRead,
+        Nir1EntityRelationRevisionPrepareRequest, Nir1EntityRelationRevisionRead,
+        Nir1EntityRelationRevisionRequest,
+        NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_EDGE_CANDIDATES_PER_ID,
+        NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_MAX_IDS, NIR1_ENTITY_RELATION_DECISION_LOCKED,
+        NIR1_ENTITY_RELATION_PROPOSAL_KIND, NIR1_ENTITY_RELATION_REVISION_ORIGIN,
+        NIR1_ENTITY_RELATION_SET_KIND,
     };
     use crate::domain_writes::{tree_node_patch, TreeNodePatchPayload};
     use crate::narrative_extraction::change_feed::get_changes_since;
@@ -5258,6 +5373,255 @@ pub(super) mod tests {
                 created_by: Some("renderer-reviewer".into()),
             },
         )
+    }
+
+    fn approved_codex_fixture() -> anyhow::Result<(Database, Value)> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let created = create_nir1_entity_relation_revision(&db, request(&db))?;
+        approve_typed_revision(&db, "nir1-run", &created)?;
+        Ok((db, created))
+    }
+
+    fn filter_codex_ids(db: &Database, project_id: &str, ids: &[String]) -> anyhow::Result<Value> {
+        db.with_read_transaction(|conn| {
+            read_nir1_entity_relation_approved_codex_filter(conn, project_id, ids)
+        })
+    }
+
+    #[test]
+    fn approved_codex_filter_returns_current_human_approved_ids_in_input_order(
+    ) -> anyhow::Result<()> {
+        let (db, _) = approved_codex_fixture()?;
+        let ids = vec![
+            "nir1-bob".to_owned(),
+            "missing-entry".to_owned(),
+            "nir1-alice".to_owned(),
+        ];
+
+        assert_eq!(
+            filter_codex_ids(&db, "default-project", &ids)?,
+            json!({
+                "status": "available",
+                "approvedCodexEntryIds": ["nir1-bob", "nir1-alice"],
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn approved_codex_filter_requires_entity_membership_in_approved_revision() -> anyhow::Result<()>
+    {
+        let (db, created) = approved_codex_fixture()?;
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO codex_entries (id, project_id, type, name, summary, updated_at)
+                 VALUES ('nir1-carol', 'default-project', 'character', 'Carol', 'Carol',
+                         '2026-09-12T00:00:00Z')",
+                [],
+            )?;
+            let token =
+                resolve_typed_source_token(conn, "default-project", "codex:nir1-carol", None)?
+                    .expect("inserted Carol has a live source token");
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key,
+                     source_object_identity, read_set_json, created_at)
+                 VALUES ('carol-edge', 'default-project', 'proposal-revision', ?1,
+                         'codex:nir1-carol', ?2, '9999-12-31T23:59:59.000Z')",
+                params![
+                    created["revisionId"].as_str().unwrap(),
+                    json!([token]).to_string()
+                ],
+            )?;
+            Ok(())
+        })?;
+        assert_eq!(
+            filter_codex_ids(&db, "default-project", &["nir1-carol".to_owned()])?,
+            json!({ "status": "available", "approvedCodexEntryIds": [] })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn approved_codex_filter_rejects_unreviewed_and_automated_decisions() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let created = create_nir1_entity_relation_revision(&db, request(&db))?;
+        let ids = vec!["nir1-alice".to_owned()];
+        assert_eq!(
+            filter_codex_ids(&db, "default-project", &ids)?,
+            json!({ "status": "available", "approvedCodexEntryIds": [] })
+        );
+
+        approve_typed_revision(&db, "nir1-run", &created)?;
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_proposal_decisions
+                    SET actor_kind = 'automated', actor_id = 'electron:automated-review'
+                  WHERE revision_id = ?1",
+                [created["revisionId"].as_str().unwrap()],
+            )?;
+            Ok(())
+        })?;
+        assert_eq!(
+            filter_codex_ids(&db, "default-project", &ids)?,
+            json!({ "status": "available", "approvedCodexEntryIds": [] })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn approved_codex_filter_rejects_changed_and_hidden_sources() -> anyhow::Result<()> {
+        for (update, label) in [
+            (
+                "UPDATE codex_entries SET summary = 'Edited', updated_at = '2026-09-18T00:00:00Z' WHERE id = 'nir1-alice'",
+                "changed token",
+            ),
+            (
+                "UPDATE codex_entries SET context_mode = 'hidden' WHERE id = 'nir1-alice'",
+                "hidden source",
+            ),
+        ] {
+            let (db, _) = approved_codex_fixture()?;
+            db.with_conn(|conn| {
+                conn.execute(update, [])?;
+                Ok(())
+            })?;
+            let ids = vec!["nir1-alice".to_owned()];
+            assert_eq!(
+                filter_codex_ids(&db, "default-project", &ids)?,
+                json!({ "status": "available", "approvedCodexEntryIds": [] }),
+                "{label}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn approved_codex_filter_does_not_read_edges_from_another_project() -> anyhow::Result<()> {
+        let (db, _) = approved_codex_fixture()?;
+        db.with_conn(|conn| {
+            conn.execute("INSERT INTO projects (id) VALUES ('other-project')", [])?;
+            for index in 0..NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_EDGE_CANDIDATES_PER_ID {
+                conn.execute(
+                    "INSERT INTO narrative_dependency_edges
+                        (id, project_id, consumer_kind, consumer_key,
+                         source_object_identity, read_set_json, created_at)
+                     VALUES (?1, 'other-project', 'proposal-revision', ?2,
+                             'codex:nir1-alice',
+                             '[\"codex:nir1-alice@2026-09-12T00:00:00Z\"]',
+                             '9999-12-31T23:59:59.000Z')",
+                    params![
+                        format!("foreign-project-edge-{index}"),
+                        format!("foreign-revision-{index}"),
+                    ],
+                )?;
+            }
+            Ok(())
+        })?;
+        let ids = vec!["nir1-alice".to_owned()];
+
+        assert_eq!(
+            filter_codex_ids(&db, "default-project", &ids)?,
+            json!({ "status": "available", "approvedCodexEntryIds": ["nir1-alice"] })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn approved_codex_filter_rejects_empty_duplicate_and_oversized_input() -> anyhow::Result<()> {
+        let (db, _) = approved_codex_fixture()?;
+        let invalid = [
+            Vec::new(),
+            vec!["same".to_owned(), "same".to_owned()],
+            (0..=NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_MAX_IDS)
+                .map(|index| format!("entry-{index}"))
+                .collect(),
+        ];
+
+        for ids in invalid {
+            assert!(
+                filter_codex_ids(&db, "default-project", &ids).is_err(),
+                "accepted {} IDs",
+                ids.len()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn approved_codex_filter_looks_at_only_the_newest_sixteen_edges_per_id() -> anyhow::Result<()> {
+        let (db, _) = approved_codex_fixture()?;
+        db.with_conn(|conn| {
+            for index in 0..NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_EDGE_CANDIDATES_PER_ID {
+                conn.execute(
+                    "INSERT INTO narrative_dependency_edges
+                        (id, project_id, consumer_kind, consumer_key,
+                         source_object_identity, read_set_json, created_at)
+                     VALUES (?1, 'default-project', 'proposal-revision', ?2,
+                             'codex:nir1-alice', ?3, '9999-12-31T23:59:59.000Z')",
+                    params![
+                        format!("newer-edge-{index}"),
+                        format!("missing-revision-{index}"),
+                        r#"["codex:nir1-alice@2026-09-12T00:00:00Z"]"#,
+                    ],
+                )?;
+            }
+            Ok(())
+        })?;
+        let ids = vec!["nir1-alice".to_owned()];
+
+        assert_eq!(
+            filter_codex_ids(&db, "default-project", &ids)?,
+            json!({ "status": "available", "approvedCodexEntryIds": [] })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn approved_codex_filter_includes_the_sixteenth_edge_candidate() -> anyhow::Result<()> {
+        let (db, _) = approved_codex_fixture()?;
+        db.with_conn(|conn| {
+            for index in 0..NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_EDGE_CANDIDATES_PER_ID - 1 {
+                conn.execute(
+                    "INSERT INTO narrative_dependency_edges
+                        (id, project_id, consumer_kind, consumer_key,
+                         source_object_identity, read_set_json, created_at)
+                     VALUES (?1, 'default-project', 'proposal-revision', ?2,
+                             'codex:nir1-alice', ?3, '9999-12-31T23:59:59.000Z')",
+                    params![
+                        format!("newer-edge-{index}"),
+                        format!("missing-revision-{index}"),
+                        r#"["codex:nir1-alice@2026-09-12T00:00:00Z"]"#,
+                    ],
+                )?;
+            }
+            Ok(())
+        })?;
+        assert_eq!(
+            filter_codex_ids(&db, "default-project", &["nir1-alice".to_owned()])?,
+            json!({ "status": "available", "approvedCodexEntryIds": ["nir1-alice"] })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn approved_codex_filter_validates_ids_and_project_id() -> anyhow::Result<()> {
+        let (db, _) = approved_codex_fixture()?;
+        for id in [String::new(), " leading".into(), "trailing ".into()] {
+            assert!(filter_codex_ids(&db, "default-project", &[id]).is_err());
+        }
+        assert!(filter_codex_ids(&db, "", &["missing".into()]).is_err());
+        assert!(filter_codex_ids(&db, " default-project", &["missing".into()]).is_err());
+
+        let valid_512 = format!("{}😀", "a".repeat(510));
+        assert_eq!(valid_512.encode_utf16().count(), 512);
+        assert!(filter_codex_ids(&db, "default-project", &[valid_512]).is_ok());
+        let invalid_513 = format!("{}😀", "a".repeat(511));
+        assert_eq!(invalid_513.encode_utf16().count(), 513);
+        assert!(filter_codex_ids(&db, "default-project", &[invalid_513]).is_err());
+        Ok(())
     }
 
     fn evaluate_a3_with_reloaded_scope_reference(
@@ -9816,7 +10180,8 @@ pub(super) mod tests {
                 canonical_payload: None,
             },
         )?;
-        let source_after_mutation = db.with_read_transaction(|conn| graph_surface_snapshot(conn))?;
+        let source_after_mutation =
+            db.with_read_transaction(|conn| graph_surface_snapshot(conn))?;
         assert_ne!(source_before, source_after_mutation);
         let source_metadata: (i64, i64) = db.with_conn(|conn| {
             conn.query_row(
@@ -11350,9 +11715,7 @@ pub(super) mod tests {
     /// whose Freshness is not current). Before GDV/1 it counted such a binding as
     /// incomplete reserved footprint and put its Edges in
     /// `edge_ids_with_unresolvable_consumer_scope`.
-    fn assert_graph_verify_excludes_not_current_graph(
-        db: &crate::Database,
-    ) -> anyhow::Result<()> {
+    fn assert_graph_verify_excludes_not_current_graph(db: &crate::Database) -> anyhow::Result<()> {
         let (digest_check, generation_check) = db.with_read_transaction(|conn| {
             super::super::verify_coverage::verify_semantic_index_checks(conn, "default-project")
         })?;
@@ -13241,35 +13604,39 @@ pub(super) mod tests {
         db.with_conn_mut(|conn| {
             let active = Arc::clone(&active);
             let running = Arc::clone(&running);
-            crate::narrative_extraction::nir1_capacity::set_progress_owner(conn, 1, Some(move || {
-                use rusqlite::ffi;
-                let in_scope = active.load(Ordering::SeqCst);
-                // SAFETY: a read-only walk of the connection's statements while one
-                // of them is running; SQLite allows it from a progress callback.
-                unsafe {
-                    let db = db_handle as *mut ffi::sqlite3;
-                    let mut statement = ffi::sqlite3_next_stmt(db, std::ptr::null_mut());
-                    while !statement.is_null() {
-                        if ffi::sqlite3_stmt_busy(statement) != 0 {
-                            let sql = std::ffi::CStr::from_ptr(ffi::sqlite3_sql(statement))
-                                .to_string_lossy()
-                                .into_owned();
-                            if sql.contains("payload_json")
-                                || sql.contains("reconciliation_envelope_json")
-                            {
-                                let runs = ffi::sqlite3_stmt_status(
-                                    statement,
-                                    ffi::SQLITE_STMTSTATUS_RUN,
-                                    0,
-                                );
-                                running.lock().unwrap().push((sql, in_scope, runs));
+            crate::narrative_extraction::nir1_capacity::set_progress_owner(
+                conn,
+                1,
+                Some(move || {
+                    use rusqlite::ffi;
+                    let in_scope = active.load(Ordering::SeqCst);
+                    // SAFETY: a read-only walk of the connection's statements while one
+                    // of them is running; SQLite allows it from a progress callback.
+                    unsafe {
+                        let db = db_handle as *mut ffi::sqlite3;
+                        let mut statement = ffi::sqlite3_next_stmt(db, std::ptr::null_mut());
+                        while !statement.is_null() {
+                            if ffi::sqlite3_stmt_busy(statement) != 0 {
+                                let sql = std::ffi::CStr::from_ptr(ffi::sqlite3_sql(statement))
+                                    .to_string_lossy()
+                                    .into_owned();
+                                if sql.contains("payload_json")
+                                    || sql.contains("reconciliation_envelope_json")
+                                {
+                                    let runs = ffi::sqlite3_stmt_status(
+                                        statement,
+                                        ffi::SQLITE_STMTSTATUS_RUN,
+                                        0,
+                                    );
+                                    running.lock().unwrap().push((sql, in_scope, runs));
+                                }
                             }
+                            statement = ffi::sqlite3_next_stmt(db, statement);
                         }
-                        statement = ffi::sqlite3_next_stmt(db, statement);
                     }
-                }
-                false
-            }))?;
+                    false
+                }),
+            )?;
             Ok(())
         })?;
         let scopes = Arc::new(AtomicUsize::new(0));
@@ -13346,7 +13713,10 @@ pub(super) mod tests {
                 .collect::<Vec<_>>()
         );
         for (name, marker) in [
-            ("input lengths", "COALESCE(octet_length(revision.payload_json), 0)"),
+            (
+                "input lengths",
+                "COALESCE(octet_length(revision.payload_json), 0)",
+            ),
             ("input counts", "json_array_length"),
             ("basis entity", "entity_items"),
             ("basis relation", "relation_items"),
