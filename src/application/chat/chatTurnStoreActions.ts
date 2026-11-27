@@ -314,8 +314,7 @@ function createChatTurnStoreActions(
           (turnRoute?.provider === "cli" ? "cli-exec" : "http"),
       });
       if (!turnCoordinator.claim(sendControl)) return;
-      // A turn that starts without a persisted session is allowed to adopt the
-      // session it creates below. Any other session transition invalidates it.
+      // A turn that starts without a persisted session is allowed to adopt the session it creates below. Any other session transition invalidates it.
       let turnSessionId = activeSessionId;
       let transportStarted = false;
       let observedResponseText = "";
@@ -323,8 +322,7 @@ function createChatTurnStoreActions(
       turnRuntime.setStoppedStreamFinalizer(null);
       const isCurrentTurn = (): boolean =>
         turnCoordinator.isCurrent(sendControl);
-      // A stale async result can retain one project ID after another source
-      // has switched; compare all injected project projections each time.
+      // A stale async result can retain one project ID after another source has switched; compare all injected project projections each time.
       const capturedProjectIsCurrent = (): boolean =>
         isCapturedProjectCurrent(turnProjectId, ports);
       const capturedWorkspaceIsCurrent = (): boolean =>
@@ -359,13 +357,13 @@ function createChatTurnStoreActions(
           ) === turnRouteAuthorityKey
         );
       };
-      const capturedTurnAuthorityIsCurrent = (): boolean => {
-        return (
-          capturedWorkspaceIsCurrent() &&
-          capturedProjectIsCurrent() &&
-          capturedChatAuthorityIsCurrent()
-        );
-      };
+      let mastraTurnAdmitted = false;
+      const capturedTurnAuthorityIsCurrent = (): boolean =>
+        mastraTurnAdmitted
+          ? !shouldAbortTurn()
+          : capturedWorkspaceIsCurrent() &&
+            capturedProjectIsCurrent() &&
+            capturedChatAuthorityIsCurrent();
       let replacementCommitted = false;
       const commitAssistantReplacement = async (): Promise<void> => {
         if (
@@ -397,17 +395,26 @@ function createChatTurnStoreActions(
         }
       };
       const shouldAbortTurn = (): boolean =>
-        sendControl.aborted ||
-        !isCurrentTurn() ||
-        (!transportStarted && !canScheduleQuiescenceMutation()) ||
-        !capturedWorkspaceIsCurrent() ||
-        !capturedProjectIsCurrent() ||
-        !capturedChatAuthorityIsCurrent() ||
-        isAiFeatureBlockedByPolicy("chat") ||
-        isWriteRestrictedByLicense();
+        mastraTurnAdmitted
+          ? turnRuntime.shouldAbortMastraTurn({
+              explicitlyAborted: sendControl.aborted,
+              isCurrentTurn: isCurrentTurn(),
+              workspaceIsCurrent: capturedWorkspaceIsCurrent(),
+              projectIsCurrent: capturedProjectIsCurrent(),
+              chatPolicyAllows: !isAiFeatureBlockedByPolicy("chat"),
+              licenseAllows: !isWriteRestrictedByLicense(),
+              quiescenceAllowsMutation: canScheduleQuiescenceMutation(),
+            })
+          : sendControl.aborted ||
+            !isCurrentTurn() ||
+            (!transportStarted && !canScheduleQuiescenceMutation()) ||
+            !capturedWorkspaceIsCurrent() ||
+            !capturedProjectIsCurrent() ||
+            !capturedChatAuthorityIsCurrent() ||
+            isAiFeatureBlockedByPolicy("chat") ||
+            isWriteRestrictedByLicense();
       const assertTurnAuthority = (): void => {
         if (shouldAbortTurn()) {
-          // Emit the specific user-facing reason once at the transport boundary.
           blockIfPolicyOff("chat");
           blockIfUnlicensed();
           sendControl.aborted = true;
@@ -475,7 +482,6 @@ function createChatTurnStoreActions(
         captureTurn.preserveFailedCancellation(error, removeOwnedTurnMessages);
       const prevMessages = initialMessages;
       const visiblePrevMessages = capturedMessages;
-      // Guard concurrent sends before tokenizer initialization yields control.
       set({
         messages: [...visiblePrevMessages, userMsg, assistantMsg],
         streamingDraft: useAgentPath
@@ -560,9 +566,6 @@ function createChatTurnStoreActions(
         if (cancelBeforeTransport()) return;
       }
 
-      // -----------------------------------------------------------------------
-      // セッションが未作成の場合は自動作成 (P0-2)
-      // -----------------------------------------------------------------------
       let sessionIdForPersist = activeSessionId;
       if (!sessionIdForPersist) {
         const { nodeId, codexAnchorId, snippetAnchorId } =
@@ -597,8 +600,22 @@ function createChatTurnStoreActions(
         }
       }
       if (cancelBeforeTransport()) return;
-      // Scope changes clear the live session list while the captured turn still
-      // owns its persisted session and may need to finish its first title.
+      const mastraTurnAttempt = useAgentPath
+        ? await turnRuntime.tryMastraTurn({
+            turnId: sendTurnId,
+            provider: turnRoute?.provider,
+            chatSessionId: sessionIdForPersist,
+            projectId: turnProjectId,
+            activeSceneId,
+            tools: turnAgentToolsSnapshot,
+            userMessage: userMsg,
+            toolProtocol: turnRoute?.toolProtocol,
+            publicWebSearch: publicWebSearchPath,
+            cancelBeforeTransport,
+          })
+        : null;
+      mastraTurnAdmitted = Boolean(mastraTurnAttempt);
+      // Scope changes clear the live session list while the captured turn still owns its persisted session and may need to finish its first title.
       const recovery = createTurnRecovery({
         runtime: turnRuntime,
         turnId: sendTurnId,
@@ -640,14 +657,6 @@ function createChatTurnStoreActions(
       const titleEligibleAtTurnStart =
         get().sessions.find((session) => session.id === sessionIdForPersist)
           ?.titleManual === 0;
-      // -----------------------------------------------------------------------
-      // Agent mode path — tool-use loop
-      //
-      // 通常モードと同じ application preparation port 経由で
-      // L1〜L4（自動検出 Codex の summary + Spotlight された Codex/Snippet の content）
-      // を注入する。Agent はその上で必要に応じて search_codex / get_codex_entry を
-      // 叩いて未注入エントリの探索や詳細深掘りを行う、という階層的アクセス前提。
-      // -----------------------------------------------------------------------
       if (useAgentPath) {
         let systemPromptForAgent = "";
         let sentSystemPromptForAgent = "";
@@ -692,6 +701,7 @@ function createChatTurnStoreActions(
             errorDetail,
           });
         try {
+          if (await mastraTurnAttempt?.preflight) return;
           const projectCtx = await fetchRequiredProjectContext(turnProjectId);
           if (cancelBeforeTransport()) return;
 
@@ -771,14 +781,12 @@ function createChatTurnStoreActions(
             agentMsgs.push({ role: "system", content: systemPromptForAgent });
           }
 
-          // Convert conversation history
           for (const msg of summarizedAgentHistory) {
             if (msg.role === "system") continue;
             if (msg.role === "user") {
               agentMsgs.push({ role: "user", content: msg.content });
             } else if (msg.role === "assistant") {
-              // 過去ターンの assistant 本文に擬似ツール記法が混入していると、
-              // モデルがそれを few-shot として模倣し続ける。履歴を戻す前に除去。
+              // 過去ターンの assistant 本文に擬似ツール記法が混入していると、 モデルがそれを few-shot として模倣し続ける。履歴を戻す前に除去。
               agentMsgs.push({
                 role: "assistant",
                 content: stripToolProtocol(msg.content),
@@ -787,18 +795,10 @@ function createChatTurnStoreActions(
           }
           agentMsgs.push({ role: "user", content });
 
-          // Token budget + thinking params
           const aiSettings = useAiSettingsStore.getState().settings;
-          // チャットパネルで一時選択したモデル(あれば)。role 未設定時に既定より優先する。
           const chatModelOverride =
             useAiSettingsStore.getState().chatModelOverride;
-          // agent ロールの override を実モデルとして解決し、API variant / トークン予算 /
-          // thinking パラメータ / usage 記録を全て実モデルから導出する。これにより
-          // send_agent_message に渡す override（resolveModelForPath / 一時モデル）と
-          // thinking 等が一致する（未設定なら既定モデル = byte-identical）。
-          // agent ロールの横断割り当て（別プロバイダ/別エンドポイント）。chat_agent_main /
-          // agent_research_subagent は同一 "agent" ロールなので、ここで解決した
-          // provider/endpoint/variant をサブエージェント送信にも流用する。
+          // agent ロールの override を実モデルとして解決し、API variant / トークン予算 / thinking パラメータ / usage 記録を全て実モデルから導出する。これにより send_agent_message に渡す override（resolveModelForPath / 一時モデル）と thinking 等が一致する（未設定なら既定モデル = byte-identical）。 agent ロールの横断割り当て（別プロバイダ/別エンドポイント）。chat_agent_main / agent_research_subagent は同一 "agent" ロールなので、ここで解決した provider/endpoint/variant をサブエージェント送信にも流用する。
           const agentRole = resolveRolePathConfig(
             "chat_agent_main",
             undefined,
@@ -823,10 +823,7 @@ function createChatTurnStoreActions(
             ? snapshotInputTokenRoute(turnRoute)
             : null;
           const tokenEstimatorFamily = getTokenEstimatorFamily();
-          // The prepared context is the immutable payload for this turn. The
-          // live store publication may be suppressed when authority changes
-          // while preparation is awaiting I/O, so telemetry must never read
-          // the mutable UI projection here.
+          // The prepared context is the immutable payload for this turn. The live store publication may be suppressed when authority changes while preparation is awaiting I/O, so telemetry must never read the mutable UI projection here.
           const agentContextPlanDigest = prepared?.contextPlan?.digest ?? null;
           const agentApiVariant = turnRoute
             ? turnRoute.apiVariant
@@ -842,13 +839,10 @@ function createChatTurnStoreActions(
           const tokenBudget = getToolTokenBudgetForContext(
             effectiveContextWindow,
           );
-          // model-aware なツール呼び出し上限。大窓モデルほど多段探索を許す。
           const parentMaxToolCalls = getAgentToolCallBudgetForContext(
             effectiveContextWindow,
           );
-          // run_research（サブエージェント）の 1 ターンあたり呼び出し上限。
-          // 各サブエージェントは独立したループ（高コスト）なので、親予算とは別枠で
-          // 厳しめに絞る。各呼び出しは parentMaxToolCalls も 1 消費する。
+          // run_research（サブエージェント）の 1 ターンあたり呼び出し上限。 各サブエージェントは独立したループ（高コスト）なので、親予算とは別枠で 厳しめに絞る。各呼び出しは parentMaxToolCalls も 1 消費する。
           let parentAuditExecutionId: string | null = null;
           const agentThinkingParams =
             turnRoute?.thinking ??
@@ -861,12 +855,8 @@ function createChatTurnStoreActions(
               agentApiVariant,
               aiSettings?.reasoningEffortOverride ?? undefined,
             );
-          // Accumulate tool calls for live metadata update
           const accToolCalls: ToolCallRecord[] = [];
-          // 短絡: get_codex_entry が「事前に full body + custom details +
-          // aliases が注入されているエントリ」に対して呼ばれた場合は、
-          // executor (DB アクセス) を呼ばずスタブを返す。LLM はプロンプト
-          // 指示に従わず再 fetch しがちなため、ランタイム側で受け止める。
+          // 短絡: get_codex_entry が「事前に full body + custom details + aliases が注入されているエントリ」に対して呼ばれた場合は、 executor (DB アクセス) を呼ばずスタブを返す。LLM はプロンプト 指示に従わず再 fetch しがちなため、ランタイム側で受け止める。
           const agentControl = getPromptCatalog(
             projectCtx?.language ?? "ja",
           ).agentControl;
@@ -942,8 +932,7 @@ function createChatTurnStoreActions(
           });
           // client tool は private Agent だけ。Public RAG は tools=[] の Web 検索のみ。
           const agentTools = agentModeForThisSend ? turnAgentToolsSnapshot : [];
-          // Web検索設定（ai.webSearch.* のドメイン制御と content cap）は public RAG
-          // にだけ渡す。private Agent では常に null。
+          // Web検索設定（ai.webSearch.* のドメイン制御と content cap）は public RAG にだけ渡す。private Agent では常に null。
           const webSearchConfig = webSearchConfigAtTurnStart;
           let parentInputTokenDrift = createInputTokenDriftTotals();
           const agentTextBatcher = createAgentTextBatcher((text) => {
@@ -965,140 +954,211 @@ function createChatTurnStoreActions(
           });
           let agentLoopResult!: Awaited<ReturnType<typeof runAgentLoop>>;
           try {
-            agentLoopResult = await runAgentLoop({
-              messages: agentMsgs,
-              tools: agentTools,
-              tokenBudget,
-              maxToolCalls: parentMaxToolCalls,
-              shouldAbort: shouldAbortTurn,
-              callLimitMessage: agentControl.callLimitMessage,
-              tokenBudgetMessage: agentControl.tokenBudgetMessage,
-              userQuestionLimitMessage: agentControl.userQuestionLimitMessage,
-              sendToLLM: async (msgs, tools) => {
-                assertTurnAuthority();
-                await captureTurn.retirePriorCapture(sessionIdForPersist);
-                if (cancelBeforeTransport()) {
-                  throw new Error("CHAT_TURN_CANCELLED_BEFORE_TRANSPORT");
-                }
-                const finalized = turnRoute
-                  ? finalizeChatTurnPayload({
-                      route: turnRoute,
-                      fallbackSystemPrompt: systemPromptForAgent,
-                      cacheSegments: systemCacheSegmentsForAgent,
-                      volatileTail: systemVolatileTailForAgent,
-                      messages: msgs,
-                      tools,
-                      webSearch: webSearchConfig,
-                    })
-                  : null;
-                if (finalized) {
-                  sentSystemPromptForAgent =
-                    materializeSystemDeliverySnapshot(finalized);
-                  sentAgentContextTokenCount = finalized.usage.inputTokens;
-                  set({
-                    contextTokenCount: finalized.usage.inputTokens,
-                    contextWindowUsage: contextWindowUsageFromTurnPayloadUsage(
-                      finalized.usage,
-                    ),
-                    contextWindowSize: finalized.route.contextWindow,
-                    contextModel: finalized.route.model,
-                    contextProvider: finalized.route.provider,
-                    contextRouteAuthorityKey:
-                      resolvedChatTurnRouteAuthorityKey(turnRoute),
-                    ...(finalized.cacheDowngradeReason === "budget"
-                      ? { cacheInvalidatedReason: "budget" as const }
-                      : {}),
-                  });
-                }
-                captureTurn.notifyAccepted(options?._onAccepted);
-                assertTurnAuthority();
-                turnCoordinator.transition(sendControl, "agent-running");
-                transportStarted = true;
-                sendControl.transportStarted = true;
-                const executionId = crypto.randomUUID();
-                const response = await chatApi.sendAgentMessage(
-                  msgs,
-                  tools,
-                  {
-                    projectId: turnProjectId,
-                    pathId: "chat_agent_main",
-                    operationId: sendTurnId,
-                    executionId,
-                    parentExecutionId: parentAuditExecutionId,
-                    chatMessageId: assistantMsg.id,
+            const mastraResult = mastraTurnAttempt
+              ? await mastraTurnAttempt.run({
+                  turnId: sendTurnId,
+                  chatSessionId: sessionIdForPersist,
+                  projectId: turnProjectId,
+                  currentSceneId: effectiveSceneId,
+                  chatMessageId: assistantMsg.id,
+                  assistantMessage: assistantMsg,
+                  messages: agentMsgs,
+                  route: turnRoute,
+                  systemCacheSegments: systemCacheSegmentsForAgent ?? null,
+                  systemVolatileTail: systemVolatileTailForAgent ?? null,
+                  fullyInjectedIds,
+                  tokenBudget,
+                  maxToolCalls: parentMaxToolCalls,
+                  contextWindow: effectiveContextWindow,
+                  language: projectCtxLang === "en" ? "en" : "ja",
+                  callLimitMessage: agentControl.callLimitMessage,
+                  tokenBudgetMessage: agentControl.tokenBudgetMessage,
+                  userQuestionLimitMessage:
+                    agentControl.userQuestionLimitMessage,
+                  fallbackSystem: systemPromptForAgent,
+                  tools: agentTools,
+                  set,
+                  userQuestionRuntime,
+                  dismissNote: agentControl.userDismissMessage,
+                  assertAuthority: assertTurnAuthority,
+                  isCurrentTurn,
+                  isAborted: () => sendControl.aborted,
+                  onSendAccepted: () => {
+                    transportStarted = true;
+                    sendControl.transportStarted = true;
+                    sentSystemPromptForAgent = systemPromptForAgent;
+                    captureTurn.notifyAccepted(options?._onAccepted);
                   },
-                  agentThinkingParams,
-                  finalized
-                    ? finalized.transport.systemCacheSegments
-                    : systemCacheSegmentsForAgent,
-                  agentApiVariant,
-                  webSearchConfig,
-                  finalized
-                    ? finalized.transport.systemVolatileTail
-                    : systemVolatileTailForAgent,
-                  turnRoute?.model ??
-                    (xprov
-                      ? xprov.model
-                      : (agentRole?.model ?? chatModelOverride ?? null)),
-                  turnRoute
-                    ? turnRoute.providerOverride
-                    : (xprov?.provider ?? agentRole?.provider ?? null),
-                  turnRoute
-                    ? turnRoute.endpointId
-                    : (xprov?.endpointId ?? agentRole?.endpointId ?? null),
-                  turnRoute?.outputBudget.requestMaxOutputTokens ?? null,
-                  turnRoute?.provider ?? null,
-                  turnRoute?.resolvedEndpointId ?? null,
-                  turnRoute?.toolProtocol ?? null,
-                  turnRoute?.resolvedOllamaEndpoint ?? null,
-                  sendControl.abortController.signal,
-                );
-                parentAuditExecutionId = executionId;
-                parentInputTokenDrift = accumulateInputTokenDrift(
-                  parentInputTokenDrift,
-                  currentProvider,
-                  {
-                    estimatedInputTokens: finalized?.usage.inputTokens ?? null,
-                    safetyMarginTokens:
-                      finalized?.usage.safetyMarginTokens ?? null,
-                    inputTokens: response.inputTokens,
-                    cacheReadTokens: response.cacheReadTokens,
-                    cacheWriteTokens: response.cacheWriteTokens,
+                  onResponseText: (text) => {
+                    observedResponseText = text;
+                    assistantRow.observeText(text);
+                    set((state) => ({
+                      messages: state.messages.map((message) =>
+                        message.id === assistantMsg.id
+                          ? { ...message, content: text }
+                          : message,
+                      ),
+                    }));
                   },
-                );
-                return response;
-              },
-              executeTool: withUiOperationLimit(guardedExecuteTool),
-              onProgress: (progress) => {
-                if (isCurrentTurn() && !sendControl.aborted) {
-                  set({ agentProgress: progress });
-                }
-              },
-              onToolComplete: (record) => {
-                toolContext.attachUsedIds(record);
-                if (!isCurrentTurn() || sendControl.aborted) return;
-                accToolCalls.push(record);
-                set((s) => {
-                  const msgs = [...s.messages];
-                  const index = msgs.findIndex(
-                    (message) => message.id === assistantMsg.id,
-                  );
-                  const assistant = index >= 0 ? msgs[index] : undefined;
-                  if (assistant?.role === "assistant") {
-                    msgs[index] = {
-                      ...assistant,
-                      metadata: JSON.stringify({ tool_calls: accToolCalls }),
-                    };
+                  updateContextUsage: (usage) => {
+                    sentAgentContextTokenCount = usage.inputTokens;
+                    set({
+                      contextTokenCount: usage.inputTokens,
+                      contextWindowUsage: { ...usage, estimated: false },
+                      contextWindowSize: usage.contextWindow,
+                      contextModel: turnRoute?.model ?? null,
+                      contextProvider: turnRoute?.provider ?? null,
+                      contextRouteAuthorityKey:
+                        resolvedChatTurnRouteAuthorityKey(turnRoute),
+                    });
+                  },
+                  cancelBeforeTransport,
+                  onLegacyFallback: () => {
+                    mastraTurnAdmitted = false;
+                  },
+                  transitionAgentRunning: () =>
+                    turnCoordinator.transition(sendControl, "agent-running"),
+                })
+              : null;
+            if (mastraResult?.kind === "cancelled") return;
+            if (mastraResult?.kind === "completed") {
+              agentLoopResult = mastraResult.result;
+            } else {
+              agentLoopResult = await runAgentLoop({
+                messages: agentMsgs,
+                tools: agentTools,
+                tokenBudget,
+                maxToolCalls: parentMaxToolCalls,
+                shouldAbort: shouldAbortTurn,
+                callLimitMessage: agentControl.callLimitMessage,
+                tokenBudgetMessage: agentControl.tokenBudgetMessage,
+                userQuestionLimitMessage: agentControl.userQuestionLimitMessage,
+                sendToLLM: async (msgs, tools) => {
+                  assertTurnAuthority();
+                  await captureTurn.retirePriorCapture(sessionIdForPersist);
+                  if (cancelBeforeTransport()) {
+                    throw new Error("CHAT_TURN_CANCELLED_BEFORE_TRANSPORT");
                   }
-                  return { messages: msgs };
-                });
-              },
-              onTextChunk: (text) => {
-                assistantRow.observeText(text);
-                if (!isCurrentTurn() || sendControl.aborted) return;
-                agentTextBatcher.push(text);
-              },
-            });
+                  const finalized = turnRoute
+                    ? finalizeChatTurnPayload({
+                        route: turnRoute,
+                        fallbackSystemPrompt: systemPromptForAgent,
+                        cacheSegments: systemCacheSegmentsForAgent,
+                        volatileTail: systemVolatileTailForAgent,
+                        messages: msgs,
+                        tools,
+                        webSearch: webSearchConfig,
+                      })
+                    : null;
+                  if (finalized) {
+                    sentSystemPromptForAgent =
+                      materializeSystemDeliverySnapshot(finalized);
+                    sentAgentContextTokenCount = finalized.usage.inputTokens;
+                    set({
+                      contextTokenCount: finalized.usage.inputTokens,
+                      contextWindowUsage:
+                        contextWindowUsageFromTurnPayloadUsage(finalized.usage),
+                      contextWindowSize: finalized.route.contextWindow,
+                      contextModel: finalized.route.model,
+                      contextProvider: finalized.route.provider,
+                      contextRouteAuthorityKey:
+                        resolvedChatTurnRouteAuthorityKey(turnRoute),
+                      ...(finalized.cacheDowngradeReason === "budget"
+                        ? { cacheInvalidatedReason: "budget" as const }
+                        : {}),
+                    });
+                  }
+                  captureTurn.notifyAccepted(options?._onAccepted);
+                  assertTurnAuthority();
+                  turnCoordinator.transition(sendControl, "agent-running");
+                  transportStarted = true;
+                  sendControl.transportStarted = true;
+                  const executionId = crypto.randomUUID();
+                  const response = await chatApi.sendAgentMessage(
+                    msgs,
+                    tools,
+                    {
+                      projectId: turnProjectId,
+                      pathId: "chat_agent_main",
+                      operationId: sendTurnId,
+                      executionId,
+                      parentExecutionId: parentAuditExecutionId,
+                      chatMessageId: assistantMsg.id,
+                    },
+                    agentThinkingParams,
+                    finalized
+                      ? finalized.transport.systemCacheSegments
+                      : systemCacheSegmentsForAgent,
+                    agentApiVariant,
+                    webSearchConfig,
+                    finalized
+                      ? finalized.transport.systemVolatileTail
+                      : systemVolatileTailForAgent,
+                    turnRoute?.model ??
+                      (xprov
+                        ? xprov.model
+                        : (agentRole?.model ?? chatModelOverride ?? null)),
+                    turnRoute
+                      ? turnRoute.providerOverride
+                      : (xprov?.provider ?? agentRole?.provider ?? null),
+                    turnRoute
+                      ? turnRoute.endpointId
+                      : (xprov?.endpointId ?? agentRole?.endpointId ?? null),
+                    turnRoute?.outputBudget.requestMaxOutputTokens ?? null,
+                    turnRoute?.provider ?? null,
+                    turnRoute?.resolvedEndpointId ?? null,
+                    turnRoute?.toolProtocol ?? null,
+                    turnRoute?.resolvedOllamaEndpoint ?? null,
+                    sendControl.abortController.signal,
+                  );
+                  parentAuditExecutionId = executionId;
+                  parentInputTokenDrift = accumulateInputTokenDrift(
+                    parentInputTokenDrift,
+                    currentProvider,
+                    {
+                      estimatedInputTokens:
+                        finalized?.usage.inputTokens ?? null,
+                      safetyMarginTokens:
+                        finalized?.usage.safetyMarginTokens ?? null,
+                      inputTokens: response.inputTokens,
+                      cacheReadTokens: response.cacheReadTokens,
+                      cacheWriteTokens: response.cacheWriteTokens,
+                    },
+                  );
+                  return response;
+                },
+                executeTool: withUiOperationLimit(guardedExecuteTool),
+                onProgress: (progress) => {
+                  if (isCurrentTurn() && !sendControl.aborted) {
+                    set({ agentProgress: progress });
+                  }
+                },
+                onToolComplete: (record) => {
+                  toolContext.attachUsedIds(record);
+                  if (!isCurrentTurn() || sendControl.aborted) return;
+                  accToolCalls.push(record);
+                  set((s) => {
+                    const msgs = [...s.messages];
+                    const index = msgs.findIndex(
+                      (message) => message.id === assistantMsg.id,
+                    );
+                    const assistant = index >= 0 ? msgs[index] : undefined;
+                    if (assistant?.role === "assistant") {
+                      msgs[index] = {
+                        ...assistant,
+                        metadata: JSON.stringify({ tool_calls: accToolCalls }),
+                      };
+                    }
+                    return { messages: msgs };
+                  });
+                },
+                onTextChunk: (text) => {
+                  assistantRow.observeText(text);
+                  if (!isCurrentTurn() || sendControl.aborted) return;
+                  agentTextBatcher.push(text);
+                },
+              });
+            }
           } finally {
             agentTextBatcher.flush();
             agentTextBatcher.dispose();
@@ -1132,7 +1192,6 @@ function createChatTurnStoreActions(
             });
           }
 
-          // 引用の事後検証: 不正 URL を排除 + 本文中の裏付けなし URL を検出。
           const safeCitations = sanitizeCitations(citations);
           const answerForCheck =
             get().messages.find((message) => message.id === assistantMsg.id)
@@ -1146,8 +1205,6 @@ function createChatTurnStoreActions(
             );
           }
 
-          // tool_calls / thinking / 引用 / コストをまとめた最終 metadata。
-          // in-memory メッセージ (UI 即時表示) と DB 永続化で共有する。
           const finalAgentMetadata = JSON.stringify({
             tool_calls: toolCallRecords,
             ...(stoppedAgentTurnCanFinalize ? { stopped: true } : {}),
@@ -1170,7 +1227,6 @@ function createChatTurnStoreActions(
             return { messages: msgs };
           });
 
-          // Persist
           turnCoordinator.transition(sendControl, "persisting");
           const userMetadata =
             options?.mentionedSceneIds && options.mentionedSceneIds.length > 0
@@ -1180,12 +1236,18 @@ function createChatTurnStoreActions(
               : undefined;
           const promptSnapshot =
             sentSystemPromptForAgent || systemPromptForAgent;
-          const lastMsg = get().messages.find(
+          const liveLastMsg = get().messages.find(
             (message) => message.id === assistantMsg.id,
           );
-          // 実際に使用したモデル（xprov / agent ロール / chat 一時 override）を
-          // 完了payloadへ固定し、retryでも同じID・同じ値を使用する。
+          // 実際に使用したモデル（xprov / agent ロール / chat 一時 override）を 完了payloadへ固定し、retryでも同じID・同じ値を使用する。
           const agentModel = currentModel || undefined;
+          const lastMsg =
+            mastraTurnAttempt?.recoverAssistant(
+              liveLastMsg,
+              observedResponseText,
+              agentModel,
+              finalAgentMetadata,
+            ) ?? liveLastMsg;
           const recoverableAgentAssistant =
             lastMsg?.role === "assistant" &&
             (lastMsg.content || outputTruncated) &&
@@ -1208,8 +1270,7 @@ function createChatTurnStoreActions(
                 recordTimelapse: false,
                 ...(userMetadata ? { metadata: userMetadata } : {}),
               });
-              // Cache/plain のうち最後の Agent iteration が実際に送った
-              // system representation を、user行の確定後に保存する。
+              // Cache/plain のうち最後の Agent iteration が実際に送った system representation を、user行の確定後に保存する。
               if (promptSnapshot) {
                 void chatApi
                   .saveMessagePrompt(userMsg.id, {
@@ -1256,8 +1317,7 @@ function createChatTurnStoreActions(
               ) {
                 return;
               }
-              // N4: エージェントターンの usage を台帳にも記録
-              // (cost は OpenRouter 実値)。
+              // N4: エージェントターンの usage を台帳にも記録 (cost は OpenRouter 実値)。
               void recordAiUsage({
                 surface: "agent",
                 model: agentModel,
@@ -1397,8 +1457,8 @@ function createChatTurnStoreActions(
               : {}),
           });
         } finally {
-          // 例外で抜けた場合も含め、回答待ちの ask_user を確実に解決して
-          // awaiting 中のループ Promise をリークさせない。中断フラグもリセット。
+          mastraTurnAttempt?.release();
+          // 例外で抜けた場合も含め、回答待ちの ask_user を確実に解決して awaiting 中のループ Promise をリークさせない。中断フラグもリセット。
           if (isCurrentTurn()) {
             get()._cancelPendingUserQuestion();
             turnRuntime.clearActiveRouteIf(turnRoute);
@@ -1415,23 +1475,13 @@ function createChatTurnStoreActions(
         return;
       }
 
-      // -----------------------------------------------------------------------
-      // Normal mode path (existing)
-      // -----------------------------------------------------------------------
       try {
         const projectCtx = await fetchRequiredProjectContext(turnProjectId);
         if (cancelBeforeTransport()) return;
 
         const aiSettings = useAiSettingsStore.getState().settings;
-        // チャットパネルで一時選択したモデル(あれば)。role 未設定時に既定より優先する。
         const chatModelOverride =
           useAiSettingsStore.getState().chatModelOverride;
-        // conversation ロールの override を実モデルとして解決し、API variant / コンテキスト
-        // 予算 / thinking パラメータ / 記録を実モデルから導出する（transport に渡す
-        // override と一致。未設定なら既定モデル = byte-identical）。
-        // conversation ロールの横断割り当て（別プロバイダ/別エンドポイント）。provider
-        // 未設定なら従来どおり model のみ（active provider）。composer の一時 override
-        // (xprov) が最優先。
         const convRole = resolveRolePathConfig(
           "chat_stream_non_agent",
           undefined,
@@ -1492,16 +1542,12 @@ function createChatTurnStoreActions(
           );
           if (cancelBeforeTransport()) return;
         }
-        // Summarization publishes its result through the live store, which also
-        // contains this turn's optimistic user/assistant pair. Keep a single
-        // explicit pre-turn projection for App Server bootstrap and revision
-        // hashing so the current user message is never imported and sent twice.
+        // Summarization publishes its result through the live store, which also contains this turn's optimistic user/assistant pair. Keep a single explicit pre-turn projection for App Server bootstrap and revision hashing so the current user message is never imported and sent twice.
         const priorHistoryMessages = sendableHistory(currentMessages).filter(
           (message) =>
             message.id !== userMsg.id && message.id !== assistantMsg.id,
         );
 
-        // APIペイロードを構築（要約済みメッセージを除外）
         const messagesForApi: ChatMessage[] = [
           ...priorHistoryMessages.filter((message) => !message.isSummarized),
           userMsg,
@@ -1509,9 +1555,7 @@ function createChatTurnStoreActions(
 
         let systemCacheSegments: string[] | undefined;
         let systemVolatileTail: string | undefined;
-        // 過去メッセージのプロンプト確認用: このターンで実際に送った system
-        // プロンプトを退避し、persist 時に userMsg.id へひも付けて保存する。
-        // 空 = この経路では system メッセージを送らなかった (スナップショット不要)。
+        // 過去メッセージのプロンプト確認用: このターンで実際に送った system プロンプトを退避し、persist 時に userMsg.id へひも付けて保存する。 空 = この経路では system メッセージを送らなかった (スナップショット不要)。
         let sentSystemPrompt = "";
         let sentContextLayers: LayerBreakdown[] = [];
         let sentContextTokenCount: number | null = null;
@@ -1571,9 +1615,7 @@ function createChatTurnStoreActions(
           content:
             m.role === "assistant" ? stripToolProtocol(m.content) : m.content,
         }));
-        // `prepared` is the context that is actually finalized and sent. The
-        // live `contextPlan` is only a UI projection and can intentionally be
-        // stale when authority changed during preparation.
+        // `prepared` is the context that is actually finalized and sent. The live `contextPlan` is only a UI projection and can intentionally be stale when authority changed during preparation.
         const chatContextPlanDigest = prepared?.contextPlan?.digest ?? null;
         const turnTransport =
           turnRoute?.transport ??
@@ -1641,16 +1683,11 @@ function createChatTurnStoreActions(
         if (cancelBeforeTransport()) return;
         const chatStartTime = performance.now();
 
-        // Accumulate thinking text locally during streaming
         let thinkingAccumulator = "";
         const isFirstResponse =
           prevMessages.filter((m) => m.role === "assistant").length === 0;
 
-        // CLI プロバイダ選択時は subprocess 経由のストリームに切り替える。
-        // CLI は単一プロンプトしか受け付けないので、会話履歴は role タグ付きで
-        // 平坦化する。
-        // 別プロバイダ override 中は HTTP 経路(別プロバイダは cli 非対象)に流すため、
-        // active provider が cli でも cli subprocess 経路には落とさない。
+        // CLI プロバイダ選択時は subprocess 経由のストリームに切り替える。 CLI は単一プロンプトしか受け付けないので、会話履歴は role タグ付きで 平坦化する。 別プロバイダ override 中は HTTP 経路(別プロバイダは cli 非対象)に流すため、 active provider が cli でも cli subprocess 経路には落とさない。
         const isCliExec = turnRoute
           ? turnTransport === "cli-exec"
           : !xprov && aiSettings?.provider === "cli";
@@ -1667,29 +1704,22 @@ function createChatTurnStoreActions(
         const codexBootstrapHistory = isCodexAppServer
           ? buildCodexBootstrapHistory(priorHistoryMessages)
           : undefined;
-        // Web Crypto yields while hashing the imported history. Stop/session
-        // changes during that await must be observed before start_turn is issued.
+        // Web Crypto yields while hashing the imported history. Stop/session changes during that await must be observed before start_turn is issued.
         if (cancelBeforeTransport()) return;
         let codexThreadId: string | undefined;
         let codexTurnId: string | undefined;
         const codexItems = new Map<string, CodexAppItem>();
         const codexWarnings: string[] = [];
 
-        // Revoke prior same-session authority only after the route and turn
-        // have otherwise reached the existing pre-transport admission point.
+        // Revoke prior same-session authority only after the route and turn have otherwise reached the existing pre-transport admission point.
         if (!captureRouteEligible) {
           await captureTurn.retirePriorCapture(sessionIdForPersist);
           if (cancelBeforeTransport()) return;
           assertTurnAuthority();
         }
 
-        // Start streaming — returns a Promise<cleanup_fn>
         await new Promise<void>((resolve, reject) => {
-          // delta coalesce: provider が 1:1 で emit する SSE delta(秒間 20〜40)を
-          // requestAnimationFrame でまとめ、Markdown publish は最大約 30Hz に抑える。
-          // messages 本体は触らず末尾 draft だけを更新するため static chrome / 過去行 /
-          // virtualizer の配列 identity は生成完了まで安定する。
-          // onDone/onError/stop では必ず同期 flush して末尾を取りこぼさない。
+          // delta coalesce: provider が 1:1 で emit する SSE delta(秒間 20〜40)を requestAnimationFrame でまとめ、Markdown publish は最大約 30Hz に抑える。 messages 本体は触らず末尾 draft だけを更新するため static chrome / 過去行 / virtualizer の配列 identity は生成完了まで安定する。 onDone/onError/stop では必ず同期 flush して末尾を取りこぼさない。
           let pendingDelta = "";
           let flushHandle: number | null = null;
           let lastDraftPublishAt = Number.NEGATIVE_INFINITY;
@@ -1730,7 +1760,6 @@ function createChatTurnStoreActions(
           const scheduleFlush = () => {
             if (flushHandle !== null) return;
             if (typeof requestAnimationFrame !== "function") {
-              // 非ブラウザ環境(テスト等)は即時 flush にフォールバック（従来挙動）。
               flushDelta();
               return;
             }
@@ -1772,7 +1801,6 @@ function createChatTurnStoreActions(
                 resolve();
                 return;
               }
-              // 末尾の buffered delta を確定前に同期反映。
               flushDelta();
               turnRuntime.clearPendingDeltaFlusherIf(flushDelta);
               const chatDurationMs = Math.round(
@@ -1790,8 +1818,7 @@ function createChatTurnStoreActions(
                 },
               );
 
-              // N4: 通常チャットの usage を台帳に記録 (chat_messages.tokens_* とは
-              // 別に、集計用の単一台帳に集約する。cost は OpenRouter streaming 実値)。
+              // N4: 通常チャットの usage を台帳に記録 (chat_messages.tokens_* とは 別に、集計用の単一台帳に集約する。cost は OpenRouter streaming 実値)。
               void recordAiUsage({
                 surface: "chat",
                 model: chatModel || undefined,
@@ -1818,7 +1845,6 @@ function createChatTurnStoreActions(
                   : null,
               });
 
-              // Build metadata: thinking blocks + codex records + stop flags
               const outputTruncated = isTruncatedStopReason(info.stopReason);
               const chatMetadata = streamAssistantMetadata({
                 stopReason: info.stopReason,
@@ -1834,14 +1860,9 @@ function createChatTurnStoreActions(
                     : null,
               });
 
-              // draft を一度だけ確定 messages へ移し、以後は通常 message として扱う。
               finalizeStreamingDraft(chatMetadata);
 
-              // A binding stores the history that existed before this turn. Once
-              // both messages are durable, advance it to the exact active-history
-              // projection that the next turn will hash. Synthetic local Stop and
-              // exec fallback deliberately leave the old revision in place, which
-              // forces a safe new thread on the next send.
+              // A binding stores the history that existed before this turn. Once both messages are durable, advance it to the exact active-history projection that the next turn will hash. Synthetic local Stop and exec fallback deliberately leave the old revision in place, which forces a safe new thread on the next send.
               const completedCodexBinding =
                 sendControl.transport === "codex-app-server" &&
                 info.stopReason !== "stopped" &&
@@ -1858,9 +1879,7 @@ function createChatTurnStoreActions(
                       threadId: codexThreadId,
                       turnId: codexTurnId,
                       expectedHistoryRevision: codexHistoryRevision,
-                      // Hash the exact pre-turn projection plus only the two
-                      // messages owned by this turn. A live-store mutation must
-                      // not become the revision of an already-running thread.
+                      // Hash the exact pre-turn projection plus only the two messages owned by this turn. A live-store mutation must not become the revision of an already-running thread.
                       nextHistoryRevision: computeChatHistoryRevision([
                         ...priorHistoryMessages.map((message) => ({
                           ...message,
@@ -1877,7 +1896,6 @@ function createChatTurnStoreActions(
                     }
                   : null;
 
-              // Persist to DB
               const lastMsg = get().messages.find(
                 (message) => message.id === assistantMsg.id,
               ) ?? {
@@ -1920,8 +1938,6 @@ function createChatTurnStoreActions(
                       ...(userMetadata ? { metadata: userMetadata } : {}),
                     },
                   );
-                  // 過去メッセージのプロンプト確認用スナップショット
-                  // (fire-and-forget)。user 行が存在してから FK 付きで保存する。
                   if (sentSystemPrompt) {
                     void chatApi
                       .saveMessagePrompt(userMsg.id, {
@@ -1993,9 +2009,7 @@ function createChatTurnStoreActions(
                         });
                       }
                     } catch (error: unknown) {
-                      // Persistence already succeeded. Keeping the old revision is
-                      // the fail-safe: the next send archives instead of resuming a
-                      // thread whose local history could be stale.
+                      // Persistence already succeeded. Keeping the old revision is the fail-safe: the next send archives instead of resuming a thread whose local history could be stale.
                       debugLog.warn(
                         "ChatStore",
                         "advance Codex history revision",
@@ -2141,7 +2155,6 @@ function createChatTurnStoreActions(
                 resolve();
                 return;
               }
-              // エラー時も partial content を保持するため同期 flush。
               flushDelta();
               finalizeStreamingDraft();
               turnRuntime.clearPendingDeltaFlusherIf(flushDelta);
@@ -2264,18 +2277,13 @@ function createChatTurnStoreActions(
                   systemCacheSegments,
                   chatApiVariant,
                   systemVolatileTail,
-                  // role 未設定なら一時モデル(あれば)を送る。両方無ければ null=既定で
-                  // byte-identical(キャッシュ温存)。agent 経路と同契約。別プロバイダ override 最優先。
                   turnRoute?.model ??
                     (xprov
                       ? xprov.model
                       : (convRole?.model ?? chatModelOverride ?? null)),
-                  // 別プロバイダ override 時のみ provider を渡す(同一プロバイダは null=既定)。
-                  // role に横断割り当てがあればそれを送る。
                   turnRoute
                     ? turnRoute.providerOverride
                     : (xprov?.provider ?? convRole?.provider ?? null),
-                  // OpenAI 互換の別エンドポイント override（同一 provider でも送信先を切替）。
                   turnRoute
                     ? turnRoute.endpointId
                     : (xprov?.endpointId ?? convRole?.endpointId ?? null),
@@ -2317,8 +2325,7 @@ function createChatTurnStoreActions(
           e instanceof ChatTurnPersistenceError &&
           !canScheduleQuiescenceMutation()
         ) {
-          // A destructive lifecycle must remain on the old authority when the
-          // completed turn could not become durable in that old scope.
+          // A destructive lifecycle must remain on the old authority when the completed turn could not become durable in that old scope.
           throw e;
         }
         if (!captureCleanupFailed && (await preserveFailedAnchoredTurn(e))) {
@@ -2342,7 +2349,6 @@ function createChatTurnStoreActions(
             action: {
               label: i18next.t("chat.openSettings"),
               onClick: () => {
-                // Signal to open settings dialog via a custom event
                 window.dispatchEvent(
                   new CustomEvent("open-settings", {
                     detail: { category: "ai" },
@@ -2354,8 +2360,7 @@ function createChatTurnStoreActions(
           });
         } else if (kind === "rate_limit") {
           toast.warning(i18next.t("chat.rateLimited"));
-          // 失敗した placeholder（user + 空 assistant）を除去し、再送時の重複
-          // バブル（同じ user メッセージが 2 通 + 宙に浮いた空 assistant）を防ぐ。
+          // 失敗した placeholder（user + 空 assistant）を除去し、再送時の重複 バブル（同じ user メッセージが 2 通 + 宙に浮いた空 assistant）を防ぐ。
           set((s) => ({
             messages: s.messages.filter(
               (m) => m.id !== userMsg.id && m.id !== assistantMsg.id,
@@ -2366,16 +2371,13 @@ function createChatTurnStoreActions(
                 : s.streamingDraft,
             isStreaming: false,
           }));
-          // 永続 429 での無限リトライ（10 秒ごとに API を叩き続け、messages が
-          // 2 通/回で無限増殖）を防ぐため上限を設ける。新規送信は
-          // _rateLimitRetry=undefined から始まるのでカウンタは自然にリセットされる。
+          // 永続 429 での無限リトライ（10 秒ごとに API を叩き続け、messages が 2 通/回で無限増殖）を防ぐため上限を設ける。新規送信は _rateLimitRetry=undefined から始まるのでカウンタは自然にリセットされる。
           const attempt = (options?._rateLimitRetry ?? 0) + 1;
           if (attempt > MAX_RATE_LIMIT_RETRIES || captureCleanupFailed) {
             set({ error: msg });
             return;
           }
-          // 送信先セッションを pin。待機中にユーザーがセッション/シーンを切り替えて
-          // いたら再送を中止する（別会話への誤送信防止）。
+          // 送信先セッションを pin。待機中にユーザーがセッション/シーンを切り替えて いたら再送を中止する（別会話への誤送信防止）。
           const retrySessionId = get().activeSessionId;
           setTimeout(() => {
             if (get().activeSessionId !== retrySessionId) return;
@@ -2413,8 +2415,6 @@ function createChatTurnStoreActions(
         );
         if (isCurrentTurn()) {
           if (!captureTurn.isCaptureOnly()) {
-            // isStreaming is set to false inside onDone/onError callbacks
-            // but guard here in case of early exit.
             if (get().isStreaming) set({ isStreaming: false });
             turnRuntime.clearActiveRouteIf(turnRoute);
           }

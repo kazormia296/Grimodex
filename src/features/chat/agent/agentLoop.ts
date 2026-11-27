@@ -32,7 +32,7 @@ const TOOL_RESULT_TOKEN_CAP_RATIO = 0.25;
  * 上限とは別カウント。適応的な多段質問を許しつつ、質問の連打／無限ループを
  * 抑止する。呼び出し元が maxUserQuestions を渡せば上書きできる。
  */
-const DEFAULT_MAX_USER_QUESTIONS = 8;
+export const DEFAULT_MAX_USER_QUESTIONS = 8;
 
 /** ユーザーへの質問ツール名（totalCalls から除外し別カウントする）。 */
 const ASK_USER_TOOL = "ask_user";
