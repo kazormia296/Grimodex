@@ -286,6 +286,8 @@ export interface MastraAgentTurnStartRequest {
   readonly turnId: string;
   /** The chat session (`sessionIdForPersist ?? activeSessionId`); one turn per sender and session. */
   readonly chatSessionId: string;
+  /** Renderer recorder session used as the native writerSessionId. */
+  readonly writerSessionId: string;
   /**
    * The project the turn's audit rows are chained to (`project:<id>`, as the
    * legacy route does; MP-4a, DR-MP4-1, -2). The renderer's own claim: Main
@@ -391,6 +393,7 @@ export type MastraAgentTurnQuestionParse<T> =
 const START_KEYS = [
   "turnId",
   "chatSessionId",
+  "writerSessionId",
   "projectId",
   "currentSceneId",
   "chatMessageId",
@@ -527,6 +530,7 @@ export type MastraAgentTurnWireIssue =
   | "forbidden-key"
   | "turn-id"
   | "chat-session-id"
+  | "writer-session-id"
   | "project-id"
   | "current-scene-id"
   | "chat-message-id"
@@ -887,6 +891,9 @@ export function parseMastraAgentTurnStartRequest(
   if (!isMastraAgentTurnId(entries.get("turnId"))) return fail("turn-id");
   if (!isTrimmedId(entries.get("chatSessionId"))) {
     return fail("chat-session-id");
+  }
+  if (!isTrimmedId(entries.get("writerSessionId"))) {
+    return fail("writer-session-id");
   }
   if (!isScopeId(entries.get("projectId"))) return fail("project-id");
   const currentSceneId = entries.get("currentSceneId");

@@ -30,6 +30,7 @@ import {
   type MastraAgentTurnLoopResult,
   type MastraAgentTurnStartRequest,
 } from "@/../electron/shared/mastraAgentTurnWire";
+import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import {
   MASTRA_AGENT_TURN_PROGRESS_EVENT,
   MASTRA_AGENT_TURN_QUESTION_EVENT,
@@ -142,6 +143,7 @@ export async function startMastraAgentTurn(
   try {
     raw = await invoke<unknown>("mastra_agent_turn_start", {
       ...request,
+      writerSessionId: getRecorderSessionId(),
     });
   } catch (error) {
     if (isD2aEgressDenied(error))

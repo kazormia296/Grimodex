@@ -1,18 +1,13 @@
 import { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { getSchema } from "@tiptap/core";
-import {
-  defaultMarkdownParser,
-  MarkdownParser,
-  type ParseSpec,
-} from "prosemirror-markdown";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
+import { agentMarkdownToProseMirrorJson as normalizeMarkdown } from "@/../electron/shared/agentWriteNormalization";
 
 /** Same order of magnitude as the MCP sanitizer; measured as UTF-8 bytes. */
 export const MAX_AGENT_RICH_TEXT_BYTES = 1_000_000;
 
 let editorSchema: ReturnType<typeof getSchema> | null = null;
-let agentMarkdownParser: MarkdownParser | null = null;
 
 /**
  * Agent-authored bodies intentionally use the portable subset shared by the
@@ -26,57 +21,6 @@ function getCanonicalEditorSchema(): ReturnType<typeof getSchema> {
     editorSchema = getSchema([StarterKit.configure(), AuthorshipMark]);
   }
   return editorSchema;
-}
-
-const MARKDOWN_NODE_NAMES: Readonly<Record<string, string>> = {
-  list_item: "listItem",
-  bullet_list: "bulletList",
-  ordered_list: "orderedList",
-  code_block: "codeBlock",
-  horizontal_rule: "horizontalRule",
-  hard_break: "hardBreak",
-};
-
-const MARKDOWN_MARK_NAMES: Readonly<Record<string, string>> = {
-  em: "italic",
-  strong: "bold",
-};
-
-function remapMarkdownSpec(
-  spec: ParseSpec,
-  schema: ReturnType<typeof getSchema>,
-): ParseSpec | null {
-  if (spec.node) {
-    const node = MARKDOWN_NODE_NAMES[spec.node] ?? spec.node;
-    return schema.nodes[node] ? { ...spec, node } : null;
-  }
-  if (spec.block) {
-    const block = MARKDOWN_NODE_NAMES[spec.block] ?? spec.block;
-    return schema.nodes[block] ? { ...spec, block } : null;
-  }
-  if (spec.mark) {
-    const mark = MARKDOWN_MARK_NAMES[spec.mark] ?? spec.mark;
-    return schema.marks[mark] ? { ...spec, mark } : null;
-  }
-  return spec;
-}
-
-function getAgentMarkdownParser(): MarkdownParser {
-  if (agentMarkdownParser === null) {
-    const schema = getCanonicalEditorSchema();
-    const tokens = Object.fromEntries(
-      Object.entries(defaultMarkdownParser.tokens).flatMap(([name, spec]) => {
-        const remapped = remapMarkdownSpec(spec, schema);
-        return remapped ? [[name, remapped]] : [];
-      }),
-    );
-    agentMarkdownParser = new MarkdownParser(
-      schema,
-      defaultMarkdownParser.tokenizer,
-      tokens,
-    );
-  }
-  return agentMarkdownParser;
 }
 
 function assertSize(input: string): void {
@@ -124,13 +68,5 @@ export function validateAgentProseMirrorJson(input: string): string {
 /** Convert model-authored Markdown into canonical, schema-validated PM JSON. */
 export function agentMarkdownToProseMirrorJson(markdown: string): string {
   assertSize(markdown);
-  try {
-    const converted = getAgentMarkdownParser().parse(markdown).toJSON();
-    return validateAgentProseMirrorJson(JSON.stringify(converted));
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`Markdown body could not be converted safely: ${reason}`, {
-      cause: error,
-    });
-  }
+  return validateAgentProseMirrorJson(normalizeMarkdown(markdown));
 }

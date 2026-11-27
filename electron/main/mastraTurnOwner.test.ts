@@ -170,6 +170,7 @@ function startRequest(
   return {
     turnId,
     chatSessionId: `session-${turnId}`,
+    writerSessionId: `writer-${turnId}`,
     projectId: PROJECT_ID,
     currentSceneId: "scene-1",
     chatMessageId: `message-${turnId}`,
@@ -266,7 +267,13 @@ function harness(
       >
     >;
     nativeWriterMethods?: Partial<
-      Pick<NapiBackendLike, "agentForeshadowCreate" | "agentEventCreate">
+      Pick<
+        NapiBackendLike,
+        | "agentForeshadowCreate"
+        | "agentEventCreate"
+        | "agentEventUpdate"
+        | "eventGetVersion"
+      >
     >;
   } = {},
 ): Harness {
@@ -5712,4 +5719,123 @@ describe("MP-5 main-owned question holds", () => {
       content: { entityId: "event-1", undoJournalId: "undo-event-1" },
     });
   });
+
+  it.each([
+    {
+      name: "update_foreshadow",
+      input: { id: "foreshadow-1", baseVersion: 4, title: "Revised" },
+      method: "agentForeshadowUpdate",
+      check: (payload: Record<string, unknown>) => {
+        expect(payload).toMatchObject({
+          foreshadowId: "foreshadow-1",
+          baseVersion: 4,
+        });
+        expect(payload).not.toHaveProperty("id");
+      },
+    },
+    {
+      name: "create_codex_entry",
+      input: {
+        type: "character",
+        name: "Mina",
+        content: "# Bio\n\nText",
+        aliases: [" Mina ", ""],
+      },
+      method: "agentCodexCreate",
+      check: (payload: Record<string, unknown>) => {
+        expect(payload).toMatchObject({
+          typeSlug: "character",
+          aliases: '["Mina"]',
+        });
+        expect(payload).not.toHaveProperty("type");
+        expect(JSON.parse(String(payload.content))).toMatchObject({
+          type: "doc",
+        });
+      },
+    },
+    {
+      name: "update_codex_entry",
+      input: { id: "entry-1", name: "Mina" },
+      method: "agentCodexUpdate",
+      check: (payload: Record<string, unknown>) => {
+        expect(payload).toMatchObject({ entryId: "entry-1", baseVersion: 7 });
+        expect(payload).not.toHaveProperty("id");
+      },
+    },
+    {
+      name: "update_event",
+      input: { eventId: "event-1", title: "Arrival" },
+      method: "agentEventUpdate",
+      check: (payload: Record<string, unknown>) => {
+        expect(payload).toMatchObject({
+          eventId: "event-1",
+          title: "Arrival",
+          baseVersion: 3,
+        });
+      },
+    },
+  ] as const)(
+    "normalizes $name before capability binding and Native dispatch",
+    async ({ name, input, method, check }) => {
+      const writer = vi.fn(async (_payload: unknown) =>
+        JSON.stringify({
+          entityId: `${name}-entity`,
+          version: 8,
+          changeEventUid: "write-event",
+          undoJournalId: "write-undo",
+        }),
+      );
+      const response: AgentWireResponse = {
+        blocks: [{ type: "tool_use", id: `call-${name}`, name, input }],
+        stopReason: "tool_use",
+      };
+      const h = harness({
+        responses: [response],
+        nativeWriterMethods: {
+          [method]: writer,
+          eventGetVersion: async () => "3",
+        } as never,
+        readDbExecute: async () =>
+          JSON.stringify({
+            __grimodexDbResultKind: "read",
+            rows: [{ version: 7 }],
+          }),
+        issueWriteCapabilities: (senderId, args, result, backend, identity) =>
+          issueAgentAuthorityCapabilitiesForSender(
+            senderId,
+            args as never,
+            result,
+            backend,
+            identity as never,
+          ),
+        agentAuthorityRequestId,
+        bindWriteCapability: consumeAndBindAgentAuthorityCapability,
+        sendWriteCompleted: vi.fn(() => true),
+        runTurn: async (turn) => {
+          await sendPreparedRequest(turn, auditRequestFor(turn), 0);
+          const binding = turn.bindings?.find(
+            (candidate) => candidate.name === name,
+          );
+          if (!binding) throw new Error("write binding missing");
+          await binding.execute(input, {
+            toolCallId: `call-${name}`,
+            signal: turn.signal,
+          });
+        },
+      });
+      const { context } = h.newContext();
+      await h.owner.start(
+        context,
+        startRequest(TURN_A, { tools: [name] as never }),
+      );
+
+      expect(writer).toHaveBeenCalledOnce();
+      const payload = writer.mock.calls[0]?.[0] as Record<string, unknown>;
+      check(payload);
+      expect(payload).toMatchObject({
+        projectId: "project-1",
+        writerSessionId: expect.any(String),
+      });
+    },
+  );
 });

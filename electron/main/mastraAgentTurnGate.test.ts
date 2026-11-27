@@ -87,6 +87,7 @@ const TURN_ID = "0b9a2f5e-1c3d-4e6f-8a7b-9c0d1e2f3a4b";
 const START = {
   turnId: TURN_ID,
   chatSessionId: "session-1",
+  writerSessionId: "writer-session-1",
   projectId: "project-1",
   currentSceneId: "scene-1",
   chatMessageId: "message-1",
