@@ -22,6 +22,7 @@
 - **DR-MP9-6 pin。** M turn の pin は、作者が pin した内容を出典 ID 付きの resource として Mastra memory（`mastra_resources`）へ写し、作者指定であることと元の参照を保つ。AI が抽出した記憶と混ぜず、context に同じ内容を旧 pin 経路から重ねて渡さない。作者には pin が引き続き会話に反映される想定だが、追加・解除の反映方法と表示元は第 7 節で確認する。M turn の pin 保存・読込は Mastra に移し、legacy は MP-14 まで現行保存を続ける。
 - **DR-MP9-7 prompt の控え。** M turn で実際に送った確定 prompt は `mastra_message_parts` の独立した記録として当該 message／turn に結び付けて保存し、過去メッセージから見返す控えにする。作者には送信時の内容を確認できる状態を保つ想定だが、画面の表示元は第 7 節で確認する。M turn の `chat_message_prompts` 保存・読込は Mastra に移し、legacy は MP-14 まで現行保存を続ける。
 - **DR-MP9-8 embedding。** M turn は Mastra の `mastra_memory_vectors` を使い、旧 `chat_message_chunks` との二重 embedding を直ちに止める案。作者には M turn の semantic recall が Mastra の索引から返る。legacy の旧索引は MP-14 まで保持する。M turn が Mastra vectors のみを使う契約は第 7 節で確認する。
+- **DR-MP9-9 A3 durable AgentRun との保存合意（2026-11-27）。** (1) 旗 M の turn では tool の呼び出しと結果を段ごとに `mastra_message_parts` に本文付きで保存する（問 14 の承認）。A3 checkpoint は MP-9 message への参照と未解決 1 件だけを持ち、本文を重複保持しない（DR-A3-8）。(2) 各 tool 結果には、場面 revision や Codex 版など、読み取り元 source の印を parts に持たせる。値は read core が返す版を使い、設計は実装 PR で決める。(3) 段ごとの本文は Run 終端まで残し、終端時に MP-8 の DR-MP8-4 と同じ digest に置き換える。完了 turn の本文は残さず、A3 port の終端記録から置き換えを呼べる口を設け、Mastra 経路は owner が呼ぶ。(4) backup、復元前退避、migration 前 snapshot では未完了 Run の途中段本文を空にする（問 19・21、A3 脅威モデル確定）。grimodex-db の backup 写し処理で行い、復元された中断 Run は続行不可とする。(5) 実 Mastra の保存回数（計画 R-2、1〜8 回は未確認）と各段が確実に残ることを試験で確かめる。MP-9 と再入の実証までは A3 が Mastra Run を `resumable=false` で記録する。
 
 ## 4. owner／lifecycle（案）
 
@@ -36,7 +37,7 @@
 
 ## 5. 影響と PR の分け方
 
-MP-8 adapter を基点として、その後に MP-9 の PR を積む。MP-8 には戻り変更を入れない。順に、(1) M turn の保存境界と legacy 非干渉、(2) OM 要約、(3) semantic recall と Mastra vectors の単一利用、(4) pin 同期、(5) prompt 控えの保存・表示を分ける。第 7 節の契約確認が必要な (3)〜(5) は回答後に着手する。legacy の終了は MP-14 で別に扱う。各段階で入口 journey、削除・再生成、旧経路との二重保存がないことを確認する（`docs/plans/mastra-migration-plan.md:492-497`）。
+MP-8 adapter を基点として、その後に MP-9 の PR を積む。MP-8 には戻り変更を入れない。MP-9a で M turn の保存境界と legacy 非干渉を置き、その後に DR-MP9-9 を (b) 段ごとの tool 本文保存、(c) tool 結果の source 印、(d) Run 終端での digest 置換、(e) backup・復元前退避・migration snapshot の本文消去に分ける。実 Mastra の保存回数と段ごとの永続性は該当 PR の試験で確認し、MP-9 と再入の実証までは A3 の Run を `resumable=false` にする。続けて (f) OM 要約、(g) semantic recall と Mastra vectors の単一利用、(h) pin 同期、(i) prompt 控えの保存・表示を分ける。第 7 節の契約確認が必要な pin・prompt・embedding は回答後に着手する。legacy の終了は MP-14 で別に扱う。各段階で入口 journey、削除・再生成、旧経路との二重保存がないことを確認する（`docs/plans/mastra-migration-plan.md:492-497`）。
 
 ## 6. 脅威モデルへの影響
 
