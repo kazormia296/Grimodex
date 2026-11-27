@@ -3751,7 +3751,6 @@ impl Database {
         // default to a populated table, so rebuild the SCHEMA 21 parent while
         // preserving its child events and deterministic transaction identity.
         Self::migrate_narrative_change_transactions_v22(&conn)?;
-        Self::backfill_narrative_change_object_heads(&conn)?;
 
         // SCHEMA_VERSION 23: Gate C2-01 Semantic Build Graph persistence.
         // ADR 005 fixes the contract this schema implements: Dependency Edge,
@@ -4396,24 +4395,6 @@ impl Database {
         Self::repair_narrative_v2_monotonicity_trigger(&conn)?;
         Self::repair_timelapse_creation_baseline_triggers(&conn)?;
 
-        // Epoch markers used to advance the durable Project object head with
-        // their synthetic reset state; the writer no longer does, and any
-        // head still pointing at a marker event is deleted so the next real
-        // Project mutation chains from genuine domain state instead of
-        // reporting a discontinuity against the sentinel.
-        conn.execute(
-            "DELETE FROM narrative_change_object_heads
-              WHERE EXISTS (
-                    SELECT 1
-                      FROM narrative_change_events e
-                     WHERE e.project_id = narrative_change_object_heads.project_id
-                       AND e.id = narrative_change_object_heads.event_id
-                       AND json_extract(e.object_key_json, '$.kind') = 'project'
-                       AND json_extract(e.structural_impact_json, '$.event')
-                               IN ('project-restored', 'semantic-epoch-reset'))",
-            [],
-        )?;
-
         // New Run columns: run_kind distinguishes cursor-bound Runs (the
         // Freshness evaluator) from non-cursor-bound Runs (interpretation,
         // Semantic Index rebuild, manual rebuild, backfill); the Cursor
@@ -4646,6 +4627,26 @@ impl Database {
         // `user_version` remains unchanged until the checkpoint below.
         conn.execute_batch("SAVEPOINT narrative_c2_schema_32")?;
         let c2zb_result = (|| -> anyhow::Result<()> {
+            // Keep reconstructed heads and their migration-specific pruning atomic.
+            Self::backfill_narrative_change_object_heads(&conn)?;
+            // Epoch markers used to advance the durable Project object head with
+            // their synthetic reset state; the writer no longer does, and any
+            // head still pointing at a marker event is deleted so the next real
+            // Project mutation chains from genuine domain state instead of
+            // reporting a discontinuity against the sentinel.
+            conn.execute(
+                "DELETE FROM narrative_change_object_heads
+                  WHERE EXISTS (
+                        SELECT 1
+                          FROM narrative_change_events e
+                         WHERE e.project_id = narrative_change_object_heads.project_id
+                           AND e.id = narrative_change_object_heads.event_id
+                           AND json_extract(e.object_key_json, '$.kind') = 'project'
+                           AND json_extract(e.structural_impact_json, '$.event')
+                                   IN ('project-restored', 'semantic-epoch-reset'))",
+                [],
+            )?;
+
             // A1 owns the SCHEMA 36 boundary. A schema-35 user_version is the
             // durable marker for the ordinary pre-A1 upgrade path; current /
             // post-A1 workspaces retain fail-closed missing-row semantics.
@@ -4857,6 +4858,25 @@ impl Database {
                         SELECT RAISE(ABORT, 'ERM_IDENTITY_CORRECTION_APPLICATION_IMMUTABLE');
                     END;",
             )?;
+            // The marker covers the entire workspace, including an empty or new one.
+            if !grimodex_core::workspace_schema::has_chronicle_date_migration_marker(&conn)? {
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS chronicle_date_migration_events (
+                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        event_id TEXT NOT NULL,
+                        recorded_at TEXT NOT NULL,
+                        PRIMARY KEY(project_id, event_id)
+                    );",
+                )?;
+                let report = crate::chronicle_date_migration::fill_missing_chronicle_dates(&conn)?;
+                crate::chronicle_date_migration::record_date_changes(&conn, &report)?;
+                conn.execute(
+                    "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+                     VALUES (?1, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                    [grimodex_core::workspace_schema::CHRONICLE_DATE_MIGRATION_ID],
+                )?;
+            }
+            crate::chronicle_date_migration::prune_stale_heads(&conn)?;
             // SCHEMA 46 / DR-DBC-3: the write clock, its lineage row and the
             // per-table triggers. Idempotent and last, so every table the
             // passes above created is covered; inside the same savepoint as

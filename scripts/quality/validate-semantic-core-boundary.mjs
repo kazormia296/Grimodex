@@ -73,7 +73,10 @@ const REPO_ROOT = path.resolve(
 // rejects generic reads and writes (closed), and nothing applies the rules
 // yet, so the concern matrix is unchanged. Applying them (ERM PR 3-5)
 // revisits this.
-export const EXPECTED_SCHEMA_VERSION = 48;
+// SCHEMA_VERSION 49 fills legacy Chronicle dates, records the repaired IDs in
+// closed Native storage and marks provisional fields through existing field
+// authority. No new semantic interpreter or concern-matrix entry is introduced.
+export const EXPECTED_SCHEMA_VERSION = 49;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,

@@ -637,6 +637,7 @@ describe("validate-semantic-core-boundary", () => {
         "utf8",
       ),
     );
+    assert.equal(result.schemaVersion, 49);
     assert.equal(result.schemaVersion, generatedSchema.schemaVersion);
     assert.equal(result.checks.scopeRelationContract, true);
     assert.equal(result.checks.dependencyRoleContract, true);

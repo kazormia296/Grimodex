@@ -846,7 +846,7 @@ fn fields_for(entity_kind: &str, entity_id: &str, paths: &[&str]) -> Vec<Affecte
         .collect()
 }
 
-const TEMPORAL_FIELD_PATHS: &[&str] = &[
+pub(crate) const TEMPORAL_FIELD_PATHS: &[&str] = &[
     "/startTime",
     "/startMinute",
     "/startGranularity",

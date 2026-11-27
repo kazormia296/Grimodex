@@ -200,3 +200,196 @@ fn does_not_place_a_day_past_the_bound() -> Result<()> {
     assert_eq!(counters(&conn)?, before);
     Ok(())
 }
+
+fn strings(conn: &Connection, sql: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map([], |row| row.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+fn edit_participants(db: &crate::Database, event: &str, version: i64) -> Result<()> {
+    use crate::chronicle::{set_event_participants, SetParticipantsPayload};
+    let request = format!("ced-{event}-{version}");
+    let next = set_event_participants(
+        db,
+        SetParticipantsPayload {
+            project_id: "ced".into(),
+            event_id: event.into(),
+            base_version: version,
+            codex_entry_ids: vec![],
+            request_id: request.clone(),
+            event_uid: request,
+            session_id: "ced-session".into(),
+            updated_at: "2026-11-27T00:00:00.000Z".into(),
+        },
+    )?;
+    assert_eq!(next, Some(version + 1));
+    Ok(())
+}
+
+#[test]
+fn schema_48_repairs_dates_replays_heads_and_preserves_locks() -> Result<()> {
+    use grimodex_core::workspace_schema::{
+        has_chronicle_date_migration_marker, CHRONICLE_DATE_MIGRATION_ID,
+    };
+    let db = crate::test_support::current_schema_memory()?;
+    let history = "SELECT * FROM narrative_change_events WHERE project_id='ced' ORDER BY id";
+    let metadata =
+        "SELECT id,version,updated_at,ordinal FROM events WHERE project_id='ced' ORDER BY id";
+    let preserved_owners = "SELECT * FROM narrative_field_authority WHERE project_id='ced'
+        AND (entity_id!='assigned' OR field_path IN ('/precision','/participants'))
+        ORDER BY entity_id,field_path";
+    {
+        let conn = db.lock()?;
+        conn.execute(
+            "DELETE FROM schema_data_migrations WHERE migration_id=?1",
+            [CHRONICLE_DATE_MIGRATION_ID],
+        )?;
+        conn.execute_batch(
+            "DROP TABLE chronicle_date_migration_events;
+             PRAGMA user_version=48;
+             INSERT INTO projects(id) VALUES ('ced'),('ced-empty');
+             INSERT INTO events(id,project_id,start_time,end_time,start_granularity) VALUES
+                ('assigned','ced',NULL,44,'none'),('granularity','ced',10,NULL,'none'),
+                ('untouched','ced',20,NULL,'day');
+             INSERT INTO narrative_field_authority
+                (project_id,entity_kind,entity_id,field_path,owner_kind,explicit_lock,version,updated_at) VALUES
+                ('ced','event','assigned','/startTime','human',0,3,'before'),
+                ('ced','event','assigned','/precision','human',1,7,'locked'),
+                ('ced','event','granularity','/startGranularity','human',0,5,'kept'),
+                ('ced','event','untouched','/precision','human',0,4,'kept');",
+        )?;
+    }
+    for event in ["assigned", "granularity", "untouched"] {
+        edit_participants(&db, event, 0)?;
+    }
+    let (before_metadata, before_history, before_owners) = {
+        let conn = db.lock()?;
+        // Even an unrelated stale head must survive the migration.
+        conn.execute(
+            "UPDATE events SET title='restored' WHERE id='untouched'",
+            [],
+        )?;
+        (
+            snapshot(&conn, metadata)?,
+            snapshot(&conn, history)?,
+            snapshot(&conn, preserved_owners)?,
+        )
+    };
+    db.migrate()?;
+    let head_ids =
+        "SELECT json_extract(object_identity,'$.eventId') FROM narrative_change_object_heads
+                     WHERE project_id='ced' ORDER BY 1";
+    let table_ids =
+        "SELECT event_id FROM chronicle_date_migration_events WHERE project_id='ced' ORDER BY 1";
+    let before_second = {
+        let conn = db.lock()?;
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |r| r.get::<_, i32>(0))?,
+            49
+        );
+        assert!(has_chronicle_date_migration_marker(&conn)?);
+        assert_eq!(day(&conn, "assigned")?, 21);
+        let values: (String, String, Option<i64>) = conn.query_row(
+            "SELECT start_granularity,precision,end_time FROM events WHERE id='assigned'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        assert_eq!(values, ("day".into(), "unknown".into(), None));
+        assert_eq!(snapshot(&conn, metadata)?, before_metadata);
+        assert_eq!(snapshot(&conn, history)?, before_history);
+        assert_eq!(strings(&conn, table_ids)?, ["assigned", "granularity"]);
+        assert_eq!(strings(&conn, head_ids)?, ["untouched"]);
+        assert_eq!(snapshot(&conn, preserved_owners)?, before_owners);
+        let system_paths = strings(
+            &conn,
+            "SELECT field_path FROM narrative_field_authority
+              WHERE project_id='ced' AND entity_kind='event' AND entity_id='assigned'
+                AND owner_kind='system' AND explicit_lock=0 ORDER BY field_path",
+        )?;
+        assert_eq!(
+            system_paths,
+            [
+                "/endGranularity",
+                "/endMinute",
+                "/endTime",
+                "/startGranularity",
+                "/startMinute",
+                "/startTime"
+            ]
+        );
+        counters(&conn)?
+    };
+    db.migrate()?;
+    {
+        let conn = db.lock()?;
+        assert_eq!(counters(&conn)?, before_second);
+    }
+    // Restore preflight always replays feed history, even with a current marker.
+    db.migrate_for_restore_preflight()?;
+    {
+        let conn = db.lock()?;
+        assert_eq!(strings(&conn, head_ids)?, ["untouched"]);
+        assert_eq!(snapshot(&conn, history)?, before_history);
+    }
+    edit_participants(&db, "assigned", 1)?;
+    db.migrate_for_restore_preflight()?;
+    {
+        let conn = db.lock()?;
+        assert_eq!(strings(&conn, head_ids)?, ["assigned", "untouched"]);
+    }
+    edit_participants(&db, "assigned", 2)?;
+    edit_participants(&db, "granularity", 1)?;
+    Ok(())
+}
+
+#[test]
+fn missing_completion_marker_blocks_both_shortcuts_and_rolls_back_failed_repairs() -> Result<()> {
+    use grimodex_core::workspace_schema::{
+        has_chronicle_date_migration_marker, has_current_schema_checkpoint_invariants,
+        is_previous_workspace_schema_write_compatible, CHRONICLE_DATE_MIGRATION_ID,
+    };
+    let db = crate::Database::new(std::path::Path::new(":memory:"))?;
+    db.migrate()?;
+    {
+        let conn = db.lock()?;
+        assert!(has_chronicle_date_migration_marker(&conn)?);
+        conn.execute("INSERT INTO projects(id) VALUES ('ced')", [])?;
+        conn.execute(
+            "DELETE FROM schema_data_migrations WHERE migration_id=?1",
+            [CHRONICLE_DATE_MIGRATION_ID],
+        )?;
+        assert!(!has_current_schema_checkpoint_invariants(&conn)?);
+        conn.execute_batch(
+            "PRAGMA user_version=48;
+             INSERT INTO events(id,project_id) VALUES ('assigned','ced');
+             CREATE TRIGGER refuse_ced_marker BEFORE INSERT ON schema_data_migrations
+             WHEN NEW.migration_id='chronicle-event-date-v49'
+             BEGIN SELECT RAISE(ABORT,'refused CED marker'); END;",
+        )?;
+        assert!(!is_previous_workspace_schema_write_compatible(&conn)?);
+    }
+    let error = db
+        .migrate()
+        .expect_err("marker failure must abort the repair");
+    assert!(format!("{error:#}").contains("refused CED marker"));
+    {
+        let conn = db.lock()?;
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |r| r.get::<_, i32>(0))?,
+            48
+        );
+        let rolled_back: bool = conn.query_row(
+            "SELECT start_time IS NULL AND NOT EXISTS(SELECT 1 FROM chronicle_date_migration_events)
+               AND NOT EXISTS(SELECT 1 FROM narrative_field_authority WHERE project_id='ced')
+               FROM events WHERE id='assigned'", [], |r| r.get(0),
+        )?;
+        assert!(rolled_back);
+        conn.execute_batch("DROP TRIGGER refuse_ced_marker")?;
+    }
+    db.migrate()?;
+    let conn = db.lock()?;
+    assert!(has_chronicle_date_migration_marker(&conn)?);
+    assert_eq!(day(&conn, "assigned")?, 0);
+    Ok(())
+}

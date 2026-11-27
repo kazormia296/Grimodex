@@ -216,5 +216,80 @@ fn fill_project(
     Ok(())
 }
 
+pub(super) fn record_date_changes(
+    conn: &Connection,
+    report: &ChronicleDateMigrationReport,
+) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    for change in &report.changed {
+        conn.execute(
+            "INSERT INTO chronicle_date_migration_events(project_id, event_id, recorded_at)
+             VALUES (?1, ?2, ?3) ON CONFLICT(project_id, event_id) DO NOTHING",
+            params![change.project_id, change.event_id, now],
+        )?;
+        if change
+            .actions
+            .contains(&ChronicleDateAction::AssignedProvisionalDate)
+        {
+            for path in crate::narrative_extraction::TEMPORAL_FIELD_PATHS {
+                conn.execute(
+                    "INSERT INTO narrative_field_authority
+                        (project_id, entity_kind, entity_id, field_path, owner_kind, updated_at)
+                     VALUES (?1, 'event', ?2, ?3, 'system', ?4)
+                     ON CONFLICT(project_id, entity_kind, entity_id, field_path) DO UPDATE SET
+                         owner_kind = excluded.owner_kind, updated_at = excluded.updated_at,
+                         version = narrative_field_authority.version + 1
+                     WHERE narrative_field_authority.explicit_lock = 0",
+                    params![change.project_id, change.event_id, path, now],
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn prune_stale_heads(conn: &Connection) -> Result<()> {
+    use crate::narrative_extraction::change_feed::{
+        narrative_snapshot_digest, previous_event_after_state,
+    };
+
+    let mut stmt = conn.prepare(
+        "SELECT m.project_id, m.event_id, e.id IS NOT NULL FROM chronicle_date_migration_events m
+           LEFT JOIN events e ON e.project_id = m.project_id AND e.id = m.event_id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, bool>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (project, event, exists) = row?;
+        let identity = crate::canonical_feed_snapshots::object_key_identity(
+            &serde_json::json!({"kind": "chronicle-event", "eventId": event}),
+        )?;
+        let Some(head) = previous_event_after_state(conn, &project, &identity)? else {
+            continue;
+        };
+        let current = if exists {
+            let snapshot = crate::agent_writes::collect_event_snapshot(conn, &event)?;
+            (
+                snapshot["eventData"]["version"].as_i64(),
+                Some(narrative_snapshot_digest(&snapshot)?),
+            )
+        } else {
+            (None, None)
+        };
+        if head != current {
+            conn.execute(
+                "DELETE FROM narrative_change_object_heads WHERE project_id = ?1 AND object_identity = ?2",
+                params![project, identity],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests;
