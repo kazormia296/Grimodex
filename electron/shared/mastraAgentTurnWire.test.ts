@@ -1089,7 +1089,7 @@ describe("parseMastraAgentTurnStartRequest", () => {
     expect(
       issueOf(start({ tools: [...MASTRA_AGENT_WRITE_TOOL_NAMES] })),
     ).toBeNull();
-    expect(MASTRA_AGENT_TURN_TOOLS_MAX).toBe(41);
+    expect(MASTRA_AGENT_TURN_TOOLS_MAX).toBe(43);
     expect(issueOf(start({ tools: ["get_scene"] }))).toBeNull();
     expect(issueOf(start({ tools: ["not_a_tool"] }))).toBe("tools");
     expect(issueOf(start({ tools: ["get_scene", "get_scene"] }))).toBe("tools");
@@ -1263,7 +1263,7 @@ describe("parseMastraAgentTurnCancelRequest", () => {
 });
 
 describe("MP-5 UI question and answer wire", () => {
-  it("accepts the seven closed tool names with their exact argument schemas", () => {
+  it("accepts the closed tool names with their exact argument schemas", () => {
     const args: Record<string, unknown> = {
       ask_user: { questions: [{ question: "Pick", kind: "text" }] },
       run_app_command: { command: "focusScenes" },
@@ -1286,7 +1286,7 @@ describe("MP-5 UI question and answer wire", () => {
       parseMastraAgentTurnQuestionPayload(
         question({ toolName: "propose_scene_body" }),
       ),
-    ).toEqual({ ok: false, issue: "tool-name" });
+    ).toEqual({ ok: false, issue: "args" });
     expect(
       parseMastraAgentTurnQuestionPayload(question({ approved: true })),
     ).toEqual({ ok: false, issue: "unknown-key" });
@@ -1377,6 +1377,34 @@ describe("MP-5 UI question and answer wire", () => {
               },
             ],
           },
+        }),
+      ),
+    ).toEqual({ ok: false, issue: "args" });
+  });
+
+  it("carries a Main grant for tree and staged scene-body questions", () => {
+    const authorization = {
+      capability: "cap-1",
+      executionId: "execution-1",
+      chatMessageId: "message-1",
+      mainOwnedProvenanceId: "provenance-1",
+    };
+    for (const [toolName, args] of [
+      ["apply_ai_tree_plan", { kind: "scaffold", ops: [{ op: "create" }] }],
+      ["propose_scene_body", { sceneId: "scene-1", text: "Proposal" }],
+    ] as const) {
+      expect(
+        parseMastraAgentTurnQuestionPayload(
+          question({ toolName, args, authorization }),
+        ).ok,
+      ).toBe(true);
+    }
+    expect(
+      parseMastraAgentTurnQuestionPayload(
+        question({
+          toolName: "propose_scene_body",
+          args: { sceneId: "scene-1", text: "Proposal" },
+          authorization: { ...authorization, extra: true },
         }),
       ),
     ).toEqual({ ok: false, issue: "args" });
