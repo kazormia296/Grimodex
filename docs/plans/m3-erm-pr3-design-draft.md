@@ -71,3 +71,13 @@ Status: 草稿（起案者 WrokLayer/M3、2026-11-27）。ADR 015（Proposed）�
 - 候補画面の AI 判定への `cannot-link` の適用を、この PR と PR 2 のどちらに入れるか（§2）。
 - 抽出で版が 1 つ増えることの、確認画面と評価への影響（§3）。
 - 当て直しの対象を「同じ表記」で探すための索引（提案の payload の表記を native で引けるか）。下調べの 3 では、版を足す writer はあるが表記での検索は未確認。
+
+## 8. 下調べ 2（codex-jobs/m3-erm-pr3-facts2.out.md）と、それを受けた案
+
+- **隠した人物**：照合の名簿（`readCurrentCodexEntries`）には「AI に隠す」項目も入り、照合の前に場面ごとの判定は無い。今の構造抽出は AI を使わない（`CodexStructureExtractDialog.tsx` の `useAi: false`、AI の分岐は stub）ので、照合の結果は AI に送られない。ADR 013 は抽出の経路を例外に挙げている。【限界・DR に記録】抽出に AI を使う経路を開けるときは、名簿と規則の結果に場面ごとの隠す判定を掛ける。当てる読み取りは「表記を渡すと結び先が返る」ので、規則を 1 件ずつ引ける入口になる（renderer の中の呼び手に限る。AI の道具と MCP には載せない）。
+- **規則で足す版の出所**：`narrative_proposal_revisions.origin_kind` は CHECK の無い TEXT（今の値は `legacy-unbound`・`enveloped`・`nir1-typed`）。`human-derived` は envelope の `revisionBasis.kind` で、一括承認から外れ、apply は root の系譜を確かめる（`bulk_approval.rs`、`v2_apply_sources.rs`）。作者が確認画面で選ぶ経路（`resolveCodexStructureBinding`）は親の envelope を引き継いで版を足す。【未決・PR 3 の 2 本目の前に決める】規則で足す版を `human-derived` にすると、作者が見ていない結び付けに人の編集の扱いが付く。別の basis の種類にするなら envelope の語彙（契約）が変わるかを先に確かめ、変わるなら伺う。
+- **取込み**：scan import（`scanImportOperations.ts` の `importCodex`・`importRelations`）も novel／Novelcrafter（`importCodexEntries`）も、取り込む項目を既存の項目と名前・別名で照合しない。照合を足すかは伺う（§6）。
+- **変更の伝播**：提案は source basis に `project:codex-catalog:<projectId>` を持ち、名簿（名前・別名）が変わると freshness が古くなる（`source_revision.rs`、`incremental_freshness.rs`）。【起案者案】規則の revision の event も同じ `project:codex-catalog` の identity に対応づけ、規則を変えたら同じ作品の提案を古くする（別名を変えたときと同じ粒度）。古くなった提案は当て直し（§4）か再抽出で新しくなる。DR-M3-39 の「Source なし」はこの PR で改める。
+- **正規化の移植**：JS の `String.prototype.trim` と Rust の `str::trim` は落とす空白が違う（U+FEFF、U+0085 など）。小文字化は ASCII の A〜Z だけ（全角の英字は変えない）。NFC は Unicode の版の差がありうる。共通の試験値にこれらを入れる。
+- **PR の分け方**：(1) 規則の読み書きの IPC と、PR 1 から持ち越した守りの試験 3 件（挙動は変わらない。renderer の wrapper が増えるので perf:budget を先に測る）、(2) 当てる読み取り・抽出への適用・適用の記録・freshness の対応づけ、(3) 当て直し。
+
