@@ -914,6 +914,27 @@ describe("registerIpcRouter fail-soft logging", () => {
     ).not.toBeNull();
   });
 
+  it("rejects a changed propose_scene_body capability input", async () => {
+    const grant = await issueAgentCapability(
+      "propose_scene_body",
+      { sceneId: "scene-1", text: "from the model", mode: "append" },
+      714,
+    );
+    const bound = bindRendererAuthorityForIpc(
+      "agent_propose_scene_body",
+      {
+        payload: agentCapabilityPayload(grant, {
+          sceneId: "scene-1",
+          proposedContent: "changed after issue",
+          mode: "append",
+          sourceSurface: "in-app-agent",
+        }),
+      },
+      714,
+    ).payload;
+    expect(bound).toMatchObject({ authorityRoute: "" });
+  });
+
   it("rejects missing and replayed delete_event capabilities", async () => {
     const grant = await issueAgentCapability(
       "delete_event",
