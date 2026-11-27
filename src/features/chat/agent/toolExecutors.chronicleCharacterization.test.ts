@@ -62,8 +62,9 @@ type Content<T> = { content: T; summary: string; tokensUsed: number };
 const run = async <T = unknown>(
   tool: string,
   params: Record<string, unknown>,
+  context?: Parameters<typeof executeTool>[4],
 ): Promise<Content<T>> => {
-  const result = await executeTool(tool, "c", params);
+  const result = await executeTool(tool, "c", params, undefined, context);
   expect(result.error).toBeUndefined();
   return {
     content: result.content as T,
@@ -202,6 +203,19 @@ describe("年表 4 本の legacy の特性（移す前に通し、移した後�
         useTreeStore.setState({ activeSceneId: "n-s1" }),
       );
       const switched = await run("get_chronicle_state", {});
+      expect(hook.fired()).toBe(true);
+      expect(JSON.stringify(switched)).toBe(JSON.stringify(baseline));
+    });
+
+    it("get_chronicle_state の既定 scene は turn context 作成後に store が切り替わっても開始時のまま", async () => {
+      await setLegacyReadWorld(MAIN_S3);
+      const baseline = await run("get_chronicle_state", {});
+      await setLegacyReadWorld(MAIN_S3);
+      const context = { currentSceneId: "n-s3" };
+      const hook = onFirstCall(() =>
+        useTreeStore.setState({ activeSceneId: "n-s1" }),
+      );
+      const switched = await run("get_chronicle_state", {}, context);
       expect(hook.fired()).toBe(true);
       expect(JSON.stringify(switched)).toBe(JSON.stringify(baseline));
     });

@@ -920,8 +920,10 @@ pub mod ai_audit;
 pub mod backup_restore;
 pub(crate) mod canonical_feed_snapshots;
 pub mod change_events;
-#[cfg(feature = "native-current-human-capture")]
+#[cfg(any(test, feature = "native-current-human-capture"))]
 pub mod chat_typed_writes;
+#[cfg(any(test, feature = "native-current-human-capture"))]
+pub mod mastra_memory;
 pub mod chronicle;
 pub mod chronicle_bulk;
 pub mod chronicle_date_migration;
@@ -932,6 +934,7 @@ pub mod domain_writes;
 pub mod editor_stickies;
 mod execute;
 pub mod foreshadow;
+pub mod identity_correction;
 pub mod fs_replace;
 mod fts;
 mod idempotency;
@@ -1030,6 +1033,8 @@ pub use state::{
 
 #[cfg(test)]
 mod background_checkpoint_tests;
+#[cfg(test)]
+mod identity_correction_schema_tests;
 #[cfg(test)]
 mod seed_schema_parity;
 #[cfg(test)]

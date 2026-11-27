@@ -18,7 +18,7 @@ import {
   CHAT_AGENT_IR_GATE_CLOSED,
   chatAgentIrGateRefusal,
 } from "./chatAgentIr.js";
-import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
+import { nativeSqlPolicyV3 } from "./d2aSqlPolicyFixture.js";
 import { createProfileEgressGate } from "./profileEgress.js";
 
 const mocks = vi.hoisted(() => ({
@@ -77,7 +77,7 @@ function fakeBackend(restricted: boolean) {
         restricted,
         handlesInvalidated: restricted,
         inFlightStopped: true,
-        sqlPolicy: nativeSqlPolicyV2(),
+        sqlPolicy: nativeSqlPolicyV3(),
       }),
     registerProfileEgressCaller: () => {
       calls.push("registerProfileEgressCaller");

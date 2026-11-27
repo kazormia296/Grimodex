@@ -205,6 +205,7 @@ export const PATH_TO_ROLE: Readonly<Record<string, ModelRole>> = {
  *   - agent_call_limit: トランスポートでなく予算ノブ（registry の同一 agent 経路）
  *   - nir1_local_generation_*: Electron の local 生成 route。model は AI 設定の
  *     active な OpenAI 互換 endpoint のもので、role 割り当てを使わない
+ *   - memory_*: Mastra の背景の LLM の route。model は MP-10 の memoryModel の解決で決める
  */
 export const MODEL_ROUTING_EXCLUDED: readonly string[] = [
   "semantic_search",
@@ -219,6 +220,12 @@ export const MODEL_ROUTING_EXCLUDED: readonly string[] = [
   // endpoint の model を使い、role 割り当てを使わない。
   "nir1_local_generation_writing",
   "nir1_local_generation_review",
+  // Mastra の背景の LLM の route（MP-10a）。model は MP-10 の memoryModel の解決
+  // （空なら主 model）で決め、role 割り当てを使わない。旗 M が閉じている間は送らない。
+  "memory_observer",
+  "memory_reflector",
+  "memory_title",
+  "memory_embedding",
 ];
 
 /**

@@ -1,13 +1,16 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getLoadedProjectId } from "@/application/project/currentProjectAuthority";
-import { narrativeMaintenanceInboxList } from "@/application/narrative-extraction/nativeApi";
 import {
+  narrativeMaintenanceHealthSummary,
+  type MaintenanceHealthSummary,
+} from "@/application/narrative-extraction/nativeApi";
+import {
+  isNothingToInspect,
   STALE_BREAKDOWN_KEYS,
-  summarizeInbox,
   type StaleBreakdownKey,
-  type StructureHealthSummary,
 } from "./structureHealthModel";
+import { StaleProposalScenesList } from "./StaleProposalScenesList";
 
 interface Props {
   readonly onClose: () => void;
@@ -17,7 +20,11 @@ type LoadState =
   | { readonly kind: "loading" }
   | { readonly kind: "no-project" }
   | { readonly kind: "failed" }
-  | { readonly kind: "ready"; readonly summary: StructureHealthSummary };
+  | {
+      readonly kind: "ready";
+      readonly projectId: string;
+      readonly summary: MaintenanceHealthSummary;
+    };
 
 const STALE_LABEL_DEFAULTS: Readonly<Record<StaleBreakdownKey, string>> = {
   stale: "根拠の本文が変わった",
@@ -51,10 +58,10 @@ export function StructureHealthPanel({ onClose }: Props) {
         cancelled = true;
       };
     }
-    void narrativeMaintenanceInboxList({ projectId })
-      .then((entries) => {
+    void narrativeMaintenanceHealthSummary({ projectId })
+      .then((summary) => {
         if (!cancelled) {
-          setState({ kind: "ready", summary: summarizeInbox(entries) });
+          setState({ kind: "ready", projectId, summary });
         }
       })
       .catch(() => {
@@ -90,7 +97,7 @@ export function StructureHealthPanel({ onClose }: Props) {
           </div>
           <button
             type="button"
-            className="rounded border border-border px-2 py-1 text-xs"
+            className="shrink-0 whitespace-nowrap rounded border border-border px-2 py-1 text-xs"
             onClick={onClose}
           >
             {t("common.close", "閉じる")}
@@ -134,7 +141,7 @@ export function StructureHealthPanel({ onClose }: Props) {
                 )}
               </p>
             )}
-            {state.kind === "ready" && state.summary.nothingToInspect && (
+            {state.kind === "ready" && isNothingToInspect(state.summary) && (
               <p
                 className="text-muted-foreground"
                 data-testid="structure-health-empty"
@@ -145,7 +152,7 @@ export function StructureHealthPanel({ onClose }: Props) {
                 )}
               </p>
             )}
-            {state.kind === "ready" && !state.summary.nothingToInspect && (
+            {state.kind === "ready" && !isNothingToInspect(state.summary) && (
               <dl className="space-y-1" data-testid="structure-health-counts">
                 <div className="flex justify-between gap-3">
                   <dt>
@@ -211,6 +218,12 @@ export function StructureHealthPanel({ onClose }: Props) {
               </dl>
             )}
           </div>
+          {state.kind === "ready" && state.summary.proposalsStale > 0 && (
+            <StaleProposalScenesList
+              projectId={state.projectId}
+              onOpened={onClose}
+            />
+          )}
         </div>
 
         <p

@@ -79,8 +79,10 @@ describe("turn coordinator", () => {
 
     coordinator.claim(turn);
     coordinator.transition(turn, "streaming");
+    expect(turn.abortController.signal.aborted).toBe(false);
     expect(coordinator.abort(turn)).toBe(true);
     expect(turn.aborted).toBe(true);
+    expect(turn.abortController.signal.aborted).toBe(true);
     expect(turn.phase).toBe("aborted");
     expect(coordinator.isCurrent(turn)).toBe(true);
     expect(coordinator.release(turn)).toBe(true);

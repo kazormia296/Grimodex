@@ -33,6 +33,7 @@ import { isAgentForeshadowSecretInputSupported } from "../shared/agentForeshadow
 import {
   hasMastraAgentTurnForbiddenKey,
   isMastraAgentTurnCommand,
+  MASTRA_AGENT_TURN_ANSWER_COMMAND,
   mastraAgentTurnRefusalValue,
 } from "../shared/mastraAgentTurnWire.js";
 import type {
@@ -161,6 +162,9 @@ const RENDERER_CHRONICLE_COMMANDS = new Set([
 ]);
 
 const HUMAN_ONLY_CANONICAL_WRITER_COMMANDS = new Set([
+  // entity_tags_set stays in this set so that an origin without a route is
+  // still blanked (bound) below; authorityRouteForRendererCommand gives it
+  // import-apply as well, before the human-only branch.
   "entity_tags_set",
   "project_create",
   "project_patch",
@@ -329,6 +333,7 @@ const RELATED_SCENES_MUTATION_WAKE_COMMANDS = new Set([
   "narrative_extraction_append_decision",
   "narrative_extraction_append_human_decision",
   "narrative_extraction_chronicle_bulk_approve",
+  "narrative_extraction_reapprove_applied_proposals",
   "narrative_extraction_revise_and_decide",
   "narrative_extraction_revise_and_decide_as_human",
   "narrative_extraction_apply_commit",
@@ -1608,7 +1613,8 @@ function bindMainOwnedAgentMutation(
   return bound;
 }
 
-async function issueAgentAuthorityCapabilitiesForSender(
+/** Main-only authority issuer shared by the legacy invoke and Mastra turn loop. */
+export async function issueAgentAuthorityCapabilitiesForSender(
   senderId: number,
   args: CommandArgs,
   response: unknown,
@@ -1697,7 +1703,8 @@ async function issueAgentAuthorityCapabilitiesForSender(
   return { ...response, agentAuthorityCapabilities: issued };
 }
 
-function consumeAgentAuthorityCapability(
+/** Main-only one-shot capability consumer shared by renderer and Main writers. */
+export function consumeAgentAuthorityCapability(
   cmd: string,
   payload: CommandArgs,
   senderId: number,
@@ -1939,6 +1946,16 @@ function authorityRouteForRendererCommand(
 
   if (IMPORT_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd)) {
     return authorityRouteForUnambiguousOrigin(payload.origin, ["import-apply"]);
+  }
+
+  // The Codex import sets an imported entry's tags in the same import session
+  // as the entry itself (importApi.ts), so the tag writer takes import-apply
+  // as well as human-direct, like the other typed writers the import uses.
+  if (cmd === "entity_tags_set") {
+    return authorityRouteForUnambiguousOrigin(payload.origin, [
+      "human-direct",
+      "import-apply",
+    ]);
   }
 
   if (HUMAN_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd)) {
@@ -2335,7 +2352,8 @@ export function registerIpcRouter(
         // Main's (the identity below replaces `callerIdentity`, so it is read
         // here, before that).
         const mastraForgedKey =
-          isMastraAgentTurnCommand(cmd) &&
+          (isMastraAgentTurnCommand(cmd) ||
+            cmd === MASTRA_AGENT_TURN_ANSWER_COMMAND) &&
           hasMastraAgentTurnForbiddenKey(rendererSafeArgs);
         const callerIdentity = profileEgress?.issueCallerIdentity(
           event.sender.id,
@@ -2425,6 +2443,9 @@ export function registerIpcRouter(
             };
           }
         }
+        if (cmd === MASTRA_AGENT_TURN_ANSWER_COMMAND && mastraForgedKey) {
+          return { ok: true, value: { status: "refused", reason: "invalid" } };
+        }
         const dispatch = async (args = dispatchArgs): Promise<Envelope> => {
           // D-10 (DR-DA2-18): an admitted stream is recorded until its invoke
           // settles, so stage 2 can send it a typed terminal.
@@ -2436,7 +2457,8 @@ export function registerIpcRouter(
               shell: {
                 ...buildShellCommandHandlers(win),
                 ...injectedHandlers,
-                ...(isMastraAgentTurnCommand(cmd)
+                ...(isMastraAgentTurnCommand(cmd) ||
+                cmd === MASTRA_AGENT_TURN_ANSWER_COMMAND
                   ? mastraAgentTurn.handlersFor({
                       sender: event.sender,
                       win,

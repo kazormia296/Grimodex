@@ -188,20 +188,34 @@ describe("createChatTurnToolContext", () => {
     vi.clearAllMocks();
   });
 
-  it("B-T5: returns the very same functions while the constant is false", () => {
-    const context = createChatTurnToolContext(input);
-    expect(context.executeTool).toBe(executeTool);
-    expect(context.executeReadOnlyTool).toBe(executeReadOnlyTool);
+  it("passes only the pinned scene while the IR gate is false", async () => {
+    const turn = { ...input };
+    const context = createChatTurnToolContext(turn);
+    turn.currentSceneId = "scene-2";
+    await context.executeTool("search_events", "t1", {});
+    await context.executeReadOnlyTool("search_events", "t2", {});
+    expect(executeTool.mock.calls[0]![4]).toEqual({
+      currentSceneId: "scene-1",
+    });
+    expect(executeReadOnlyTool.mock.calls[0]![3]).toEqual({
+      currentSceneId: "scene-1",
+    });
     const record = { params: {} } as { params: object; usedIds?: unknown };
     context.attachUsedIds(record as never);
     expect(record.usedIds).toBeUndefined();
   });
 
-  it("returns the same functions for a send that is not a private Agent's", () => {
+  it("passes only the pinned scene for a send that is not a private Agent's", async () => {
     gate.enabled = true;
     const context = createChatTurnToolContext({ ...input, enabled: false });
-    expect(context.executeTool).toBe(executeTool);
-    expect(context.executeReadOnlyTool).toBe(executeReadOnlyTool);
+    await context.executeTool("search_events", "t1", {});
+    await context.executeReadOnlyTool("search_events", "t2", {});
+    expect(executeTool.mock.calls[0]![4]).toEqual({
+      currentSceneId: "scene-1",
+    });
+    expect(executeReadOnlyTool.mock.calls[0]![3]).toEqual({
+      currentSceneId: "scene-1",
+    });
   });
 
   it("binds scope and ir to the main agent, and the scope only to the sub-agent", async () => {
@@ -213,6 +227,7 @@ describe("createChatTurnToolContext", () => {
     await context.executeTool("search_events", "t1", params, authorization);
     const [, , , auth, main] = executeTool.mock.calls[0]!;
     expect(auth).toBe(authorization);
+    expect(main?.currentSceneId).toBe("scene-1");
     expect(main?.scope).toEqual({ projectId: "p1", currentSceneId: "scene-1" });
     expect(main?.ir).toMatchObject({
       workspacePath: "/w",
@@ -224,9 +239,10 @@ describe("createChatTurnToolContext", () => {
     await context.executeReadOnlyTool("search_events", "t2", params);
     const sub = executeReadOnlyTool.mock.calls[0]![3];
     expect(sub).toEqual({
+      currentSceneId: "scene-1",
       scope: { projectId: "p1", currentSceneId: "scene-1" },
     });
-    expect(Object.keys(sub!)).toEqual(["scope"]);
+    expect(Object.keys(sub!)).toEqual(["currentSceneId", "scope"]);
   });
 
   it("normalizes an empty Scene id to null and floors the cap at 1 token", async () => {
@@ -239,6 +255,7 @@ describe("createChatTurnToolContext", () => {
     });
     await context.executeTool("search_events", "t1", {});
     const main = executeTool.mock.calls[0]![4];
+    expect(main?.currentSceneId).toBeNull();
     expect(main?.scope?.currentSceneId).toBeNull();
     expect(main?.ir?.workspacePath).toBeNull();
     expect(main?.ir?.tokenCap).toBe(1);

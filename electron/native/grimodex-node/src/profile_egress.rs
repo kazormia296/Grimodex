@@ -1477,7 +1477,7 @@ mod tests {
         let status = state.status();
         let policy = grimodex_db::profile_egress_policy::sql_policy_for_status();
         assert_eq!(status.sql_policy.version, policy.version);
-        assert_eq!(status.sql_policy.version, 2);
+        assert_eq!(status.sql_policy.version, 3);
         assert_eq!(status.sql_policy.closed_tables, policy.closed_tables);
         assert_eq!(status.sql_policy.read_open_tables, policy.read_open_tables);
         assert_eq!(

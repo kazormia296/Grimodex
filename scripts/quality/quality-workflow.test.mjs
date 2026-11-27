@@ -2598,10 +2598,24 @@ test("agent operation contracts keep candidate evidence and bounded identity che
     "the Full requirement must be scoped to the release path",
   );
   assert.match(bump, /release commit後.*cleanなHEAD.*Quick.*verify/is);
+  // The release Full is the hosted canonical-ci.yml Full; a local Full is
+  // refused outside a hosted job and is never release evidence (GDX-TRACE-001).
   assert.match(
     bump,
-    /release_base.*release_head.*ci:local:full.*ci:local:verify/is,
+    /release_base.*release_head.*gh workflow run canonical-ci\.yml --ref master -f profile=full -f candidate_base="\$release_base" -f candidate_head="\$release_head"/is,
   );
+  assert.match(
+    bump,
+    /同じtupleで`pnpm ci:local:full -- --aggregate`と`pnpm ci:local:verify -- full`を実行する`full-aggregate`が、最後のattemptで成功したrunだけを、completeなrelease Full receiptとする/,
+  );
+  assert.match(bump, /release Fullとして扱えるのは、`headSha`が`release_head`と一致するrunだけ/);
+  assert.match(bump, /別のheadのFullは、成功していてもrelease Fullに数えない/);
+  assert.match(bump, /masterがrelease commitより先に進んだ場合.*dispatchもtagもせずに停止して報告する/s);
+  assert.doesNotMatch(
+    bump,
+    /^\s*pnpm ci:local:(?:full|verify) -- (?:full )?--base "\$release_base"/m,
+  );
+  assert.match(bump, /失敗jobだけの再実行（`--failed`）は使わない/);
   assert.match(
     bump,
     /tag／Draft Releaseが依頼範囲に含まれ.*CIが許可され.*mergeが完了した場合だけ.*Full/is,
@@ -5792,14 +5806,20 @@ test("NIR-1 continuation record keeps verbatim user decisions and the bounded de
       `${k} must not be recorded as confirmed by Session A`,
     );
   }
-  // The bump-version release Full still names a local Full; it is recorded as
-  // an open [policy] mismatch rather than edited from G0.
+  // The bump-version release Full named a local Full; it was recorded as an
+  // open [policy] mismatch rather than edited from G0. #1156 (2026-11-26) moved
+  // the skill to the hosted Full, so the line now carries a resolved note in
+  // front and keeps the original sentence as the record of its time.
   const openIssues = normalizeSection(
     sectionFromHeading(record, "## 11. 未解決事項"),
   );
   assert.match(
     openIssues,
     /`\[policy\]` `\.agents\/skills\/bump-version\/SKILL\.md` の手順9（97行目）は、release commit の Full に、ローカルの `pnpm ci:local:full -- --base "\$release_base" --head "\$release_head"` を指示したままである。.*GDX-TRACE-001.*食い違う。.*G0 では skill を編集しない/,
+  );
+  assert.match(
+    openIssues,
+    /\*\*解決済み（2026-11-26、#1156。[^\n]*\*\*：[^\n]*以下は当時の記述のまま残す。`\[policy\]` `\.agents\/skills\/bump-version\/SKILL\.md` の手順9/,
   );
   await assertLocalMarkdownLink(recordPath, PROPOSAL6_DRAFT_PATH);
   await assertLocalMarkdownLink(

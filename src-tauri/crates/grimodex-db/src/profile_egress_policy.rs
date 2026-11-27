@@ -5,8 +5,9 @@
 //! with the startup status; main consumes that wire value for early routing,
 //! while SQLite remains the enforcement authority.
 //!
-//! Policy version 2 (K3/2 "表の台帳") splits the protected inventory into two
-//! classes.  A table is declared exactly once, with its class, in
+//! Policy version 3 extends the K3/2 "表の台帳" inventory with the closed
+//! Mastra storage tables and keeps the two protected classes explicit.
+//! A table is declared exactly once, with its class, in
 //! [`PROFILE_EGRESS_TABLES`]; there is no default class and no prefix rule, so
 //! adding a table to the ledger without deciding `closed` or `read-open` does
 //! not compile, and a schema table that is neither declared here nor pinned as
@@ -16,7 +17,7 @@ use serde::Serialize;
 
 /// Version of the table/column inventory carried by the Native startup status.
 /// An unknown version is unavailable at the Electron boundary (fail closed).
-pub const PROFILE_EGRESS_POLICY_VERSION: u32 = 2;
+pub const PROFILE_EGRESS_POLICY_VERSION: u32 = 3;
 
 /// Whether restricted generic SQL may read the `read-open` class.
 ///
@@ -62,11 +63,11 @@ const fn read_open(name: &'static str) -> ProfileEgressTable {
     }
 }
 
-/// The D2a table ledger: 26 `closed` and 58 `read-open` tables, enumerated by
+/// The D2a table ledger: 37 `closed` and 58 `read-open` tables, enumerated by
 /// name (never by prefix).  FTS shadow tables carry the class of their
 /// content table because they hold the same plaintext.
 pub const PROFILE_EGRESS_TABLES: &[ProfileEgressTable] = &[
-    // closed (26)
+    // closed (37)
     closed("narrative_apply_commits"),
     closed("narrative_apply_operations"),
     closed("narrative_commit_journals"),
@@ -92,7 +93,18 @@ pub const PROFILE_EGRESS_TABLES: &[ProfileEgressTable] = &[
     closed("nir1_generation_message_versions"),
     closed("nir1_generation_qualification_refs"),
     closed("idempotency_requests"),
+    closed("identity_correction_applications"),
+    closed("identity_correction_rule_revisions"),
+    closed("identity_lineage_mappings"),
+    closed("identity_lineage_operations"),
+    closed("identity_lineage_reference_assignments"),
     closed("messages"),
+    closed("mastra_memory_vectors"),
+    closed("mastra_memory_vector_indexes"),
+    closed("mastra_message_parts"),
+    closed("mastra_observational_memory"),
+    closed("mastra_resources"),
+    closed("mastra_thread_metadata"),
     // read-open (58)
     read_open("ab_comparison_runs"),
     read_open("ab_comparisons"),
@@ -276,9 +288,11 @@ mod tests {
             .map(|table| table.name)
             .collect::<BTreeSet<_>>();
         assert_eq!(all.len(), PROFILE_EGRESS_TABLES.len(), "duplicate table");
-        assert_eq!(PROFILE_EGRESS_TABLES.len(), 84);
-        // K3/2 "表の台帳": closed 26 + read-open 58 = the 84-table inventory.
-        assert_eq!(names_of(ProfileEgressTableClass::Closed).len(), 26);
+        assert_eq!(PROFILE_EGRESS_TABLES.len(), 95);
+        // K3/2 "表の台帳" plus the six closed MP-7 tables (32), plus the five
+        // closed ERM tables (SCHEMA 48 / DR-M3-39; typed readers/writers only,
+        // author-approved new storage, contracts M3 record): 37 + 58 = 95.
+        assert_eq!(names_of(ProfileEgressTableClass::Closed).len(), 37);
         assert_eq!(names_of(ProfileEgressTableClass::ReadOpen).len(), 58);
         for table in PROFILE_EGRESS_TABLES {
             assert_eq!(table.name, table.name.to_ascii_lowercase());
@@ -289,6 +303,11 @@ mod tests {
     #[test]
     fn closed_class_is_exactly_the_confirmed_enumeration_not_a_prefix_rule() {
         let expected: BTreeSet<&str> = [
+            "identity_correction_applications",
+            "identity_correction_rule_revisions",
+            "identity_lineage_mappings",
+            "identity_lineage_operations",
+            "identity_lineage_reference_assignments",
             "narrative_apply_commits",
             "narrative_apply_operations",
             "narrative_commit_journals",
@@ -315,6 +334,12 @@ mod tests {
             "nir1_generation_qualification_refs",
             "idempotency_requests",
             "messages",
+            "mastra_memory_vectors",
+            "mastra_memory_vector_indexes",
+            "mastra_message_parts",
+            "mastra_observational_memory",
+            "mastra_resources",
+            "mastra_thread_metadata",
         ]
         .into_iter()
         .collect();
@@ -429,10 +454,10 @@ mod tests {
     }
 
     #[test]
-    fn status_policy_is_version_two_with_three_separate_sets() {
+    fn status_policy_is_version_three_with_three_separate_sets() {
         let policy = sql_policy_for_status();
-        assert_eq!(policy.version, 2);
-        assert_eq!(policy.closed_tables.len(), 26);
+        assert_eq!(policy.version, 3);
+        assert_eq!(policy.closed_tables.len(), 37);
         assert_eq!(policy.read_open_tables.len(), 58);
         assert_eq!(policy.read_open_columns.len(), 2);
         let closed = policy.closed_tables.iter().collect::<BTreeSet<_>>();

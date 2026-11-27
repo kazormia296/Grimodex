@@ -104,6 +104,7 @@ use grimodex_db::lint_terms::{
     self, InsertPayload as LintTermInsertPayload, UpdatePayload as LintTermUpdatePayload,
 };
 use grimodex_db::map_writes::{self, MapWritePayload};
+use grimodex_db::mastra_memory::{self as memory, MemoryVectorInput};
 use grimodex_db::narrative_extraction::{
     self, is_transient_maintenance_preemption, AttentionDisposition, AutomaticRunKind,
     FreshnessLifecycleControl, GetNarrativeBackfillStatusPayload, GraphWorkControl, GraphWorkStage,
@@ -112,10 +113,11 @@ use grimodex_db::narrative_extraction::{
     MaintenanceCycleRequest, MaintenanceCycleStatus, MaintenanceWorkspaceBinding,
     NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
     NarrativeMaintenanceCiConfig, NarrativeMaintenanceCiFault, NarrativeMaintenanceCiTrigger,
-    NarrativeMaintenanceInboxListPayload, RebuildDerivedStateOutcome,
-    RebuildNarrativeDerivedStatePayload, RepairNarrativeDependencyDeclarationsPayload,
-    RetryNarrativeLegacyBackfillPayload, RunRefPayload, TemporalScenePatchPayload,
-    VerifyNarrativeDependencyGraphPayload, WorkKey,
+    NarrativeMaintenanceHealthSummaryPayload, NarrativeMaintenanceInboxListPayload,
+    NarrativeMaintenanceStaleProposalScenesPayload,
+    RebuildDerivedStateOutcome, RebuildNarrativeDerivedStatePayload,
+    RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
+    RunRefPayload, TemporalScenePatchPayload, VerifyNarrativeDependencyGraphPayload, WorkKey,
 };
 use grimodex_db::narrative_extraction::{validation_terminated, ValidationTerminationReason};
 use grimodex_db::open::{
@@ -626,6 +628,19 @@ mod narrative_extraction_workspace_binding_tests {
             }))
             .await;
         assert!(unknown_field.is_err(), "unknown payload fields are refused");
+        for unexpected in [
+            serde_json::json!({"projectId":"p","targets":[],"authorityRoute":"review"}),
+            serde_json::json!({"projectId":"p","targets":[{"proposalId":"p","revisionId":"r","actor":"human"}]}),
+        ] {
+            let error = backend
+                .narrative_extraction_reapprove_applied_proposals(unexpected)
+                .await
+                .expect_err("RA accepts only project and target identities");
+            assert!(
+                error.reason.starts_with("NEX_REAPPROVE_INVALID:"),
+                "{error}"
+            );
+        }
         let unknown_run = backend
             .narrative_extraction_chronicle_bulk_approve(serde_json::json!({
                 "projectId": "project-1",
@@ -2897,6 +2912,32 @@ where
         .await
         .map_err(join_err_to_napi)?
         .map_err(app_err_to_napi)
+}
+
+async fn run_memory_operation<T, F>(state: Arc<AppState>, operation: F) -> Result<String>
+where
+    T: serde::Serialize + Send + 'static,
+    F: FnOnce(&Database) -> anyhow::Result<T> + Send + 'static,
+{
+    run_blocking(move || with_db_state(&state.ws, |db| Ok(serde_json::to_string(&operation(db)?)?)))
+        .await
+}
+
+async fn run_memory_payload<P, T, F>(
+    state: Arc<AppState>,
+    payload: serde_json::Value,
+    operation: F,
+) -> Result<String>
+where
+    P: serde::de::DeserializeOwned + Send + 'static,
+    T: serde::Serialize + Send + 'static,
+    F: FnOnce(&Database, P) -> anyhow::Result<T> + Send + 'static,
+{
+    run_blocking(move || {
+        let request = from_wire("payload", payload)?;
+        with_db_state(&state.ws, |db| Ok(serde_json::to_string(&operation(db, request)?)?))
+    })
+    .await
 }
 
 fn emit_workspace_lifecycle_view(state: &AppState, view: &WorkspaceLifecycleView) {
@@ -10925,6 +10966,190 @@ impl Backend {
         .await
     }
 
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_thread_read(&self, payload: serde_json::Value) -> Result<String> {
+        run_memory_payload(Arc::clone(&self.state), payload, memory::thread_read).await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_thread_write(&self, payload: serde_json::Value) -> Result<String> {
+        run_memory_payload(Arc::clone(&self.state), payload, memory::thread_write).await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_thread_delete(&self, payload: serde_json::Value) -> Result<String> {
+        run_memory_payload(Arc::clone(&self.state), payload, memory::thread_delete).await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_message_read(&self, payload: serde_json::Value) -> Result<String> {
+        run_memory_payload(Arc::clone(&self.state), payload, memory::message_read).await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_message_write(&self, payload: serde_json::Value) -> Result<String> {
+        run_memory_payload(Arc::clone(&self.state), payload, memory::message_write).await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_message_delete(&self, payload: serde_json::Value) -> Result<String> {
+        run_memory_payload(Arc::clone(&self.state), payload, memory::message_delete).await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_resource_read(&self, payload: serde_json::Value) -> Result<String> {
+        run_memory_payload(Arc::clone(&self.state), payload, memory::resource_read).await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_resource_write(&self, payload: serde_json::Value) -> Result<String> {
+        run_memory_payload(Arc::clone(&self.state), payload, memory::resource_write).await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_observational_memory_read(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        run_memory_payload(
+            Arc::clone(&self.state),
+            payload,
+            memory::observational_memory_read,
+        )
+        .await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_observational_memory_write(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        run_memory_payload(
+            Arc::clone(&self.state),
+            payload,
+            memory::observational_memory_write,
+        )
+        .await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_vector_create_index(
+        &self,
+        index_name: String,
+        dimension: u32,
+    ) -> Result<String> {
+        run_memory_operation(Arc::clone(&self.state), move |db| {
+            memory::vector_create_index(db, &index_name, dimension as usize)
+        })
+        .await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_vector_upsert(
+        &self,
+        index_name: String,
+        vectors: serde_json::Value,
+    ) -> Result<String> {
+        run_memory_payload(
+            Arc::clone(&self.state),
+            vectors,
+            move |db, vectors: Vec<MemoryVectorInput>| {
+                memory::vector_upsert(db, &index_name, &vectors)
+            },
+        )
+        .await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_vector_query(
+        &self,
+        index_name: String,
+        query: Vec<f64>,
+        top_k: u32,
+    ) -> Result<String> {
+        let query = query.into_iter().map(|value| value as f32).collect::<Vec<_>>();
+        run_memory_operation(Arc::clone(&self.state), move |db| {
+            memory::vector_query(db, &index_name, &query, top_k as usize)
+        })
+        .await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_vector_list_indexes(&self) -> Result<String> {
+        run_memory_operation(Arc::clone(&self.state), memory::vector_list_indexes).await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_vector_describe_index(&self, index_name: String) -> Result<String> {
+        run_memory_operation(Arc::clone(&self.state), move |db| {
+            memory::vector_describe_index(db, &index_name)
+        })
+        .await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_vector_delete_index(&self, index_name: String) -> Result<String> {
+        run_memory_operation(Arc::clone(&self.state), move |db| {
+            memory::vector_delete_index(db, &index_name)
+        })
+        .await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_vector_update(
+        &self,
+        index_name: String,
+        id: String,
+        vector: Option<Vec<f64>>,
+        metadata: Option<serde_json::Value>,
+    ) -> Result<String> {
+        let vector: Option<Vec<f32>> =
+            vector.map(|values| values.into_iter().map(|value| value as f32).collect());
+        run_memory_operation(Arc::clone(&self.state), move |db| {
+            memory::vector_update(db, &index_name, &id, vector.as_deref(), metadata.as_ref())
+        })
+        .await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_vector_delete(&self, index_name: String, id: String) -> Result<String> {
+        run_memory_operation(Arc::clone(&self.state), move |db| {
+            memory::vector_delete(db, &index_name, &id)
+        })
+        .await
+    }
+
+    /// Main-only typed Mastra memory access. This is intentionally absent from renderer IPC.
+    #[napi]
+    pub async fn memory_vector_delete_many(
+        &self,
+        index_name: String,
+        ids: Vec<String>,
+    ) -> Result<String> {
+        run_memory_operation(Arc::clone(&self.state), move |db| {
+            memory::vector_delete_many(db, &index_name, &ids)
+        })
+        .await
+    }
+
     /// DA-2b CW (DR-DA2-50): delete messages of one chat session. Typed
     /// `internal` writer; Main attaches the caller identity as the trailing
     /// sidecar. Returns `{"deleted":n}`.
@@ -13980,6 +14205,26 @@ impl Backend {
         serde_json::to_string(&status).map_err(|error| Error::from_reason(error.to_string()))
     }
 
+    /// Embed arbitrary bounded text locally for main-process memory adapters.
+    #[napi]
+    pub async fn memory_embed_texts(&self, language: String, texts: Vec<String>) -> Result<String> {
+        if !(1..=64).contains(&texts.len())
+            || texts
+                .iter()
+                .any(|text| text.is_empty() || text.chars().count() > 16_384)
+        {
+            return Err(Error::from_reason("MEMORY_EMBED_INVALID_INPUT"));
+        }
+        let semantic = Arc::clone(&self.state.semantic);
+        run_blocking(move || {
+            let response = semantic
+                .memory_embed_texts(&language, &texts)
+                .map_err(anyhow::Error::from)?;
+            Ok(serde_json::to_string(&response).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
     #[napi]
     pub async fn semantic_index_scene(
         &self,
@@ -15633,6 +15878,25 @@ impl Backend {
         .await
     }
 
+    /// Read-only: list applied proposals eligible for reapproval in one project, one page.
+    #[napi]
+    pub async fn narrative_extraction_list_redecidable_proposals(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: narrative_extraction::ListRedecidableProposalsPayload =
+                from_wire("payload", payload).map_err(|error| anyhow::anyhow!("NEX_REDECIDABLE_PROPOSALS_INPUT_INVALID: {error}"))?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(
+                    &narrative_extraction::narrative_extraction_list_redecidable_proposals(db, dto)?,
+                )?)
+            })
+        })
+        .await
+    }
+
     #[napi]
     pub async fn narrative_extraction_is_run_resumable_for_review(
         &self,
@@ -15857,6 +16121,32 @@ impl Backend {
                 )
             },
         )
+        .await
+    }
+
+    /// Reapprove restored Chronicle events as the human reviewer, checking each target before writing.
+    #[napi]
+    pub async fn narrative_extraction_reapprove_applied_proposals(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let _workspace_operation = state
+                .begin_workspace_operation()
+                .map_err(AppError::Anyhow)?;
+            let dto = serde_json::from_value(payload)
+                .map_err(|e| AppError::Anyhow(anyhow::anyhow!("NEX_REAPPROVE_INVALID: {e}")))?;
+            with_db_state(&state.ws, |db| {
+                let result =
+                    narrative_extraction::narrative_extraction_reapprove_applied_proposals(
+                        db,
+                        dto,
+                        &mut || chronicle_bulk_approve_stop_requested(&state),
+                    )?;
+                Ok(serde_json::to_string(&result)?)
+            })
+        })
         .await
     }
 
@@ -16375,6 +16665,26 @@ impl Backend {
         .await
     }
 
+    /// Read-only aggregate maintenance health counts for one project as of now.
+    #[napi]
+    pub async fn narrative_maintenance_health_summary(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: NarrativeMaintenanceHealthSummaryPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let now = grimodex_core::now_rfc3339_millis();
+                let summary = db.with_conn(|conn| {
+                    narrative_extraction::maintenance_health_summary(conn, &dto.project_id, &now)
+                })?;
+                Ok(serde_json::to_string(&summary)?)
+            })
+        })
+        .await
+    }
+
     /// Read-only count of stale proposals for one project as of now.
     #[napi]
     pub async fn narrative_maintenance_stale_proposal_count(
@@ -16390,6 +16700,33 @@ impl Backend {
                     narrative_extraction::count_stale_proposals(conn, &dto.project_id, &now)
                 })?;
                 Ok(serde_json::to_string(&serde_json::json!({ "count": count }))?)
+            })
+        })
+        .await
+    }
+
+    /// Read-only scene counts for stale proposals in one project.
+    #[napi]
+    pub async fn narrative_maintenance_stale_proposal_scenes(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: NarrativeMaintenanceStaleProposalScenesPayload =
+                from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let now = grimodex_core::now_rfc3339_millis();
+                let page = db.with_conn(|conn| {
+                    narrative_extraction::stale_proposal_scenes(
+                        conn,
+                        &dto.project_id,
+                        &now,
+                        dto.cursor.as_deref(),
+                        dto.limit,
+                    )
+                })?;
+                Ok(serde_json::to_string(&page)?)
             })
         })
         .await
@@ -17052,11 +17389,14 @@ impl Backend {
     /// 未登録 ID は将来の同 ID 登録だけに効く bounded tombstone となり false を返す。
     #[napi]
     pub async fn abort_chat_stream(&self, stream_id: String) -> Result<bool> {
-        self.state
-            .chat_streams
-            .abort(&stream_id)
-            .await
-            .map_err(native_ai_error_to_napi)
+        // One execution ID can own either a chat stream or a non-stream agent send.
+        let (agent_aborted, chat_aborted) = tokio::join!(
+            self.state.agent_sends.abort(&stream_id),
+            self.state.chat_streams.abort(&stream_id),
+        );
+        let agent_aborted = agent_aborted.map_err(native_ai_error_to_napi)?;
+        let chat_aborted = chat_aborted.map_err(native_ai_error_to_napi)?;
+        Ok(agent_aborted || chat_aborted)
     }
 
     /// インライン AI のストリーミング送信。`inline-ai:stream-*` へ emit し、
@@ -17193,68 +17533,94 @@ impl Backend {
         api_key: String,
     ) -> Result<String> {
         let req: AgentRequest = from_wire("args", args).map_err(app_err_to_napi)?;
-        let dispatch = begin_profile_egress_dispatch(&self.state, req.caller_identity.as_ref())?;
-        let audit_context = req.audit_context.clone();
-        let audit_workspace =
-            pin_native_ai_audit_workspace(&self.state, &audit_context).map_err(app_err_to_napi)?;
-        let settings: grimodex_ai::AiSettings =
-            from_wire("settings", settings).map_err(app_err_to_napi)?;
-        let settings_for_call = grimodex_ai::apply_provider_override(
-            settings,
-            req.model.as_deref(),
-            req.provider,
-            req.endpoint_id.as_deref(),
-        );
-        grimodex_ai::validate_expected_ollama_endpoint(
-            &settings_for_call.provider,
-            &settings_for_call.ollama_endpoint,
-            req.expected_ollama_endpoint.as_deref(),
-        )
-        .map_err(native_ai_error_to_napi)?;
-        let variant = req.api_variant.as_deref();
-        let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
-        let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
-        let resolved_variant =
-            grimodex_ai::resolve_api_variant(variant, &settings_for_call, &settings_for_call.model);
-        let mut params = grimodex_ai::build_chat_params(
-            &settings_for_call,
-            &api_key,
-            extra_body,
-            retry_429,
-            grimodex_ai::AiNovelistMode::Chat,
-            resolved_variant,
-            req.thinking,
-            req.effort,
-            req.reasoning_enabled,
-            req.reasoning_effort,
-            req.system_cache_segments,
-            req.system_volatile_tail,
-            req.web_search,
-        );
-        params.request_max_output_tokens = req.request_max_output_tokens;
-        if let Some(resolved_tool_protocol) = req.resolved_tool_protocol {
-            params.resolved_tool_protocol = resolved_tool_protocol;
-        }
-        attach_native_ai_http_observer(
-            &mut params,
-            &settings_for_call,
-            &audit_workspace,
-            audit_context,
-        );
-        dispatch
-            .ensure_open()
-            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
-        let result = dispatch
-            .until_cancelled(grimodex_ai::send_chat_with_tools(
-                &params,
-                &req.messages,
-                &req.tools,
-            ))
-            .await
-            .map_err(|error| Error::from_reason(format!("{error:#}")))?
+        let execution_id = req.audit_context.execution_id.clone();
+        let cancellation = self
+            .state
+            .agent_sends
+            .register(&execution_id)
             .map_err(native_ai_error_to_napi)?;
-        serde_json::to_string(&result)
-            .map_err(|e| Error::from_reason(format!("failed to serialize ChatResponse: {e}")))
+        let outcome: Result<String> = async {
+            let dispatch =
+                begin_profile_egress_dispatch(&self.state, req.caller_identity.as_ref())?;
+            let audit_context = req.audit_context.clone();
+            let audit_workspace = pin_native_ai_audit_workspace(&self.state, &audit_context)
+                .map_err(app_err_to_napi)?;
+            let settings: grimodex_ai::AiSettings =
+                from_wire("settings", settings).map_err(app_err_to_napi)?;
+            let settings_for_call = grimodex_ai::apply_provider_override(
+                settings,
+                req.model.as_deref(),
+                req.provider,
+                req.endpoint_id.as_deref(),
+            );
+            grimodex_ai::validate_expected_ollama_endpoint(
+                &settings_for_call.provider,
+                &settings_for_call.ollama_endpoint,
+                req.expected_ollama_endpoint.as_deref(),
+            )
+            .map_err(native_ai_error_to_napi)?;
+            let variant = req.api_variant.as_deref();
+            let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
+            let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
+            let resolved_variant = grimodex_ai::resolve_api_variant(
+                variant,
+                &settings_for_call,
+                &settings_for_call.model,
+            );
+            let mut params = grimodex_ai::build_chat_params(
+                &settings_for_call,
+                &api_key,
+                extra_body,
+                retry_429,
+                grimodex_ai::AiNovelistMode::Chat,
+                resolved_variant,
+                req.thinking,
+                req.effort,
+                req.reasoning_enabled,
+                req.reasoning_effort,
+                req.system_cache_segments,
+                req.system_volatile_tail,
+                req.web_search,
+            );
+            params.request_max_output_tokens = req.request_max_output_tokens;
+            if let Some(resolved_tool_protocol) = req.resolved_tool_protocol {
+                params.resolved_tool_protocol = resolved_tool_protocol;
+            }
+            attach_native_ai_http_observer(
+                &mut params,
+                &settings_for_call,
+                &audit_workspace,
+                audit_context,
+            );
+            dispatch
+                .ensure_open()
+                .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+            let result = tokio::select! {
+                biased;
+                () = cancellation.wait_abort_requested() => {
+                    // 停止の障壁が同時に働いていれば、利用者の停止に隠さず拒否を返す。
+                    dispatch
+                        .ensure_open()
+                        .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+                    return Err(Error::from_reason("AI_REQUEST_STOPPED_BY_USER".to_string()));
+                }
+                result = dispatch.until_cancelled(grimodex_ai::send_chat_with_tools(
+                    &params,
+                    &req.messages,
+                    &req.tools,
+                )) => {
+                    result.map_err(|error| Error::from_reason(format!("{error:#}")))?
+                        .map_err(native_ai_error_to_napi)?
+                }
+            };
+            serde_json::to_string(&result)
+                .map_err(|e| Error::from_reason(format!("failed to serialize ChatResponse: {e}")))
+        }
+        .await;
+        self.state
+            .agent_sends
+            .complete(&execution_id, &cancellation);
+        outcome
     }
 
     /// provider のモデル一覧を取得する。`settings` はmainが1回読んだsnapshot、

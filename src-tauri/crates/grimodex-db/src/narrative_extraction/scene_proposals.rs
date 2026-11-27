@@ -44,6 +44,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::bulk_approval::{sealed_probable_duplicate, BulkApprovalContext, PlanSource};
+use super::redecidable_proposals::{page_statuses, RedecideStatus};
 use super::retrieval_admission::{
     read_revision_static_eligibility, read_static_scope_authority, RevisionEligibilityReason,
     RevisionSourceState, StaticEligibilityInput,
@@ -62,7 +63,7 @@ pub const SCENE_PROPOSALS_EVIDENCE_MAX: usize = 16;
 /// Longest accepted identity or cursor.
 const IDENTITY_MAX_BYTES: usize = 256;
 
-const SCENE_SOURCE_PREFIX: &str = "project:scene:";
+pub(super) const SCENE_SOURCE_PREFIX: &str = "project:scene:";
 const PROPOSAL_REVISION_CONSUMER_KIND: &str = "proposal-revision";
 
 /// The page query. `INDEXED BY` makes a missing Edge index a loud failure
@@ -175,6 +176,8 @@ pub struct SceneProposalItem {
     pub chronicle_state: SceneProposalChronicleState,
     pub probable_duplicate: SceneProposalDuplicateSuspicion,
     pub related_use: SceneProposalRelatedUse,
+    #[serde(flatten)]
+    pub redecide: RedecideStatus,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -255,6 +258,14 @@ struct PageRow {
     envelope_digest: Option<String>,
 }
 
+pub(super) fn evidence_entries(envelope: &Value) -> &[Value] {
+    envelope
+        .pointer("/effectiveMaterialBasis/evidenceSet")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+}
+
 /// This Scene's evidence quotes, and the other Scenes the evidence spans.
 fn scene_evidence(
     envelope: &Value,
@@ -263,12 +274,7 @@ fn scene_evidence(
     let mut quotes = Vec::new();
     let mut truncated = false;
     let mut others = BTreeSet::new();
-    let entries = envelope
-        .pointer("/effectiveMaterialBasis/evidenceSet")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default();
-    for entry in entries {
+    for entry in evidence_entries(envelope) {
         let Some(source_key) = entry.get("sourceKey").and_then(Value::as_str) else {
             continue;
         };
@@ -409,6 +415,14 @@ fn read_scene_proposals(
         return Ok(empty);
     }
 
+    let statuses = page_statuses(
+        conn,
+        project_id,
+        &rows
+            .iter()
+            .map(|row| row.proposal_id.as_str())
+            .collect::<Vec<_>>(),
+    )?;
     let applied = applied_proposals(
         conn,
         &rows
@@ -461,6 +475,10 @@ fn read_scene_proposals(
             };
 
         items.push(SceneProposalItem {
+            redecide: statuses
+                .get(&row.proposal_id)
+                .ok_or_else(|| anyhow::anyhow!("missing scene proposal facts"))?
+                .clone(),
             proposal_id: row.proposal_id.clone(),
             revision_id: row.revision_id.clone(),
             title,

@@ -279,6 +279,44 @@ export declare class Backend {
   editorStickyCreate(payload: any): Promise<string>
   editorStickyUpdate(payload: any): Promise<string>
   editorStickyDelete(payload: any): Promise<void>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryThreadRead(payload: any): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryThreadWrite(payload: any): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryThreadDelete(payload: any): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryMessageRead(payload: any): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryMessageWrite(payload: any): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryMessageDelete(payload: any): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryResourceRead(payload: any): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryResourceWrite(payload: any): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryObservationalMemoryRead(payload: any): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryObservationalMemoryWrite(payload: any): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryVectorCreateIndex(indexName: string, dimension: number): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryVectorUpsert(indexName: string, vectors: any): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryVectorQuery(indexName: string, query: Array<number>, topK: number): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryVectorListIndexes(): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryVectorDescribeIndex(indexName: string): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryVectorDeleteIndex(indexName: string): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryVectorUpdate(indexName: string, id: string, vector?: Array<number> | undefined | null, metadata?: any | undefined | null): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryVectorDelete(indexName: string, id: string): Promise<string>
+  /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
+  memoryVectorDeleteMany(indexName: string, ids: Array<string>): Promise<string>
   /**
    * DA-2b CW (DR-DA2-50): delete messages of one chat session. Typed
    * `internal` writer; Main attaches the caller identity as the trailing
@@ -825,6 +863,8 @@ export declare class Backend {
    * installed/unavailable/downloading または明示エラーとして扱う。
    */
   semanticDownloadModel(language: string): Promise<string>
+  /** Embed arbitrary bounded text locally for main-process memory adapters. */
+  memoryEmbedTexts(language: string, texts: Array<string>): Promise<string>
   semanticIndexScene(expectedWorkspacePath: string, projectId: string, sceneId: string): Promise<string>
   semanticSearch(expectedWorkspacePath: string, projectId: string, query: string, limit: number, sceneScope?: string | undefined | null, descriptionMode?: boolean | undefined | null): Promise<string>
   /**
@@ -1074,6 +1114,8 @@ export declare class Backend {
    * binding and caps the page size.
    */
   narrativeExtractionListSceneProposals(payload: any): Promise<string>
+  /** Read-only: list applied proposals eligible for reapproval in one project, one page. */
+  narrativeExtractionListRedecidableProposals(payload: any): Promise<string>
   narrativeExtractionIsRunResumableForReview(payload: any): Promise<string>
   narrativeExtractionListChronicleTaskResumeCandidates(payload: any): Promise<string>
   narrativeExtractionCancelRun(payload: any, workspaceBinding: any): Promise<string>
@@ -1098,6 +1140,8 @@ export declare class Backend {
    * stops and returns what was done so far.
    */
   narrativeExtractionChronicleBulkApprove(payload: any): Promise<string>
+  /** Reapprove restored Chronicle events as the human reviewer, checking each target before writing. */
+  narrativeExtractionReapproveAppliedProposals(payload: any): Promise<string>
   narrativeExtractionReviseAndDecide(payload: any): Promise<string>
   narrativeExtractionReviseAndDecideAsHuman(payload: any): Promise<string>
   narrativeExtractionSetHumanFieldLock(payload: any): Promise<string>
@@ -1179,8 +1223,12 @@ export declare class Backend {
   narrativeMaintenanceAttentionClear(payload: any): Promise<string>
   /** Read-only: assemble the Maintenance Inbox for one project as of now. */
   narrativeMaintenanceInboxList(payload: any): Promise<string>
+  /** Read-only aggregate maintenance health counts for one project as of now. */
+  narrativeMaintenanceHealthSummary(payload: any): Promise<string>
   /** Read-only count of stale proposals for one project as of now. */
   narrativeMaintenanceStaleProposalCount(payload: any): Promise<string>
+  /** Read-only scene counts for stale proposals in one project. */
+  narrativeMaintenanceStaleProposalScenes(payload: any): Promise<string>
   /** 校閲 run 一覧 (limit 省略時 20 / offset 省略時 0 はサーバサイド既定)。 */
   listPostEffectRuns(projectId: string, effectType?: string | undefined | null, limit?: number | undefined | null, offset?: number | undefined | null): Promise<string>
   /** Outline 用: scene ごとに最新 run の lens (`runCompletedAt` 付き) を返す。 */

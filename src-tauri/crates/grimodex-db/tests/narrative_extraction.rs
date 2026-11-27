@@ -6081,7 +6081,23 @@ fn current_chronicle_unmarked_event_survives_undo_and_redo() {
         (0, None),
         "Redo must restore the Event without a secret mark or reveal scene"
     );
-    assert_eq!(retrieval_gate_state(&db, &pair.0), gate_after_apply);
+    // SRD/1 X (確認 138): undo removes the Event, so Native revokes the approval.
+    // Redo restores the Event, never the approval; the revision is untouched.
+    let gate = retrieval_gate_state(&db, &pair.0);
+    assert_eq!(gate["status"], json!("rejected"));
+    assert_eq!(gate["latestDecision"][2], json!("rejected"));
+    let detail: Value = serde_json::from_str(gate["latestDecision"][3].as_str().expect("detail"))
+        .expect("decision detail");
+    assert_eq!(detail["cause"], json!("event-removed"));
+    assert_eq!(detail["removedVia"], json!("commit-undo"));
+    for unchanged in [
+        "currentRevisionId",
+        "payloadJson",
+        "envelopeDigest",
+        "envelopeJson",
+    ] {
+        assert_eq!(gate[unchanged], gate_after_apply[unchanged], "{unchanged}");
+    }
 }
 
 #[test]

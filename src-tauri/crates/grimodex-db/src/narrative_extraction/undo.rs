@@ -40,6 +40,9 @@ use super::temporal_undo::{
     restore_scene_chronicle_patch, restore_scene_story_order_patch, undo_created_constraint,
     undo_created_node, undo_created_projection,
 };
+use crate::narrative_extraction::{
+    append_event_existence_decisions_in_tx, EventExistenceChange, RemovedVia,
+};
 use crate::agent_writes::{
     apply_event_snapshot, collect_codex_entry_snapshot, collect_event_snapshot,
     delete_event_cascade,
@@ -180,6 +183,7 @@ fn mutate_commit(
 
                     // Reverse order: relations first, then entry delete/patch restore, then events.
                     let mut scene_scope_refresh_events = Vec::new();
+                    let mut removed_event_ids = Vec::new();
                     for entity in entities.iter().rev() {
                         undo_one_entity(
                             conn,
@@ -187,8 +191,17 @@ fn mutate_commit(
                             entity,
                             &now,
                             &mut scene_scope_refresh_events,
+                            &mut removed_event_ids,
                         )?;
                     }
+                    append_event_existence_decisions_in_tx(
+                        conn,
+                        &payload.project_id,
+                        EventExistenceChange::Removed {
+                            event_ids: &removed_event_ids,
+                            via: RemovedVia::CommitUndo,
+                        },
+                    )?;
 
                     // Refresh journal after_json so the next Redo→Undo cycle has
                     // correct OCC expectations (symmetric with redo's update_journal_after).
@@ -1392,6 +1405,7 @@ fn undo_one_entity(
     entity: &Value,
     now: &str,
     scene_scope_refresh_events: &mut Vec<super::change_feed::NarrativeChangeEventInput>,
+    removed_event_ids: &mut Vec<String>,
 ) -> anyhow::Result<()> {
     let entity_kind = entity_kind(entity)?;
     let entity_id = entity_id(entity)?;
@@ -1403,6 +1417,7 @@ fn undo_one_entity(
                 |row| row.get(0),
             )?;
             delete_event_cascade(conn, project_id, entity_id, Some(live_version))?;
+            removed_event_ids.push(entity_id.to_owned());
         }
         "codex_relation" => {
             let snapshot = entity

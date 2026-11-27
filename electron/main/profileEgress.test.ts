@@ -6,7 +6,7 @@ import {
   d2aRouteLedgersForTest,
 } from "./profileEgress.js";
 import { activateGateForTest } from "./profileActivation.test.support.js";
-import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
+import { nativeSqlPolicyV3 } from "./d2aSqlPolicyFixture.js";
 import { createLicenseValidationScheduler } from "./licenseValidation.js";
 import { NAPI_COMMANDS, type NapiBackendLike } from "../shared/ipcContract.js";
 
@@ -27,7 +27,7 @@ function backend(status: Record<string, unknown> = {}) {
         restricted: true,
         handlesInvalidated: true,
         inFlightStopped: true,
-        sqlPolicy: nativeSqlPolicyV2(),
+        sqlPolicy: nativeSqlPolicyV3(),
         ...status,
       }),
     registerProfileEgressCaller: () => undefined,
@@ -1213,21 +1213,25 @@ describe("D2a profile egress gate", () => {
 
   it.each([
     [
-      { sqlPolicy: nativeSqlPolicyV2({ version: 3 }) },
+      { sqlPolicy: nativeSqlPolicyV3({ version: 4 }) },
       "unknown policy version",
     ],
     [
-      { sqlPolicy: nativeSqlPolicyV2({ version: 1 }) },
+      { sqlPolicy: nativeSqlPolicyV3({ version: 1 }) },
       "the previous policy version",
+    ],
+    [
+      { sqlPolicy: nativeSqlPolicyV3({ version: 2 }) },
+      "policy version 2",
     ],
     [{ sqlPolicy: undefined }, "missing table inventory"],
     [
-      { sqlPolicy: nativeSqlPolicyV2({ extraSet: ["chat_messages"] }) },
+      { sqlPolicy: nativeSqlPolicyV3({ extraSet: ["chat_messages"] }) },
       "unknown policy key",
     ],
     [
       {
-        sqlPolicy: nativeSqlPolicyV2({
+        sqlPolicy: nativeSqlPolicyV3({
           protectedTables: ["chat_messages"],
         }),
       },
@@ -1235,7 +1239,7 @@ describe("D2a profile egress gate", () => {
     ],
     [
       {
-        sqlPolicy: nativeSqlPolicyV2({
+        sqlPolicy: nativeSqlPolicyV3({
           closedTables: ["messages", "messages"],
         }),
       },
@@ -1243,7 +1247,7 @@ describe("D2a profile egress gate", () => {
     ],
     [
       {
-        sqlPolicy: nativeSqlPolicyV2({
+        sqlPolicy: nativeSqlPolicyV3({
           readOpenTables: ["chat_messages", "chat_messages"],
         }),
       },
@@ -1251,7 +1255,7 @@ describe("D2a profile egress gate", () => {
     ],
     [
       {
-        sqlPolicy: nativeSqlPolicyV2({
+        sqlPolicy: nativeSqlPolicyV3({
           closedTables: ["messages", "chat_messages"],
           readOpenTables: ["chat_messages"],
         }),
@@ -1259,16 +1263,16 @@ describe("D2a profile egress gate", () => {
       "a table declared in both classes",
     ],
     [
-      { sqlPolicy: nativeSqlPolicyV2({ closedTables: [] }) },
+      { sqlPolicy: nativeSqlPolicyV3({ closedTables: [] }) },
       "an empty closed class",
     ],
     [
-      { sqlPolicy: nativeSqlPolicyV2({ readOpenTables: [] }) },
+      { sqlPolicy: nativeSqlPolicyV3({ readOpenTables: [] }) },
       "an empty read-open class",
     ],
     [
       {
-        sqlPolicy: nativeSqlPolicyV2({
+        sqlPolicy: nativeSqlPolicyV3({
           readOpenColumns: [{ table: "change_events" }],
         }),
       },
@@ -1276,7 +1280,7 @@ describe("D2a profile egress gate", () => {
     ],
     [
       {
-        sqlPolicy: nativeSqlPolicyV2({
+        sqlPolicy: nativeSqlPolicyV3({
           readOpenColumns: [
             { table: "change_events", column: "payload" },
             { table: "CHANGE_EVENTS", column: "Payload" },
@@ -1315,6 +1319,21 @@ describe("D2a profile egress gate", () => {
     expect(() =>
       gate.assertInvoke("unknown_capture_variant", { callerIdentity }),
     ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} unclassified`));
+  });
+
+  it("classifies applied proposal reapproval as internal, not own-data-read", () => {
+    const command = "narrative_extraction_reapprove_applied_proposals";
+    const ledgers = d2aRouteLedgersForTest();
+    expect(ledgers.internal, command).toContain(command);
+    for (const other of [
+      "denied",
+      "licenseControl",
+      "ownDataRead",
+      "nir1Publication",
+      "nir1RestrictedOnly",
+    ] as const) {
+      expect(ledgers[other], `${other} / ${command}`).not.toContain(command);
+    }
   });
 
   it("classifies the body declaration entries and the state read as internal (CB-2/CB-3, K3/2 宣言 UI)", async () => {
