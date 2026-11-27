@@ -26,7 +26,7 @@ import {
 import { createProfileEgressGate } from "./profileEgress.js";
 import { activateGateForTest } from "./profileActivation.test.support.js";
 import type { NapiBackendLike } from "../shared/ipcContract.js";
-import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
+import { nativeSqlPolicyV3 } from "./d2aSqlPolicyFixture.js";
 
 class FakeRunningProcess implements RunningCliProcess {
   readonly pid = 4242;
@@ -937,7 +937,7 @@ describe("VivliostyleManager preview / lifecycle", () => {
       restricted: false,
       handlesInvalidated: false,
       inFlightStopped: true,
-      sqlPolicy: nativeSqlPolicyV2(),
+      sqlPolicy: nativeSqlPolicyV3(),
     };
     const profileActivationCommit = vi.fn(async () =>
       JSON.stringify({
@@ -981,7 +981,7 @@ describe("VivliostyleManager preview / lifecycle", () => {
       restricted: false,
       handlesInvalidated: false,
       inFlightStopped: true,
-      sqlPolicy: nativeSqlPolicyV2(),
+      sqlPolicy: nativeSqlPolicyV3(),
     };
     const profileActivationCommit = vi.fn(async () =>
       JSON.stringify({

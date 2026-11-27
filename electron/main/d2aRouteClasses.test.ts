@@ -1,5 +1,5 @@
 // NIR-1 DA-1 ST3 (K3/2 "restricted 下の route 区分"): the five publication route
-// classes, the 42-command own-data-read ledger, the generic-SQL early
+// classes, the 44-command own-data-read ledger, the generic-SQL early
 // classification, and the Main -> Native own-data-read classification.
 //
 // The own-data-read opening is a single switch (`D2A_OWN_DATA_READ_OPEN`, true
@@ -29,7 +29,7 @@ import {
   NATIVE_CLOSED_TABLES,
   NATIVE_READ_OPEN_COLUMNS,
   NATIVE_READ_OPEN_TABLES,
-  nativeSqlPolicyV2,
+  nativeSqlPolicyV3,
 } from "./d2aSqlPolicyFixture.js";
 
 const mocks = vi.hoisted(() => ({
@@ -70,7 +70,7 @@ vi.mock("./windows.js", () => ({
 
 const { registerIpcRouter } = await import("./ipc.js");
 
-/** K3/2 "区分の構成": the 42 own-data-read commands, by group. */
+/** K3/2 "区分の構成": the 44 own-data-read commands, by group. */
 const OWN_DATA_READ_BY_GROUP = {
   search: [
     "fts_search",
@@ -120,6 +120,7 @@ const OWN_DATA_READ_BY_GROUP = {
     "narrative_extraction_list_chronicle_task_resume_candidates",
     "narrative_extraction_get_commit_status",
     "narrative_extraction_list_scene_proposals",
+    "narrative_extraction_list_redecidable_proposals",
     "narrative_maintenance_inbox_list",
     "narrative_maintenance_health_summary",
     "narrative_maintenance_stale_proposal_count",
@@ -171,7 +172,7 @@ function backend(restricted: boolean, activate?: () => Promise<string>) {
     restricted,
     handlesInvalidated: restricted,
     inFlightStopped: true,
-    sqlPolicy: nativeSqlPolicyV2(),
+    sqlPolicy: nativeSqlPolicyV3(),
   };
   return {
     initializeProfileEgress: async () => JSON.stringify(status),
@@ -190,22 +191,22 @@ const ACTIVATED_STATUS = JSON.stringify({
   restricted: true,
   handlesInvalidated: true,
   inFlightStopped: true,
-  sqlPolicy: nativeSqlPolicyV2(),
+  sqlPolicy: nativeSqlPolicyV3(),
 });
 
 const DENIED = (route: string) =>
   new RegExp(`^${D2A_EGRESS_DENIED_MARKER} ${route}:`);
 
 describe("own-data-read ledger (K3/2 区分の構成)", () => {
-  it("holds exactly the 43 confirmed commands, each a real NAPI command", () => {
+  it("holds exactly the 44 confirmed commands, each a real NAPI command", () => {
     const ledgers = d2aRouteLedgersForTest();
-    expect(OWN_DATA_READ_COMMANDS).toHaveLength(43);
-    expect(new Set(OWN_DATA_READ_COMMANDS).size).toBe(43);
+    expect(OWN_DATA_READ_COMMANDS).toHaveLength(44);
+    expect(new Set(OWN_DATA_READ_COMMANDS).size).toBe(44);
     expect([...ledgers.ownDataRead].sort()).toEqual(
       [...OWN_DATA_READ_COMMANDS].sort(),
     );
     expect(Object.values(OWN_DATA_READ_BY_GROUP).map((g) => g.length)).toEqual([
-      7, 3, 9, 2, 3, 2, 6, 11,
+      7, 3, 9, 2, 3, 2, 6, 12,
     ]);
     for (const command of OWN_DATA_READ_COMMANDS) {
       expect(Object.hasOwn(NAPI_COMMANDS, command), command).toBe(true);
@@ -924,7 +925,7 @@ describe("gate: own-data-read with the opening on", () => {
       restricted: true,
       handlesInvalidated: true,
       inFlightStopped: true,
-      sqlPolicy: nativeSqlPolicyV2({ version: 3 }),
+      sqlPolicy: nativeSqlPolicyV3({ version: 4 }),
     };
     const gate = await createProfileEgressGate(
       {

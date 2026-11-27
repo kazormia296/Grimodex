@@ -172,14 +172,12 @@ fn shape_populated_v40_workspace(conn: &rusqlite::Connection) -> anyhow::Result<
 #[test]
 fn previous_release_shaped_database_migrates_and_preserves_rows() {
     assert_eq!(
-        LAST_PUBLIC_RELEASE_SCHEMA_VERSION, 2,
-        "the published v2.0.10 fixture must remain the public migration floor"
+        SCHEMA_VERSION, 47,
+        "Gate C1 migration target was SCHEMA 22; later schemas through 47 migrate on top -- this guard exists so the next schema bump revisits this fixture too"
     );
     assert_eq!(
-        SCHEMA_VERSION, 46,
-        "Gate C1 migration target was SCHEMA 22; SCHEMA 23-46 (Gate C2/D1/C2A/NIR-1/NIR-1 current Human capture/retirement/Decision lookup indexes/Scene body declaration columns/Scene Scope default table/Freshness contention release/write clock and lineage) \
-         migrate further on top -- this guard exists so the next schema bump \
-         revisits this fixture too"
+        LAST_PUBLIC_RELEASE_SCHEMA_VERSION, 2,
+        "the published v2.0.10 fixture must remain the public migration floor"
     );
     let workspace = temp_workspace("release-shaped");
     let db_path = seed_previous_release_workspace(&workspace);

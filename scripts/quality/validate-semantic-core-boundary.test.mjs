@@ -631,7 +631,13 @@ describe("validate-semantic-core-boundary", () => {
     const result = validateSemanticCoreBoundary({ repoRoot: REPO_ROOT });
     assert.deepEqual(result.errors, []);
     assert.ok(result.operationCount > 0);
-    assert.equal(result.schemaVersion, 46);
+    const generatedSchema = JSON.parse(
+      readFileSync(
+        path.join(REPO_ROOT, "src/db/generated/schema-contract.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(result.schemaVersion, generatedSchema.schemaVersion);
     assert.equal(result.checks.scopeRelationContract, true);
     assert.equal(result.checks.dependencyRoleContract, true);
     assert.equal(result.checks.artifactAuthorityContract, true);

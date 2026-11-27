@@ -18,7 +18,7 @@ import {
   D2A_EGRESS_DENIED_MARKER,
 } from "./profileEgress.js";
 import { activateGateForTest } from "./profileActivation.test.support.js";
-import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
+import { nativeSqlPolicyV3 } from "./d2aSqlPolicyFixture.js";
 
 const mocks = vi.hoisted(() => ({
   handlers: new Map<
@@ -3525,7 +3525,7 @@ describe("NIR-1 router sender binding", () => {
       restricted: false,
       handlesInvalidated: false,
       inFlightStopped: true,
-      sqlPolicy: nativeSqlPolicyV2(),
+      sqlPolicy: nativeSqlPolicyV3(),
     };
     const activatedStatus = {
       ...initialStatus,
@@ -3835,7 +3835,7 @@ describe("NIR-1 router sender binding", () => {
           restricted: true,
           handlesInvalidated: true,
           inFlightStopped: true,
-          sqlPolicy: nativeSqlPolicyV2(),
+          sqlPolicy: nativeSqlPolicyV3(),
         }),
       registerProfileEgressCaller: vi.fn(),
       invalidateProfileEgressCallers: vi.fn(),
@@ -4003,7 +4003,7 @@ describe("NIR-1 router sender binding", () => {
       restricted: true,
       handlesInvalidated: true,
       inFlightStopped: true,
-      sqlPolicy: nativeSqlPolicyV2(),
+      sqlPolicy: nativeSqlPolicyV3(),
     };
     const responses: string[] = [];
     const captureCurrentChatInput = vi.fn(async () => responses.shift()!);
@@ -4937,7 +4937,7 @@ describe("DA-2 profile activation commands and stream terminals (DR-DA2-9, -16, 
       restricted: false,
       handlesInvalidated: false,
       inFlightStopped: true,
-      sqlPolicy: nativeSqlPolicyV2(),
+      sqlPolicy: nativeSqlPolicyV3(),
     };
     let resolveReply!: (value: unknown) => void;
     // A legacy AI route served by Main (old-external-ai): its result settles
@@ -5016,7 +5016,7 @@ describe("get_model_capability_snapshot（PR-C2、読み取り専用の typed IP
       restricted: false,
       handlesInvalidated: false,
       inFlightStopped: true,
-      sqlPolicy: nativeSqlPolicyV2(),
+      sqlPolicy: nativeSqlPolicyV3(),
     };
     let releaseCommit!: (value: string) => void;
     const backend = {
