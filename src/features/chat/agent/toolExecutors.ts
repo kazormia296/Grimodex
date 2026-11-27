@@ -53,6 +53,7 @@ import {
 } from "@/features/agent-writes/codex";
 import { agentCreateSnippet } from "@/features/agent-writes/snippet";
 import { agentMarkdownToProseMirrorJson } from "@/features/agent-writes/richTextInput";
+import { normalizeMastraAgentWriteInput } from "@/../electron/shared/agentWriteNormalization";
 import {
   agentCreateForeshadow,
   agentUpdateForeshadow,
@@ -481,31 +482,12 @@ async function searchEventsWithIr(
 // Mutating executors (knowledgeWrite policy gated)
 // ---------------------------------------------------------------------------
 
-const MAX_CODEX_ALIASES = 100;
-const MAX_CODEX_ALIAS_BYTES = 64_000;
-
 function optionalMarkdownBody(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "string") {
     throw new Error("content must be a Markdown string");
   }
   return agentMarkdownToProseMirrorJson(value);
-}
-
-function optionalAliases(value: unknown): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
-    throw new Error("aliases must be an array of strings");
-  }
-  if (value.length > MAX_CODEX_ALIASES) {
-    throw new Error(`aliases must contain at most ${MAX_CODEX_ALIASES} items`);
-  }
-  const aliases = value.map((item) => item.trim()).filter(Boolean);
-  const serialized = JSON.stringify(aliases);
-  if (new TextEncoder().encode(serialized).byteLength > MAX_CODEX_ALIAS_BYTES) {
-    throw new Error(`aliases exceed ${MAX_CODEX_ALIAS_BYTES} bytes`);
-  }
-  return serialized;
 }
 
 async function createCodexEntryTool(
@@ -525,6 +507,10 @@ async function createCodexEntryTool(
     };
   }
   try {
+    const normalized = normalizeMastraAgentWriteInput(
+      "create_codex_entry",
+      params,
+    );
     if (!requestId) {
       throw new Error("create_codex_entry request identity is missing");
     }
@@ -534,8 +520,11 @@ async function createCodexEntryTool(
         type,
         name,
         summary: params["summary"] ? String(params["summary"]) : undefined,
-        content: optionalMarkdownBody(params["content"]),
-        aliases: optionalAliases(params["aliases"]),
+        content:
+          params["content"] === null
+            ? undefined
+            : (normalized["content"] as string | undefined),
+        aliases: normalized["aliases"] as string | undefined,
         parentId: params["parentId"] ? String(params["parentId"]) : undefined,
       },
       authorization?.chatMessageId,
@@ -588,6 +577,10 @@ async function updateCodexEntryTool(
     };
   }
   try {
+    const normalized = normalizeMastraAgentWriteInput(
+      "update_codex_entry",
+      params,
+    );
     const entry = await agentUpdateCodexEntry(
       {
         requestId,
@@ -599,9 +592,11 @@ async function updateCodexEntryTool(
             : undefined,
         content:
           params["content"] !== undefined
-            ? optionalMarkdownBody(params["content"])
+            ? params["content"] === null
+              ? undefined
+              : (normalized["content"] as string)
             : undefined,
-        aliases: optionalAliases(params["aliases"]),
+        aliases: normalized["aliases"] as string | undefined,
       },
       authorization?.chatMessageId,
       {
@@ -1141,7 +1136,11 @@ async function updateForeshadowTool(
       error: UNSUPPORTED_FORESHADOW_SECRET_ERROR,
     };
   }
-  const id = String(params["id"] ?? "").trim();
+  const id = String(
+    normalizeMastraAgentWriteInput("update_foreshadow", params)[
+      "foreshadowId"
+    ] ?? "",
+  ).trim();
   if (!id) {
     return {
       name: "update_foreshadow",
