@@ -379,7 +379,7 @@ export function createMastraTurnAttempt(
         const requestMaxOutputTokens =
           route.outputBudget.requestMaxOutputTokens ?? route.wireOutputTokens;
         const thinking = route.thinking.thinking;
-        const request: MastraAgentTurnStartRequest = {
+        const request: Omit<MastraAgentTurnStartRequest, "writerSessionId"> = {
           turnId: input.turnId,
           chatSessionId: context.chatSessionId,
           projectId: context.projectId,
