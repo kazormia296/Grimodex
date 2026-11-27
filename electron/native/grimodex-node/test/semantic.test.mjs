@@ -21,6 +21,19 @@ const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const { Backend } = require(join(here, "..", "grimodex-node.node"));
 
+test("memoryEmbedTexts enforces native bounds and returns the typed model error", async (t) => {
+  const fixture = makeFixture("memory-embed");
+  t.after(fixture.cleanup);
+  await assert.rejects(
+    fixture.backend.memoryEmbedTexts("ja", ["本文"]),
+    /MEMORY_EMBED_MODEL_UNAVAILABLE/,
+  );
+  await assert.rejects(
+    fixture.backend.memoryEmbedTexts("ja", Array(65).fill("本文")),
+    /MEMORY_EMBED_INVALID_INPUT/,
+  );
+});
+
 function makeFixture(label) {
   const root = mkdtempSync(join(tmpdir(), `grimodex-semantic-${label}-`));
   const appData = join(root, "app-data");

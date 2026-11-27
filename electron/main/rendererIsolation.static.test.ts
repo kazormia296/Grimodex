@@ -128,6 +128,17 @@ describe("(a)(b) BrowserWindow と webPreferences", () => {
   });
 });
 
+it("keeps local memory embedding out of renderer IPC", () => {
+  const ipcContract = readFileSync(
+    path.resolve(MAIN_DIR, "../shared/ipcContract.ts"),
+    "utf8",
+  );
+  expect(ipcContract).not.toContain("memoryEmbedTexts");
+  expect(
+    mainSources().some(({ text }) => text.includes("memoryEmbedTexts")),
+  ).toBe(false);
+});
+
 describe("(c) CSP", () => {
   it("script-src は unsafe-inline・unsafe-eval・外部 origin を含まない", () => {
     const scriptSrc = APP_CONTENT_SECURITY_POLICY.split(";")
@@ -275,7 +286,9 @@ describe("Main-only native commands", () => {
       "memoryVectorDeleteMany",
     ];
     expect(
-      commands.filter((command) => new RegExp(`\\b${command}\\b`).test(contract)),
+      commands.filter((command) =>
+        new RegExp(`\\b${command}\\b`).test(contract),
+      ),
     ).toEqual([]);
   });
 });

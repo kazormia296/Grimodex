@@ -54,6 +54,8 @@ export type AiAuditOwner =
   | "renderer-stream"
   | "renderer-transport"
   | "electron-runtime"
+  /** Electron main が開始する Mastra memory の背景 LLM 呼び出し（MP-10 登録）。 */
+  | "electron-memory"
   | "browser-runtime"
   | "native-post-effect"
   | "native-semantic"
@@ -538,6 +540,8 @@ const POST_EFFECT_AUDIT_TEST =
   "src-tauri/crates/grimodex-post-effect/src/audit_tests.rs";
 const SEMANTIC_AUDIT_TEST =
   "src-tauri/crates/grimodex-semantic/src/audit_tests.rs";
+const MASTRA_MEMORY_AUDIT_TEST =
+  "src-tauri/crates/grimodex-db/tests/ai_audit.rs";
 const BROWSER_AUDIT_TEST = "src/lib/browser-mock.ai-audit.test.ts";
 const NIR1_LOCAL_AUDIT_TEST =
   "src-tauri/crates/grimodex-db/src/nir1_local_audit/tests.rs";
@@ -645,6 +649,51 @@ export const AI_PATHS: AiPathEntry[] = [
     testRef: SINGLE_SHOT_TEST,
     testName: "session_title:",
     note: "本番ビルダー chatApi.buildSessionTitlePrompt + runLiveSingleShot。",
+  },
+  {
+    id: "memory_observer",
+    label: "Mastra memory observer",
+    surface: "Mastra ObservationalMemory observer",
+    layer: "single-shot",
+    transport: "send_chat_message (Mastra memory)",
+    auditOwner: "electron-memory",
+    captureLevel: "full-observable",
+    auditTestRef: MASTRA_MEMORY_AUDIT_TEST,
+    auditTestName: "AI audit path: memory_observer",
+    verifier: "contract",
+    testRef: MASTRA_MEMORY_AUDIT_TEST,
+    testName: "AI audit path: memory_observer",
+    note: "登録のみ。Native はこの pathId の永続 audit begin が無ければ dispatch を拒否する。旗 M が閉じている間は実行しない。",
+  },
+  {
+    id: "memory_reflector",
+    label: "Mastra memory reflector",
+    surface: "Mastra ObservationalMemory reflector",
+    layer: "single-shot",
+    transport: "send_chat_message (Mastra memory)",
+    auditOwner: "electron-memory",
+    captureLevel: "full-observable",
+    auditTestRef: MASTRA_MEMORY_AUDIT_TEST,
+    auditTestName: "AI audit path: memory_reflector",
+    verifier: "contract",
+    testRef: MASTRA_MEMORY_AUDIT_TEST,
+    testName: "AI audit path: memory_reflector",
+    note: "登録のみ。Native はこの pathId の永続 audit begin が無ければ dispatch を拒否する。旗 M が閉じている間は実行しない。",
+  },
+  {
+    id: "memory_title",
+    label: "Mastra memory title",
+    surface: "Mastra memory title generation",
+    layer: "single-shot",
+    transport: "send_chat_message (Mastra memory)",
+    auditOwner: "electron-memory",
+    captureLevel: "full-observable",
+    auditTestRef: MASTRA_MEMORY_AUDIT_TEST,
+    auditTestName: "AI audit path: memory_title",
+    verifier: "contract",
+    testRef: MASTRA_MEMORY_AUDIT_TEST,
+    testName: "AI audit path: memory_title",
+    note: "登録のみ。旗 M が閉じている間は dispatch せず、既存 session_title と二重に送らない。",
   },
   {
     id: "summarization",
@@ -1590,6 +1639,21 @@ export const AI_PATHS: AiPathEntry[] = [
     testRef: SEMANTIC_AUDIT_TEST,
     testName: "AI audit path: semantic_embedding_index",
     note: "自動 background index もper-input session開始後はraw/model-visible text、実際にparseしたtokenizer.jsonのbyte SHA、model fingerprint、成功/失敗/中止をinference単位で保存する。cold artifact loadがsession開始前に失敗したchunkはtokenization/ONNXへ到達せずモデル利用もない一方、試行された高位operationのper-input lifecycleはledgerに残らない。realized token IDs、special-token展開、truncation後token列は保持せず、生vectorもdimension+SHA表現のため partial-observable。",
+  },
+  {
+    id: "memory_embedding",
+    label: "Mastra memory local embedding",
+    surface: "Mastra memory embedding (local ONNX)",
+    layer: "embedding",
+    transport: "memory_embedding (local ONNX)",
+    auditOwner: "native-semantic",
+    captureLevel: "partial-observable",
+    auditTestRef: MASTRA_MEMORY_AUDIT_TEST,
+    auditTestName: "AI audit path: memory_embedding",
+    verifier: "contract",
+    testRef: MASTRA_MEMORY_AUDIT_TEST,
+    testName: "AI audit path: memory_embedding",
+    note: "ローカル ONNX 推論。登録のみで任意 text の N-API は未実装。Native は永続 audit begin が無ければ dispatch を拒否する。",
   },
   {
     id: "semantic_reranker",
