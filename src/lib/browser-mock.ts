@@ -160,8 +160,20 @@ const RUST_ONLY_BROWSER_TABLES = new Set([
   "post_effect_annotations_fts_en",
   "nir1_chat_input_captures",
   "nir1_chat_input_submission_keys",
+  "identity_correction_applications",
+  "identity_correction_rule_revisions",
+  "identity_lineage_mappings",
+  "identity_lineage_operations",
+  "identity_lineage_reference_assignments",
   // SDEF/1 MD5: the project Scene Scope default is Native-owned (typed commands only).
   "narrative_scope_project_defaults",
+  // MP-7 persistence stays Native-owned; the renderer receives it through typed commands.
+  "mastra_message_parts",
+  "mastra_thread_metadata",
+  "mastra_resources",
+  "mastra_observational_memory",
+  "mastra_memory_vectors",
+  "mastra_memory_vector_indexes",
   // DB stage 1 (DR-DBC-3): the commit sequence and lineage are Native-owned.
   // Every grimodex_clock_* trigger writes grimodex_write_clock, so excluding the
   // table also excludes those triggers below. BrowserMock does not serve a clock

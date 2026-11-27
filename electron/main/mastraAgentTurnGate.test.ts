@@ -19,7 +19,7 @@ import {
   MASTRA_AGENT_TURN_CANCEL_COMMAND,
   MASTRA_AGENT_TURN_ANSWER_COMMAND,
 } from "../shared/mastraAgentTurnWire.js";
-import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
+import { nativeSqlPolicyV3 } from "./d2aSqlPolicyFixture.js";
 import {
   createMastraAgentTurnRoute,
   type MastraAgentTurnOwnerPort,
@@ -212,7 +212,7 @@ function status(restricted: boolean) {
     restricted,
     handlesInvalidated: restricted,
     inFlightStopped: true,
-    sqlPolicy: nativeSqlPolicyV2(),
+    sqlPolicy: nativeSqlPolicyV3(),
   };
 }
 

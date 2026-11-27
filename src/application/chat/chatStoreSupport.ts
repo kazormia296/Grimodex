@@ -139,6 +139,7 @@ export {
   ChatTurnPersistenceError,
   createRetryableCompletedTurnPersistence,
 } from "./chatTurnPersistence";
+export { createTurnRecovery } from "./chatTurnRecovery";
 
 // 出典用の assistant 行の予約（書き込み tool の直前に作り、完了時に更新する）。
 export {

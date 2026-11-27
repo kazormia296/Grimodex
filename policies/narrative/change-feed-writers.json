@@ -98,7 +98,8 @@
         "narrative_extraction_list_chronicle_task_resume_candidates",
         "narrative_extraction_get_run_review_bundle",
         "narrative_extraction_get_commit_status",
-        "narrative_extraction_list_scene_proposals"
+        "narrative_extraction_list_scene_proposals",
+        "narrative_extraction_list_redecidable_proposals"
       ]
     }
   },
@@ -2691,6 +2692,23 @@
         "transactionId"
       ],
       "canonical": { "origin": "renderer", "opType": "foreshadow.create" }
+    },
+    {
+      "id": "identity-correction.rule.revise.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Rule revisions keep sensitive correction data out of Change Feed rows while invalidating by rule id.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/identity_correction.rs",
+        "symbol": "create_rule_revision"
+      },
+      "routes": [],
+      "writerIds": ["identity-correction.rule-revision"],
+      "scope": "project",
+      "requiredIdentities": ["projectId", "requestId", "sessionId", "eventUid", "transactionId"],
+      "canonical": { "origin": "renderer", "opType": "rule.revise" }
     },
     {
       "id": "foreshadow.update.renderer",

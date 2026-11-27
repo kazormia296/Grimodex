@@ -4,6 +4,11 @@ pub(crate) mod application_contributions;
 mod attention;
 mod bulk_approval;
 mod reapproval;
+mod redecidable_proposals;
+pub use redecidable_proposals::{
+    narrative_extraction_list_redecidable_proposals, ListRedecidableProposalsPayload,
+    Reapproval, RedecidableProposalItem, RedecidableProposalPage, RedecideStatus,
+};
 mod c2z_preparation;
 pub(crate) mod c2zb_application_rekey;
 mod c2zc_canonical_cutover;

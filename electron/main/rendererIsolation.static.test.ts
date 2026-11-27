@@ -247,6 +247,39 @@ describe("(e) packaged で ELECTRON_RENDERER_URL を見ない", () => {
   });
 });
 
+describe("Main-only native commands", () => {
+  it("Mastra memory N-API は renderer の command contract に登録されない", () => {
+    const repo = path.resolve(MAIN_DIR, "../..");
+    const contract = stripComments(
+      readFileSync(path.join(repo, "electron/shared/ipcContract.ts"), "utf8"),
+    );
+    const commands = [
+      "memoryThreadRead",
+      "memoryThreadWrite",
+      "memoryThreadDelete",
+      "memoryMessageRead",
+      "memoryMessageWrite",
+      "memoryMessageDelete",
+      "memoryResourceRead",
+      "memoryResourceWrite",
+      "memoryObservationalMemoryRead",
+      "memoryObservationalMemoryWrite",
+      "memoryVectorCreateIndex",
+      "memoryVectorUpsert",
+      "memoryVectorQuery",
+      "memoryVectorListIndexes",
+      "memoryVectorDescribeIndex",
+      "memoryVectorDeleteIndex",
+      "memoryVectorUpdate",
+      "memoryVectorDelete",
+      "memoryVectorDeleteMany",
+    ];
+    expect(
+      commands.filter((command) => new RegExp(`\\b${command}\\b`).test(contract)),
+    ).toEqual([]);
+  });
+});
+
 describe("SF-1 と E-3 の配線", () => {
   it("index.ts は mount の manager に guard と restricted の判定を渡し、title と download を固定する", () => {
     const text = stripComments(

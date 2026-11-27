@@ -302,7 +302,7 @@ export interface ChronicleBulkApproval {
   readonly reasons: readonly ChronicleBulkApprovalReasonCode[];
 }
 
-export interface ReviewBundleProposal {
+export interface ReviewBundleProposal extends Partial<RedecideStatus> {
   readonly proposalId: string;
   readonly proposalSetId: string;
   readonly proposalKey: string;
@@ -1070,7 +1070,24 @@ export interface SceneProposalRelatedUse {
   readonly reasons: readonly SceneProposalReasonCode[];
 }
 
-export interface SceneProposalItem {
+export interface RedecideStatus {
+  readonly rejectedBy: "event-removed" | null;
+  readonly removedVia:
+    | "screen-delete"
+    | "undo-redo"
+    | "snapshot-restore"
+    | "commit-undo"
+    | "mcp-delete"
+    | "agent-delete"
+    | null;
+  readonly rejectedAt: string | null;
+  readonly reapproval: {
+    readonly available: boolean;
+    readonly reason: ReapproveAppliedProposalSkipReasonCode | null;
+  };
+}
+
+export interface SceneProposalItem extends RedecideStatus {
   readonly proposalId: string;
   /** The proposal's current revision. */
   readonly revisionId: string;
@@ -1103,6 +1120,37 @@ export async function narrativeExtractionListSceneProposals(
     {
       payload,
     },
+  );
+}
+
+export type ListRedecidableProposalsPayload = Omit<
+  ListSceneProposalsPayload,
+  "sceneId"
+>;
+
+export interface RedecidableProposalItem {
+  readonly proposalId: string;
+  readonly revisionId: string;
+  readonly title: string | null;
+  readonly evidenceSceneIds: readonly string[];
+  readonly evidenceSceneIdsTruncated: boolean;
+  readonly rejectedAt: string;
+  readonly removedVia: RedecideStatus["removedVia"];
+}
+
+export interface RedecidableProposalPage {
+  readonly items: readonly RedecidableProposalItem[];
+  readonly total: number;
+  readonly nextCursor: string | null;
+  readonly limit: number;
+}
+
+export async function narrativeExtractionListRedecidableProposals(
+  payload: ListRedecidableProposalsPayload,
+): Promise<RedecidableProposalPage> {
+  return invoke<RedecidableProposalPage>(
+    "narrative_extraction_list_redecidable_proposals",
+    { payload },
   );
 }
 
@@ -1170,7 +1218,7 @@ export type MaintenanceInboxEvidenceFreshness =
   | null;
 
 /**
- * The only fields of an Inbox row that the structure-health counts need.
+ * Allow-listed Inbox fields exposed to renderer callers.
  * Free text (`attention.reason`), actor / request identities, payload digests
  * and observation rows ride on the wire but are deliberately never read here.
  */
@@ -1178,6 +1226,7 @@ export interface MaintenanceInboxEntry {
   readonly entryKind: MaintenanceInboxEntryKind;
   readonly consumerKind: MaintenanceInboxConsumerKind;
   readonly evidenceFreshness: MaintenanceInboxEvidenceFreshness;
+  readonly attentionApplies: boolean;
 }
 
 function pickKnown<const T extends readonly string[]>(
@@ -1193,7 +1242,7 @@ function pickKnown<const T extends readonly string[]>(
 /**
  * Validate the snake_case Inbox wire and project it onto the allow-listed
  * camelCase shape. Throws when the wire is not an array; an element that is
- * not an object, or a field that is missing or unknown, becomes
+ * not an object, or a vocabulary field that is missing or unknown, becomes
  * `"unrecognized"` rather than an error.
  */
 export function parseMaintenanceInbox(
@@ -1226,6 +1275,7 @@ export function parseMaintenanceInbox(
               record["evidence_freshness"],
               MAINTENANCE_INBOX_EVIDENCE_FRESHNESS,
             ),
+      attentionApplies: record["attention_applies"] === true,
     };
   });
 }

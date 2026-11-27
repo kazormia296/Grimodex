@@ -1,0 +1,12 @@
+// Main 専用。renderer の command の契約（electron/shared/ipcContract.ts）には載せない（rendererIsolation の静的試験）。
+/** Main-only typed Mastra memory commands exposed by the Native backend. */
+export interface NapiMemoryBackendLike {
+  memoryThreadRead(payload: unknown): Promise<string>;
+  memoryThreadWrite(payload: unknown): Promise<string>;
+  memoryThreadDelete(payload: unknown): Promise<string>;
+  memoryMessageRead(payload: unknown): Promise<string>;
+  memoryMessageWrite(payload: unknown): Promise<string>;
+  memoryMessageDelete(payload: unknown): Promise<string>;
+  memoryResourceRead(payload: unknown): Promise<string>;
+  memoryResourceWrite(payload: unknown): Promise<string>;
+}

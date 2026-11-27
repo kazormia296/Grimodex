@@ -77,6 +77,8 @@ vi.mock("@/features/timelapse/captureChat", () => ({
 }));
 vi.mock("@/features/semantic-search/scheduler", () => ({
   scheduleChatIndex: vi.fn(),
+  scheduleSceneIndex: vi.fn(),
+  cancelSceneIndex: vi.fn(),
   scheduleCodexIndex: vi.fn(),
   cancelCodexIndex: vi.fn(),
 }));
@@ -344,6 +346,20 @@ const count = async (w: Seeded, table: string, column: string, id: string) =>
       )
     )[0].n,
   );
+
+/** Drizzle wraps the Native refusal as `Failed query: …`; read the whole cause chain. */
+const errorChain = (e: unknown): string => {
+  const parts: string[] = [];
+  let cur: unknown = e;
+  for (let i = 0; cur != null && i < 8; i++) {
+    parts.push(cur instanceof Error ? cur.message : String(cur));
+    cur =
+      cur instanceof Error
+        ? (cur as Error & { cause?: unknown }).cause
+        : undefined;
+  }
+  return parts.join(" <- ");
+};
 
 let restoreSnapshotId = "";
 let restoreSceneId = "";
@@ -969,5 +985,136 @@ describe("PUB-G 34: renderer typed writers through the real router, gate and Nat
     expect(
       sent.filter((s) => s.sql && /\b(insert|update|delete)\b/i.test(s.sql)),
     ).toEqual([]);
+  });
+
+  // The Codex entrance is pinned by the "Codex import restricted" spec above.
+  it("restricted importTree, memo and snippet use typed writers", async () => {
+    const w = await workspace();
+    await restrict(w);
+    const { importMemoNote, importSnippets, importTree } = await renderer(
+      "@/features/import/importApi",
+    );
+    const treeNodesBefore = await count(
+      w,
+      "tree_nodes",
+      "project_id",
+      w.projectId,
+    );
+    const snippetsBefore = await count(
+      w,
+      "snippets",
+      "project_id",
+      w.projectId,
+    );
+    const sentBefore = w.rig.sent.length;
+
+    expect(
+      await importTree([
+        {
+          kind: "folder",
+          id: "imp-restricted-folder",
+          title: "Imported folder",
+          children: [
+            {
+              kind: "scene",
+              id: "imp-restricted-scene",
+              title: "Imported scene",
+              body: "restricted scene body",
+            },
+          ],
+        },
+      ]),
+    ).toEqual({
+      imported: 2,
+      errors: [],
+      sceneIds: ["imp-restricted-scene"],
+    });
+    await importMemoNote("imp-restricted-memo", "restricted memo body");
+    expect(
+      await importSnippets([
+        {
+          id: "imp-restricted-snippet",
+          ncId: "nc-imp-restricted-snippet",
+          title: "Imported snippet",
+          content: "restricted snippet body",
+        },
+      ]),
+    ).toEqual({ imported: 1, errors: [] });
+
+    expect(await count(w, "tree_nodes", "project_id", w.projectId)).toBe(
+      treeNodesBefore + 3,
+    );
+    expect(await count(w, "snippets", "project_id", w.projectId)).toBe(
+      snippetsBefore + 1,
+    );
+    expect(
+      await w.rows(
+        "SELECT id FROM tree_nodes WHERE id IN ('imp-restricted-folder', 'imp-restricted-scene')",
+      ),
+    ).toHaveLength(2);
+    expect(
+      await w.rows(
+        "SELECT id FROM tree_nodes WHERE node_type = 'note' AND title = 'imp-restricted-memo'",
+      ),
+    ).toHaveLength(1);
+    expect(
+      await w.rows(
+        "SELECT id FROM snippets WHERE id = 'imp-restricted-snippet'",
+      ),
+    ).toHaveLength(1);
+
+    const sent = w.rig.sent.slice(sentBefore);
+    const writers = ["tree_node_create", "tree_node_patch", "snippet_create"];
+    for (const cmd of writers) {
+      expect(sent.some((s) => s.cmd === cmd && s.ok)).toBe(true);
+    }
+    expect(sent.filter((s) => writers.includes(s.cmd) && !s.ok)).toEqual([]);
+    expect(
+      sent.filter((s) => s.sql && /\b(insert|update|delete)\b/i.test(s.sql)),
+    ).toEqual([]);
+  });
+
+  it("saveBaseline restricted: generic INSERT upsert and hash UPDATE are denied without changing the row", async () => {
+    const w = await workspace();
+    await restrict(w);
+    const { saveBaseline } = await renderer(
+      "@/features/impact-review/baseline",
+    );
+    const before = await baselineRow(w);
+    // The full-scope restore above runs first; the row must still be there,
+    // or "the row did not change" below would hold vacuously.
+    expect(before).toMatchObject({
+      project_id: w.projectId,
+      content_hash: expect.any(String),
+    });
+    const sentBefore = w.rig.sent.length;
+
+    await expect(
+      saveBaseline(w.projectId, w.codexId, {
+        ...snapshotFixture,
+        name: "blocked upsert",
+      }).catch((e: unknown) => {
+        throw new Error(errorChain(e));
+      }),
+    ).rejects.toThrow(MARKER);
+    expect(await baselineRow(w)).toEqual(before);
+
+    await expect(
+      saveBaseline(
+        w.projectId,
+        w.codexId,
+        { ...snapshotFixture, name: "blocked update" },
+        before.content_hash,
+      ).catch((e: unknown) => {
+        throw new Error(errorChain(e));
+      }),
+    ).rejects.toThrow(MARKER);
+    expect(await baselineRow(w)).toEqual(before);
+
+    const writes = w.rig.sent
+      .slice(sentBefore)
+      .filter((s) => s.sql && /\b(insert|update|delete)\b/i.test(s.sql));
+    expect(writes).toHaveLength(2);
+    expect(writes.every((s) => !s.ok && s.error?.includes(MARKER))).toBe(true);
   });
 });

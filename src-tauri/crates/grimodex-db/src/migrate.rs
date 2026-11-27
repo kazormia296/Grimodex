@@ -851,6 +851,92 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_chat_messages_session
                 ON chat_messages(session_id, created_at);
 
+            CREATE TABLE IF NOT EXISTS mastra_message_parts (
+                message_id TEXT PRIMARY KEY REFERENCES chat_messages(id) ON DELETE CASCADE,
+                parts_json TEXT NOT NULL CHECK(json_valid(parts_json))
+            );
+
+            CREATE TABLE IF NOT EXISTS mastra_thread_metadata (
+                session_id TEXT PRIMARY KEY REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                metadata_json TEXT NOT NULL DEFAULT '{}'
+                    CHECK(json_valid(metadata_json) AND json_type(metadata_json) = 'object')
+            );
+
+            CREATE TABLE IF NOT EXISTS mastra_resources (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
+                working_memory TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}'
+                    CHECK(json_valid(metadata_json) AND json_type(metadata_json) = 'object'),
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS mastra_observational_memory (
+                id TEXT PRIMARY KEY,
+                scope TEXT NOT NULL CHECK(scope IN ('thread', 'resource')),
+                thread_id TEXT REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+                resource_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_observed_at TEXT,
+                origin_type TEXT NOT NULL CHECK(origin_type IN ('initial', 'reflection')),
+                generation_count INTEGER NOT NULL CHECK(generation_count >= 0),
+                superseded_by TEXT,
+                active_observations TEXT NOT NULL,
+                buffered_observation_chunks_json TEXT
+                    CHECK(buffered_observation_chunks_json IS NULL OR json_valid(buffered_observation_chunks_json)),
+                buffered_observations TEXT,
+                buffered_observation_tokens INTEGER,
+                buffered_message_ids_json TEXT
+                    CHECK(buffered_message_ids_json IS NULL OR json_valid(buffered_message_ids_json)),
+                buffered_reflection TEXT,
+                buffered_reflection_tokens INTEGER,
+                buffered_reflection_input_tokens INTEGER,
+                reflected_observation_line_count INTEGER,
+                observed_message_ids_json TEXT
+                    CHECK(observed_message_ids_json IS NULL OR json_valid(observed_message_ids_json)),
+                observed_timezone TEXT,
+                total_tokens_observed INTEGER NOT NULL DEFAULT 0,
+                observation_token_count INTEGER NOT NULL DEFAULT 0,
+                pending_message_tokens INTEGER NOT NULL DEFAULT 0,
+                is_reflecting INTEGER NOT NULL DEFAULT 0 CHECK(is_reflecting IN (0, 1)),
+                is_observing INTEGER NOT NULL DEFAULT 0 CHECK(is_observing IN (0, 1)),
+                is_buffering_observation INTEGER NOT NULL DEFAULT 0
+                    CHECK(is_buffering_observation IN (0, 1)),
+                is_buffering_reflection INTEGER NOT NULL DEFAULT 0
+                    CHECK(is_buffering_reflection IN (0, 1)),
+                last_buffered_at_tokens INTEGER NOT NULL DEFAULT 0,
+                last_buffered_at_time TEXT,
+                config_json TEXT NOT NULL DEFAULT '{}'
+                    CHECK(json_valid(config_json) AND json_type(config_json) = 'object'),
+                metadata_json TEXT
+                    CHECK(metadata_json IS NULL OR (json_valid(metadata_json) AND json_type(metadata_json) = 'object')),
+                CHECK ((scope = 'thread' AND thread_id IS NOT NULL AND project_id IS NULL)
+                    OR (scope = 'resource' AND thread_id IS NULL AND project_id IS NOT NULL))
+            );
+            CREATE INDEX IF NOT EXISTS idx_mastra_observational_memory_thread
+                ON mastra_observational_memory(thread_id, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_mastra_observational_memory_project
+                ON mastra_observational_memory(project_id, updated_at);
+
+            CREATE TABLE IF NOT EXISTS mastra_memory_vectors (
+                index_name TEXT NOT NULL,
+                id TEXT NOT NULL,
+                vector BLOB NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}'
+                    CHECK(json_valid(metadata_json) AND json_type(metadata_json) = 'object'),
+                message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+                PRIMARY KEY (index_name, id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_mastra_memory_vectors_message
+                ON mastra_memory_vectors(message_id);
+            CREATE TABLE IF NOT EXISTS mastra_memory_vector_indexes (
+                index_name TEXT PRIMARY KEY,
+                dimension INTEGER NOT NULL CHECK(dimension > 0)
+            );
+
             -- Per-message prompt snapshot: the finalized system prompt actually
             -- sent for a chat turn, keyed to the triggering user message. Side-table
             -- (kept out of chat_messages.metadata) so the heavy prompt text stays out
@@ -4614,6 +4700,163 @@ impl Database {
             if current < 45 {
                 Self::release_contended_freshness_exhaustions_v45(&conn)?;
             }
+            // SCHEMA 48 / DR-M3-39: immutable identity correction rules,
+            // lineage records, and rule application history. Codex and scene
+            // IDs intentionally remain unlinked so scoped snapshot restores
+            // cannot erase these records or be blocked by them.
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS identity_correction_rule_revisions (
+                    id                       TEXT PRIMARY KEY NOT NULL,
+                    project_id               TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    rule_id                  TEXT NOT NULL,
+                    revision_no              INTEGER NOT NULL CHECK(revision_no >= 1),
+                    supersedes_revision_id   TEXT UNIQUE,
+                    state                    TEXT NOT NULL CHECK(state IN ('active', 'retired')),
+                    kind                     TEXT NOT NULL CHECK(kind IN (
+                        'must-link-surface',
+                        'cannot-link-entries',
+                        'preferred-binding',
+                        'preferred-canonical-name',
+                        'suppressed-merge-candidate'
+                    )),
+                    scope_kind               TEXT NOT NULL CHECK(scope_kind IN ('any', 'exact')),
+                    scope_scene_id           TEXT,
+                    surface_text             TEXT,
+                    entry_id                 TEXT,
+                    other_entry_id           TEXT,
+                    canonical_name           TEXT,
+                    keep_previous_as_alias  INTEGER CHECK(keep_previous_as_alias IN (0, 1)),
+                    reason                   TEXT,
+                    provenance_kind          TEXT NOT NULL,
+                    provenance_ref           TEXT,
+                    actor_id                 TEXT NOT NULL,
+                    created_at               TEXT NOT NULL,
+                    request_id               TEXT NOT NULL,
+                    UNIQUE(rule_id, revision_no),
+                    UNIQUE(project_id, request_id),
+                    UNIQUE(project_id, id),
+                    FOREIGN KEY(project_id, supersedes_revision_id)
+                        REFERENCES identity_correction_rule_revisions(project_id, id) ON DELETE CASCADE,
+                    CHECK((revision_no = 1 AND supersedes_revision_id IS NULL)
+                       OR (revision_no > 1 AND supersedes_revision_id IS NOT NULL)),
+                    CHECK((scope_kind = 'any' AND scope_scene_id IS NULL)
+                       OR (scope_kind = 'exact' AND scope_scene_id IS NOT NULL)),
+                    CHECK(
+                        (kind IN ('must-link-surface', 'preferred-binding')
+                         AND surface_text IS NOT NULL AND entry_id IS NOT NULL
+                         AND other_entry_id IS NULL AND canonical_name IS NULL
+                         AND keep_previous_as_alias IS NULL)
+                        OR
+                        (kind IN ('cannot-link-entries', 'suppressed-merge-candidate')
+                         AND entry_id IS NOT NULL AND other_entry_id IS NOT NULL
+                         AND entry_id < other_entry_id AND surface_text IS NULL
+                         AND canonical_name IS NULL AND keep_previous_as_alias IS NULL)
+                        OR
+                        (kind = 'preferred-canonical-name'
+                         AND entry_id IS NOT NULL AND canonical_name IS NOT NULL
+                         AND keep_previous_as_alias IS NOT NULL
+                         AND keep_previous_as_alias IN (0, 1)
+                         AND surface_text IS NULL AND other_entry_id IS NULL)
+                    )
+                );
+                CREATE INDEX IF NOT EXISTS idx_identity_correction_rules_project_kind
+                    ON identity_correction_rule_revisions(project_id, kind);
+                CREATE INDEX IF NOT EXISTS idx_identity_correction_rules_project_entry
+                    ON identity_correction_rule_revisions(project_id, entry_id);
+                CREATE INDEX IF NOT EXISTS idx_identity_correction_rules_project_other_entry
+                    ON identity_correction_rule_revisions(project_id, other_entry_id);
+                CREATE INDEX IF NOT EXISTS idx_identity_correction_rules_project_scope_scene
+                    ON identity_correction_rule_revisions(project_id, scope_scene_id);
+
+                CREATE TABLE IF NOT EXISTS identity_lineage_operations (
+                    id                    TEXT PRIMARY KEY NOT NULL,
+                    project_id            TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    op_kind               TEXT NOT NULL CHECK(op_kind IN ('merge', 'split', 'undo')),
+                    undoes_operation_id   TEXT UNIQUE,
+                    reason                TEXT,
+                    actor_id              TEXT NOT NULL,
+                    created_at            TEXT NOT NULL,
+                    request_id            TEXT NOT NULL,
+                    narrative_commit_id   TEXT,
+                    applied_change_sequence INTEGER NOT NULL,
+                    ai_disclosure_choice  TEXT,
+                    UNIQUE(project_id, id),
+                    UNIQUE(project_id, request_id),
+                    CHECK((op_kind = 'undo' AND undoes_operation_id IS NOT NULL)
+                       OR (op_kind IN ('merge', 'split') AND undoes_operation_id IS NULL)),
+                    FOREIGN KEY(project_id, undoes_operation_id)
+                        REFERENCES identity_lineage_operations(project_id, id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS identity_lineage_mappings (
+                    operation_id       TEXT NOT NULL REFERENCES identity_lineage_operations(id) ON DELETE CASCADE,
+                    ordinal             INTEGER NOT NULL,
+                    source_entry_id     TEXT NOT NULL,
+                    target_entry_id     TEXT NOT NULL,
+                    source_disposition  TEXT NOT NULL CHECK(source_disposition IN ('retired', 'retained')),
+                    PRIMARY KEY(operation_id, ordinal)
+                );
+
+                CREATE TABLE IF NOT EXISTS identity_lineage_reference_assignments (
+                    operation_id    TEXT NOT NULL REFERENCES identity_lineage_operations(id) ON DELETE CASCADE,
+                    ordinal          INTEGER NOT NULL,
+                    reference_kind   TEXT NOT NULL,
+                    reference_id     TEXT NOT NULL,
+                    from_entry_id    TEXT NOT NULL,
+                    to_entry_id      TEXT NOT NULL,
+                    PRIMARY KEY(operation_id, ordinal)
+                );
+                CREATE INDEX IF NOT EXISTS idx_identity_lineage_reference_assignments_reference
+                    ON identity_lineage_reference_assignments(reference_kind, reference_id);
+
+                CREATE TABLE IF NOT EXISTS identity_correction_applications (
+                    id                           TEXT PRIMARY KEY NOT NULL,
+                    project_id                   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    origin_proposal_revision_id  TEXT NOT NULL REFERENCES narrative_proposal_revisions(id) ON DELETE CASCADE,
+                    input_proposal_revision_id   TEXT NOT NULL REFERENCES narrative_proposal_revisions(id) ON DELETE CASCADE,
+                    output_proposal_revision_id  TEXT REFERENCES narrative_proposal_revisions(id) ON DELETE CASCADE,
+                    rule_revision_id             TEXT NOT NULL REFERENCES identity_correction_rule_revisions(id) ON DELETE CASCADE,
+                    route                        TEXT NOT NULL,
+                    outcome                      TEXT NOT NULL,
+                    reason_code                  TEXT NOT NULL,
+                    reapply_batch_id             TEXT NOT NULL,
+                    created_at                   TEXT NOT NULL,
+                    UNIQUE(reapply_batch_id, input_proposal_revision_id, rule_revision_id),
+                    CHECK((outcome = 'applied' AND output_proposal_revision_id IS NOT NULL)
+                       OR (outcome <> 'applied' AND output_proposal_revision_id IS NULL))
+                );
+                CREATE INDEX IF NOT EXISTS idx_identity_correction_applications_project_batch
+                    ON identity_correction_applications(project_id, reapply_batch_id);
+                CREATE INDEX IF NOT EXISTS idx_identity_correction_applications_origin_revision
+                    ON identity_correction_applications(origin_proposal_revision_id);
+                CREATE INDEX IF NOT EXISTS idx_identity_correction_applications_input_revision
+                    ON identity_correction_applications(input_proposal_revision_id);
+                CREATE INDEX IF NOT EXISTS idx_identity_correction_applications_output_revision
+                    ON identity_correction_applications(output_proposal_revision_id);
+                CREATE INDEX IF NOT EXISTS idx_identity_correction_applications_rule_revision
+                    ON identity_correction_applications(rule_revision_id);
+
+                CREATE TRIGGER IF NOT EXISTS identity_correction_rule_revisions_immutable_update
+                    BEFORE UPDATE ON identity_correction_rule_revisions BEGIN
+                        SELECT RAISE(ABORT, 'ERM_IDENTITY_RULE_REVISION_IMMUTABLE');
+                    END;
+                CREATE TRIGGER IF NOT EXISTS identity_lineage_operations_immutable_update
+                    BEFORE UPDATE ON identity_lineage_operations BEGIN
+                        SELECT RAISE(ABORT, 'ERM_IDENTITY_LINEAGE_OPERATION_IMMUTABLE');
+                    END;
+                CREATE TRIGGER IF NOT EXISTS identity_lineage_mappings_immutable_update
+                    BEFORE UPDATE ON identity_lineage_mappings BEGIN
+                        SELECT RAISE(ABORT, 'ERM_IDENTITY_LINEAGE_MAPPING_IMMUTABLE');
+                    END;
+                CREATE TRIGGER IF NOT EXISTS identity_lineage_reference_assignments_immutable_update
+                    BEFORE UPDATE ON identity_lineage_reference_assignments BEGIN
+                        SELECT RAISE(ABORT, 'ERM_IDENTITY_LINEAGE_REFERENCE_ASSIGNMENT_IMMUTABLE');
+                    END;
+                CREATE TRIGGER IF NOT EXISTS identity_correction_applications_immutable_update
+                    BEFORE UPDATE ON identity_correction_applications BEGIN
+                        SELECT RAISE(ABORT, 'ERM_IDENTITY_CORRECTION_APPLICATION_IMMUTABLE');
+                    END;",
+            )?;
             // SCHEMA 46 / DR-DBC-3: the write clock, its lineage row and the
             // per-table triggers. Idempotent and last, so every table the
             // passes above created is covered; inside the same savepoint as

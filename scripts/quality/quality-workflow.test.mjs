@@ -5806,14 +5806,20 @@ test("NIR-1 continuation record keeps verbatim user decisions and the bounded de
       `${k} must not be recorded as confirmed by Session A`,
     );
   }
-  // The bump-version release Full still names a local Full; it is recorded as
-  // an open [policy] mismatch rather than edited from G0.
+  // The bump-version release Full named a local Full; it was recorded as an
+  // open [policy] mismatch rather than edited from G0. #1156 (2026-11-26) moved
+  // the skill to the hosted Full, so the line now carries a resolved note in
+  // front and keeps the original sentence as the record of its time.
   const openIssues = normalizeSection(
     sectionFromHeading(record, "## 11. 未解決事項"),
   );
   assert.match(
     openIssues,
     /`\[policy\]` `\.agents\/skills\/bump-version\/SKILL\.md` の手順9（97行目）は、release commit の Full に、ローカルの `pnpm ci:local:full -- --base "\$release_base" --head "\$release_head"` を指示したままである。.*GDX-TRACE-001.*食い違う。.*G0 では skill を編集しない/,
+  );
+  assert.match(
+    openIssues,
+    /\*\*解決済み（2026-11-26、#1156。[^\n]*\*\*：[^\n]*以下は当時の記述のまま残す。`\[policy\]` `\.agents\/skills\/bump-version\/SKILL\.md` の手順9/,
   );
   await assertLocalMarkdownLink(recordPath, PROPOSAL6_DRAFT_PATH);
   await assertLocalMarkdownLink(

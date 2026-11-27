@@ -4974,6 +4974,7 @@ pub fn get_run_review_bundle(
                         .map(|(task_id, attempt_id)| (task_id.as_str(), attempt_id.as_str())),
                     &mut proposals,
                 );
+                super::redecidable_proposals::attach_redecide_status(conn, &project_id, &mut proposals)?;
             }
         }
 
@@ -6076,6 +6077,7 @@ fn append_decision_on_conn_with_reuse(
 }
 
 #[derive(Clone, Copy, serde::Serialize)]
+#[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum RemovedVia {
     ScreenDelete,

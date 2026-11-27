@@ -2168,6 +2168,17 @@ fn ensure_feed_object_project_scope(
             "SELECT project_id FROM codex_entries WHERE id = ?1",
             identity("entryId")?,
         )),
+        "identity-correction-rule" => {
+            let rule_id = identity("ruleId")?;
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM identity_correction_rule_revisions
+                 WHERE project_id = ?1 AND rule_id = ?2)",
+                params![project_id, rule_id],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(exists, "Narrative Change Feed rule does not exist in project");
+            None
+        }
         "codex-relation" => Some((
             "SELECT project_id FROM codex_relations WHERE id = ?1",
             identity("relationId")?,
@@ -3739,6 +3750,7 @@ pub(crate) fn object_key_identity_field(kind: &str) -> anyhow::Result<&'static s
         "scene-body-declaration" => "sceneId",
         "chronicle-event" => "eventId",
         "codex-entry" => "entryId",
+        "identity-correction-rule" => "ruleId",
         "codex-relation" => "relationId",
         "codex-phase" => "phaseId",
         "codex-detail-definition" => "definitionId",

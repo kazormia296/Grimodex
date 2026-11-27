@@ -65,7 +65,7 @@ const ADDON = path.join(
   "grimodex-node.node",
 );
 const require = createRequire(import.meta.url);
-type NativeBackendInstance = NapiBackendLike & Record<string, any>;
+type NativeBackendInstance = NapiBackendLike;
 const { Backend: NativeBackend } = require(ADDON) as {
   Backend: new (appData: string) => NativeBackendInstance;
 };
@@ -166,9 +166,8 @@ async function startMain(
   const { createProfileEgressGate, D2A_OWN_DATA_READ_OPEN } =
     await import("./profileEgress.js");
   // The same module graph as the gate (the consumed token is per module).
-  const { activateThroughMain } = await import(
-    "./profileActivation.test.support.js"
-  );
+  const { activateThroughMain } =
+    await import("./profileActivation.test.support.js");
   const { registerEventBus } = await import("./events.js");
   const { registerIpcRouter } = await import("./ipc.js");
   const { IPC } = await import("../shared/ipcContract.js");
@@ -198,7 +197,10 @@ async function startMain(
     gate,
     open: D2A_OWN_DATA_READ_OPEN,
     activate: async () => {
-      const result = await activateThroughMain(proxied as NapiBackendLike, gate);
+      const result = await activateThroughMain(
+        proxied as NapiBackendLike,
+        gate,
+      );
       expect(result).toEqual({ status: "activated" });
     },
     route: (cmd, args, senderId = 7) =>
@@ -532,6 +534,11 @@ function readCalls(ws: Workspace): ReadCall[] {
       args: { payload: { projectId: ws.projectId, sceneId: "no-such-scene" } },
     },
     {
+      name: "extraction redecidable proposals",
+      cmd: "narrative_extraction_list_redecidable_proposals",
+      args: { payload: { projectId: ws.projectId } },
+    },
+    {
       name: "maintenance inbox",
       cmd: "narrative_maintenance_inbox_list",
       args: { payload: { projectId: ws.projectId } },
@@ -751,7 +758,7 @@ describe("own-data-read through the real router, gate and Native", () => {
       sqlPolicy: Record<string, unknown>;
     };
     expect(status.sqlPolicy).toEqual({
-      version: 2,
+      version: 3,
       closedTables: [...NATIVE_CLOSED_TABLES],
       readOpenTables: [...NATIVE_READ_OPEN_TABLES],
       readOpenColumns: NATIVE_READ_OPEN_COLUMNS,

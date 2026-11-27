@@ -15,17 +15,33 @@ const PROJECT: &str = "project-1";
 
 /// Two separate approvals and Applications, sharing one real Prepare/Apply transaction.
 fn human_import() -> anyhow::Result<Database> {
+    human_import_ids(&["one", "two"], |_| {})
+}
+
+fn human_import_ids(
+    ids: &[&str],
+    configure_envelope: impl FnOnce(&mut Value),
+) -> anyhow::Result<Database> {
     let db = current_schema_full_db();
     seed_scene(&db, "source");
-    import_events(&db, &["one", "two"])?;
+    import_events_with(&db, ids, configure_envelope)?;
     Ok(db)
 }
 
 fn import_events(db: &Database, ids: &[&str]) -> anyhow::Result<()> {
+    import_events_with(db, ids, |_| {})
+}
+
+fn import_events_with(
+    db: &Database,
+    ids: &[&str],
+    configure_envelope: impl FnOnce(&mut Value),
+) -> anyhow::Result<()> {
     enable_manual_apply_for_test(db);
     create_run_with_task(db, "existence-run", "existence-task");
     let mut envelope = scene_body_envelope(db, "existence-run", "existence-task", "source");
     envelope["changeKind"] = json!("add");
+    configure_envelope(&mut envelope);
     let mut seeds = Vec::new();
     for &id in ids {
         seeds.push(ProposalSeed {
@@ -547,10 +563,20 @@ fn readers_accept_an_applied_proposal_rejected_by_screen_delete() -> anyhow::Res
 }
 
 fn replay(db: &Database, journal: &Value, direction: &str, request: &str) -> anyhow::Result<Value> {
+    replay_in_project(db, PROJECT, journal, direction, request)
+}
+
+fn replay_in_project(
+    db: &Database,
+    project: &str,
+    journal: &Value,
+    direction: &str,
+    request: &str,
+) -> anyhow::Result<Value> {
     crate::agent_writes::agent_undo_journal_impl(
         db,
         serde_json::from_value(json!({
-            "projectId":PROJECT,"sessionId":"session","journalId":journal["undoJournalId"],
+            "projectId":project,"sessionId":"session","journalId":journal["undoJournalId"],
             "requestId":request,"direction":direction,"origin":direction,
             "authorityRoute":"history-replay","caller":"undo-redo-command",
             "controls":["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"]
@@ -1200,4 +1226,8 @@ fn measure_restore_approval_loss_context() -> anyhow::Result<()> {
         assert_eq!(count, 60);
         Ok(())
     })
+}
+
+mod redecidable {
+    include!("redecidable_proposals_tests.rs");
 }
