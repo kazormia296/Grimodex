@@ -84,8 +84,8 @@ Agentモードはboolean既定値の反転ではなく、ユーザー設定
 以下の2軸へ置き換える。
 
 ```ts
-effect: "read" | "stage" | "mutate" | "destructive";
-approvalMode: "none" | "task-scope" | "always";
+effect: "read" | "stage" | "mutate" | "destructive"
+approvalMode: "none" | "task-scope" | "always"
 ```
 
 - `read / none` — 自動実行可能。
@@ -144,12 +144,10 @@ rebase可能、ポリシーが現在も有効、Runが取り消されていな�
 storeの要求値と実際の実行経路を分離する。
 
 ```ts
-agentPreference: "auto" | "off";
-effectiveMode: "agent" | "rag" | "chat" | "fallback-chat";
-fallbackReason: "tools-unsupported" |
-  "provider-unsupported" |
-  "model-capability-unknown" |
-  null;
+agentPreference: "auto" | "off"
+effectiveMode: "agent" | "rag" | "chat" | "fallback-chat"
+fallbackReason: "tools-unsupported" | "provider-unsupported"
+  | "model-capability-unknown" | null
 ```
 
 Auto時の解決順は「ツール対応ならAgent、非対応かつRAG利用可能ならRAG、
@@ -163,7 +161,7 @@ mutable stateを増やさず、route policyからUI projection（「このモデ
 ### 7. ツール能力は3値とし、不明時は試行から退避する
 
 ```ts
-toolSupport: "supported" | "unsupported" | "unknown";
+toolSupport: "supported" | "unsupported" | "unknown"
 ```
 
 `unknown`（現行の楽観フォールバック`supportsTools: true`に相当）はAgent経路を
@@ -199,7 +197,7 @@ type ParsedAiPolicy =
 
 - `missing` — 新規Projectの明示された製品既定値を使ってよい。
 - `invalid` — Chat・読み取りは許可してよいが、`bodyWrite / structureWrite /
-knowledgeWrite`は`false`とし、UIに「AIポリシーが壊れているため書き込みを
+  knowledgeWrite`は`false`とし、UIに「AIポリシーが壊れているため書き込みを
   停止した」と表示する。
 
 Agent Auto既定化後、設定破損が自動書き込み許可へ変換される現行挙動は許容しない。

@@ -153,13 +153,13 @@ Project policyの拡張、新規capability取得、必須の人間承認の代�
 常に最新状態へ追随する単一policyは、作者が執筆中の場合にlivelockを生む。以下の一貫性modelを
 採用する。
 
-| Work kind             | Consistency basis                                      | 実行中のCanonical変更                               |
-| --------------------- | ------------------------------------------------------ | --------------------------------------------------- |
-| Read-only analysis    | capture-on-first-readによるper-source repeatable basis | 継続し、完了時にread setとdeltaの交差を評価         |
-| Proposed rewrite      | Workspaceのbase revision / digestを固定                | stageは継続し、merge時にrevalidateまたはconflict    |
-| Canonical mutation    | fresh OCC / digest precondition                        | stale writeを拒否し、rebase / reviewを要求          |
-| Semantic Verification | ChangeSet digestとcanonical-sequence Barrierを固定     | Barrierは完走し、current headへの適用可能性を別判定 |
-| 明示的live monitor    | follow-latest＋debounce／hysteresis                    | ユーザーが選択した場合だけrefresh                   |
+| Work kind | Consistency basis | 実行中のCanonical変更 |
+| --- | --- | --- |
+| Read-only analysis | capture-on-first-readによるper-source repeatable basis | 継続し、完了時にread setとdeltaの交差を評価 |
+| Proposed rewrite | Workspaceのbase revision / digestを固定 | stageは継続し、merge時にrevalidateまたはconflict |
+| Canonical mutation | fresh OCC / digest precondition | stale writeを拒否し、rebase / reviewを要求 |
+| Semantic Verification | ChangeSet digestとcanonical-sequence Barrierを固定 | Barrierは完走し、current headへの適用可能性を別判定 |
+| 明示的live monitor | follow-latest＋debounce／hysteresis | ユーザーが選択した場合だけrefresh |
 
 #### Capture-on-first-read
 
