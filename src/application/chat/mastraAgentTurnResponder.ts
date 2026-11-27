@@ -238,7 +238,8 @@ export async function registerMastraAgentTurnResponder(
         question.toolName === "apply_ai_tree_plan" ||
         question.toolName === "propose_scene_body"
       ) {
-        const { executeTool } = await import("@/features/chat/agent/toolExecutors");
+        const { executeTool } =
+          await import("@/features/chat/agent/toolExecutors");
         if (!active) return;
         try {
           assertTurnAuthority();
