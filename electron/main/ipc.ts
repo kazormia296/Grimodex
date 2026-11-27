@@ -386,6 +386,26 @@ function hasRendererHistoryJournal(
   );
 }
 
+function postprocessSuccessfulWriter(
+  cmd: string,
+  args: CommandArgs,
+  value: unknown,
+  senderId: number,
+  wakeRelatedScenes: () => void,
+): void {
+  if (RELATED_SCENES_MUTATION_WAKE_COMMANDS.has(cmd)) wakeRelatedScenes();
+  if (!HISTORY_JOURNAL_WRITER_COMMANDS.has(cmd) || !isRecord(value)) return;
+  const payload = isRecord(args.payload) ? args.payload : args;
+  const projectId = payload.projectId;
+  const journalId = value.undoJournalId;
+  if (
+    isNonEmptyTrimmedString(projectId) &&
+    isNonEmptyTrimmedString(journalId)
+  ) {
+    recordRendererHistoryJournalForIpc(senderId, projectId, journalId);
+  }
+}
+
 function isNonEmptyTrimmedString(value: unknown): value is string {
   return (
     typeof value === "string" &&
@@ -1759,6 +1779,7 @@ export function consumeAndBindAgentAuthorityCapability(
   payload: CommandArgs,
   senderId: number,
 ): CommandArgs | null {
+  if (!Number.isInteger(senderId)) return null;
   const args = bindRendererAuthorityForIpc(cmd, { payload }, senderId);
   return isRecord(args.payload) &&
     args.payload.authorityRoute === "interactive-agent-command"
@@ -2280,6 +2301,13 @@ export function registerIpcRouter(
     reportFailure: () =>
       console.warn("[related-scenes] Native generation reconciliation failed"),
   });
+  if (typeof mastraTurnOwner?.setSuccessfulWriteProcessor === "function") {
+    mastraTurnOwner.setSuccessfulWriteProcessor((cmd, args, value, senderId) =>
+      postprocessSuccessfulWriter(cmd, args, value, senderId, () =>
+        relatedScenesReconciler.wake(),
+      ),
+    );
+  }
   const relatedScenesAuthority = createRelatedScenesSearchAuthority({
     releaseOwner: (ownerKey) => {
       relatedScenesReconciler.releaseOwner(ownerKey);
@@ -2847,8 +2875,14 @@ export function registerIpcRouter(
             );
           }
         }
-        if (envelope.ok && RELATED_SCENES_MUTATION_WAKE_COMMANDS.has(cmd)) {
-          relatedScenesReconciler.wake();
+        if (envelope.ok) {
+          postprocessSuccessfulWriter(
+            cmd,
+            boundArgs,
+            envelope.value,
+            event.sender.id,
+            () => relatedScenesReconciler.wake(),
+          );
         }
         if (
           narrativeMaintenanceCiSeam.active &&
@@ -2874,27 +2908,6 @@ export function registerIpcRouter(
                 claimedRunId,
               );
             }
-          }
-        }
-        if (
-          envelope.ok &&
-          HISTORY_JOURNAL_WRITER_COMMANDS.has(cmd) &&
-          isRecord(envelope.value)
-        ) {
-          const payload = isRecord(boundArgs.payload)
-            ? boundArgs.payload
-            : boundArgs;
-          const projectId = payload.projectId;
-          const journalId = envelope.value.undoJournalId;
-          if (
-            isNonEmptyTrimmedString(projectId) &&
-            isNonEmptyTrimmedString(journalId)
-          ) {
-            recordRendererHistoryJournalForIpc(
-              event.sender.id,
-              projectId,
-              journalId,
-            );
           }
         }
         if (workspaceSwitchLeases.length > 0) {

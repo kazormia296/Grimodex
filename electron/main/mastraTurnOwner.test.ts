@@ -5542,6 +5542,91 @@ describe("MP-5 main-owned question holds", () => {
     });
   });
 
+  it("records and notifies a completed Native write even when Stop arrives during the write", async () => {
+    const nativeStarted = deferred<void>();
+    const nativeResult = deferred<string>();
+    const writeReceipt = vi.fn(() => true);
+    const processSuccessfulWrite = vi.fn();
+    const h = harness({
+      responses: [
+        {
+          blocks: [
+            {
+              type: "tool_use",
+              id: "stop-write-call",
+              name: "create_event",
+              input: { title: "Arrival", startTime: 4, precision: "exact" },
+            },
+          ],
+          stopReason: "tool_use",
+        },
+      ],
+      nativeWriterMethods: {
+        agentEventCreate: vi.fn(() => {
+          nativeStarted.resolve();
+          return nativeResult.promise;
+        }),
+      },
+      policyDbExecute: async () =>
+        JSON.stringify({
+          __grimodexDbResultKind: "read",
+          rows: [{ ai_policy: null }],
+        }),
+      issueWriteCapabilities: (senderId, args, response, backend, identity) =>
+        issueAgentAuthorityCapabilitiesForSender(
+          senderId,
+          args as never,
+          response,
+          backend,
+          identity as never,
+        ),
+      agentAuthorityRequestId,
+      bindWriteCapability: consumeAndBindAgentAuthorityCapability,
+      sendWriteCompleted: writeReceipt,
+      runTurn: async (input) => {
+        const sent = await sendPreparedRequest(
+          input,
+          auditRequestFor(input),
+          0,
+        );
+        const tool = sent.response.blocks[0];
+        if (tool?.type !== "tool_use") throw new Error("write tool missing");
+        const binding = input.bindings?.find((item) => item.name === tool.name);
+        if (!binding) throw new Error("write binding missing");
+        await binding.execute(tool.input, {
+          toolCallId: tool.id,
+          signal: input.signal,
+        });
+      },
+    });
+    h.owner.setSuccessfulWriteProcessor(processSuccessfulWrite);
+    const { context } = h.newContext();
+    const started = h.owner.start(
+      context,
+      startRequest(TURN_A, { tools: ["create_event"] as never }),
+    );
+    await nativeStarted.promise;
+    expect(h.owner.cancel(context, { turnId: TURN_A })).toMatchObject({
+      status: "ok",
+      found: true,
+    });
+    nativeResult.resolve(
+      JSON.stringify({ entityId: "event-stop", undoJournalId: "undo-stop" }),
+    );
+
+    await expect(started).rejects.toThrow(/MASTRA_AGENT_TURN_CANCELLED/);
+    expect(writeReceipt).toHaveBeenCalledExactlyOnceWith(context.sender.id, {
+      targetId: "event-stop",
+      undoId: "undo-stop",
+    });
+    expect(processSuccessfulWrite).toHaveBeenCalledExactlyOnceWith(
+      "agent_event_create",
+      expect.objectContaining({ projectId: "project-1" }),
+      expect.objectContaining({ undoJournalId: "undo-stop" }),
+      context.sender.id,
+    );
+  });
+
   it("executes create_event through the typed writer and records its undo id", async () => {
     const writeReceipt = vi.fn(() => true);
     const writeResponse: AgentWireResponse = {

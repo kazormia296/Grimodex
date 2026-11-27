@@ -1,6 +1,9 @@
 /** Shared definitions for the 15 legacy write tools; kept byte-equivalent to the renderer golden. */
 import type { AgentReadToolDefinition } from "./agentReadToolDefinitions.js";
 
+export { MASTRA_AGENT_WRITE_TOOL_NAMES } from "./mastraAgentTurnWire.js";
+export type { MastraAgentWriteToolName } from "./mastraAgentTurnWire.js";
+
 export const MASTRA_WRITE_TOOL_NAMES = [
   "create_codex_entry",
   "update_codex_entry",
@@ -19,24 +22,6 @@ export const MASTRA_WRITE_TOOL_NAMES = [
   "remove_event_relation",
 ] as const;
 export type MastraWriteToolName = (typeof MASTRA_WRITE_TOOL_NAMES)[number];
-
-export const MASTRA_AGENT_WRITE_TOOL_NAMES = [
-  "create_codex_entry",
-  "update_codex_entry",
-  "create_foreshadow",
-  "update_foreshadow",
-  "create_snippet",
-  "create_event",
-  "update_event",
-  "delete_event",
-  "stamp_scene_event",
-  "unstamp_scene_event",
-  "set_event_participants",
-  "add_event_relation",
-  "remove_event_relation",
-] as const;
-export type MastraAgentWriteToolName =
-  (typeof MASTRA_AGENT_WRITE_TOOL_NAMES)[number];
 
 export interface MastraWritePort {
   execute(

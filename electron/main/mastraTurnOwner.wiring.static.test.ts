@@ -207,12 +207,31 @@ describe("the owner module", () => {
     expect(OWNER).toMatch(/sendWriteCompleted\(turn\.senderId/);
     expect(OWNER).toMatch(/content: writeResult\.content/);
     expect(OWNER).toMatch(/undoId: writeResult\.undoId/);
-    expect(OWNER).not.toMatch(/\b(?:resumeData|approved)\b/u);
+    const writer = OWNER.slice(
+      OWNER.indexOf("const content = await spec.run("),
+    );
+    expect(writer.indexOf("writeToolResults.set(")).toBeLessThan(
+      writer.indexOf("assertLive(turn);"),
+    );
+    expect(writer.indexOf("sendWriteCompleted(turn.senderId")).toBeLessThan(
+      writer.indexOf("assertLive(turn);"),
+    );
+    expect(writer.indexOf("successfulWriteProcessor?.(")).toBeLessThan(
+      writer.indexOf("assertLive(turn);"),
+    );
+    expect(IPC).toMatch(
+      /typeof mastraTurnOwner\?\.setSuccessfulWriteProcessor === "function"/,
+    );
+    expect(OWNER).not.toMatch(
+      /\b(?:requireApproval|suspend|resumeData|approved)\b/u,
+    );
   });
 
   it("does not read Mastra resume or approval context as a UI answer", () => {
     for (const source of [OWNER, ADAPTER]) {
-      expect(source).not.toMatch(/\b(?:resumeData|approved)\b/u);
+      expect(source).not.toMatch(
+        /\b(?:requireApproval|suspend|resumeData|approved)\b/u,
+      );
     }
   });
 });

@@ -1070,13 +1070,13 @@ describe("parseMastraAgentTurnStartRequest", () => {
     }
   });
 
-  it("allows only distinct M4 or MP-5 UI tool names", () => {
+  it("allows only distinct M4, MP-5 UI and MP-6 write tool names", () => {
     expect(issueOf(start({ tools: [...M4_READ_TOOL_NAMES] }))).toBeNull();
     expect(issueOf(start({ tools: [...MASTRA_UI_TOOL_NAMES] }))).toBeNull();
     expect(
       issueOf(start({ tools: [...MASTRA_AGENT_WRITE_TOOL_NAMES] })),
     ).toBeNull();
-    expect(MASTRA_AGENT_TURN_TOOLS_MAX).toBe(33);
+    expect(MASTRA_AGENT_TURN_TOOLS_MAX).toBe(41);
     expect(issueOf(start({ tools: ["get_scene"] }))).toBeNull();
     expect(issueOf(start({ tools: ["not_a_tool"] }))).toBe("tools");
     expect(issueOf(start({ tools: ["get_scene", "get_scene"] }))).toBe("tools");

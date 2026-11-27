@@ -68,6 +68,8 @@ vi.mock("./windows.js", () => ({
 const {
   applyMainOwnedAuthorshipMarks,
   bindRendererAuthorityForIpc,
+  consumeAgentAuthorityCapability,
+  consumeAndBindAgentAuthorityCapability,
   recordRendererHistoryJournalForIpc,
   registerIpcRouter,
 } = await import("./ipc.js");
@@ -888,6 +890,28 @@ describe("registerIpcRouter fail-soft logging", () => {
         712,
       ).payload,
     ).toMatchObject({ authorityRoute: "" });
+  });
+
+  it("rejects a non-integer sender before consuming a write capability", async () => {
+    const grant = await issueAgentCapability(
+      "create_foreshadow",
+      { title: "from the model" },
+      713,
+    );
+    const payload = agentCapabilityPayload(grant, {
+      title: "from the model",
+      foreshadowId: grant.expectedEntityId,
+    });
+    expect(
+      consumeAndBindAgentAuthorityCapability(
+        "agent_foreshadow_create",
+        { payload },
+        Number.NaN,
+      ),
+    ).toBeNull();
+    expect(
+      consumeAgentAuthorityCapability("agent_foreshadow_create", payload, 713),
+    ).not.toBeNull();
   });
 
   it("rejects missing and replayed delete_event capabilities", async () => {

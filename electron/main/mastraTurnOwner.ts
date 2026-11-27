@@ -300,6 +300,13 @@ export interface MastraTurnOwnerOptions {
   ) => boolean;
 }
 
+type SuccessfulWriteProcessor = (
+  command: string,
+  payload: CommandArgs,
+  result: unknown,
+  senderId: number,
+) => void;
+
 /** A workspace switch's lease: `resume` reopens admission. Idempotent. */
 export interface MastraTurnSwitchLease {
   resume(success: boolean): Promise<void>;
@@ -339,6 +346,8 @@ export interface MastraTurnOwner {
   quiesceForWorkspaceSwitch(): Promise<MastraTurnSwitchLease>;
   /** The quit finalizer's call (dispose and complete both): bounded, idempotent, never rejects. */
   shutdown(): Promise<void>;
+  /** Installed by the IPC router so main-owned writes share its success effects. */
+  setSuccessfulWriteProcessor(processor: SuccessfulWriteProcessor): void;
   /** A backend event: a changed workspace binding ends the turns whose identity is no longer issued. */
   handleBackendEvent(channel: string, payload: unknown): void;
   /** How many turns are attached (running or preparing). */
@@ -522,6 +531,7 @@ export function createMastraTurnOwner(
       ));
   const sendWriteCompleted =
     options.sendWriteCompleted ?? sendMastraAgentWriteCompletedToWindow;
+  let successfulWriteProcessor: SuccessfulWriteProcessor | undefined;
   const m4Tools = new Map(
     createM4ReadToolDefinitions().map((tool) => [tool.name, tool]),
   );
@@ -1581,7 +1591,6 @@ export function createMastraTurnOwner(
                 shell: {},
               },
             );
-            assertLive(turn);
             if (
               !content ||
               typeof content !== "object" ||
@@ -1604,6 +1613,8 @@ export function createMastraTurnOwner(
               targetId: result.entityId,
               undoId: result.undoJournalId,
             });
+            successfulWriteProcessor?.(command, bound, content, turn.senderId);
+            assertLive(turn);
             const text = JSON.stringify(content);
             return {
               text,
@@ -1999,6 +2010,9 @@ export function createMastraTurnOwner(
     cancel: (context, request) => cancel(context, request),
     requestUiTool,
     answer,
+    setSuccessfulWriteProcessor(processor) {
+      successfulWriteProcessor = processor;
+    },
 
     async quiesceForProfileEgress(context) {
       // Admission first, and for good (a restricted or unavailable profile

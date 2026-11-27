@@ -9,9 +9,9 @@
  * turn owner is 3c's. A refusal is an `ok:true` value, not an error: the
  * renderer falls back to the legacy route on any of them.
  *
- * This file imports the shared M4 names and seven UI definitions; neither
- * dependency imports chat IR. The renderer and `electron/tsconfig.json` both
- * compile it. Issues contain fixed codes, never request values.
+ * This file imports the shared M4 names, seven UI definitions and the fixed
+ * write-tool allowlist; the renderer and `electron/tsconfig.json` both compile
+ * it. Issues contain fixed codes, never request values.
  *
  * What a request cannot carry (DR-MP3-4, -5): `capability`, `auditContext`,
  * `pathId`, `executionId` and `callerIdentity` are Main's. Main issues the
@@ -28,11 +28,25 @@ import {
   MASTRA_UI_TOOL_NAMES,
   type MastraUiToolName,
 } from "./mastraUiToolDefinitions.js";
-import {
-  MASTRA_AGENT_WRITE_TOOL_NAMES,
-  type MastraAgentWriteToolName,
-} from "./mastraWriteToolDefinitions.js";
 import { AGENT_SETTING_KEYS } from "./agentSettingCatalog.js";
+
+export const MASTRA_AGENT_WRITE_TOOL_NAMES = [
+  "create_codex_entry",
+  "update_codex_entry",
+  "create_foreshadow",
+  "update_foreshadow",
+  "create_snippet",
+  "create_event",
+  "update_event",
+  "delete_event",
+  "stamp_scene_event",
+  "unstamp_scene_event",
+  "set_event_participants",
+  "add_event_relation",
+  "remove_event_relation",
+] as const;
+export type MastraAgentWriteToolName =
+  (typeof MASTRA_AGENT_WRITE_TOOL_NAMES)[number];
 
 export const MASTRA_AGENT_TURN_START_COMMAND = "mastra_agent_turn_start";
 export const MASTRA_AGENT_TURN_CANCEL_COMMAND = "mastra_agent_turn_cancel";
@@ -101,7 +115,7 @@ export const MASTRA_AGENT_TURN_ROUTE_JSON_DEPTH_MAX = 6;
 export const MASTRA_AGENT_TURN_ROUTE_JSON_NODES_MAX = 512;
 
 /**
- * Tool names: 21 M4 plus seven shared UI tools. Legacy bounds: 25 calls
+ * Tool names: 21 M4, seven shared UI and 13 main-owned write tools. Legacy bounds: 25 calls
  * (`modelLimits.ts:1121-1124`), 8 default questions with an unbounded
  * override (`agentLoop.ts:32,66-77,156-158`),
  * `ja`/`en` (`chronicleReadContext.ts:27-33`), positive u32 output tokens
