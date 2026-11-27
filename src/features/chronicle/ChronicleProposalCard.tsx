@@ -1,5 +1,10 @@
 import { useTranslation } from "react-i18next";
 import { describeBulkApprovalReasons } from "./chronicleBulkApprovalReasons";
+import {
+  describeReapprovalReason,
+  describeRemoval,
+  type ReapprovalTranslate,
+} from "./chronicleReapprovalText";
 import type {
   ChronicleReviewProposal,
   ProbableDuplicateChoice,
@@ -15,11 +20,32 @@ export interface ChronicleProposalCardProps {
     status: Exclude<NarrativeProposalStatus, "unreviewed">,
   ) => void;
   readonly onDuplicateChoice?: (choice: ProbableDuplicateChoice) => void;
+  /** SRD/1 RA7: re-approve this one proposal (Native decides if it can). */
+  readonly onReapprove?: () => void;
   readonly disabled?: boolean;
 }
 
+/**
+ * How an applied proposal stands now (SRD/1 RD1/RD2, Native's values only):
+ * still applied, taken off because its event was removed, or not confirmed
+ * because the re-read failed. `null` for a proposal that is not applied.
+ */
+export type AppliedState = "applied" | "removed" | "unverified";
+
+export function appliedState(
+  proposal: ChronicleReviewProposal,
+): AppliedState | null {
+  if (proposal.application === null) return null;
+  if (proposal.redecide === "unverified") return "unverified";
+  if (proposal.redecide?.rejectedBy === "event-removed") return "removed";
+  return "applied";
+}
+
 function statusGlyph(proposal: ChronicleReviewProposal): string {
-  if (proposal.application !== null) return "✓";
+  const applied = appliedState(proposal);
+  if (applied === "removed") return "☒";
+  if (applied === "unverified") return "?";
+  if (applied === "applied") return "✓";
   if (proposal.applicability === "already-satisfied") return "✓";
   if (proposal.match.status === "probable-duplicate") return "⚠";
   if (proposal.status === "approved") return "☑";
@@ -37,11 +63,29 @@ export function ChronicleProposalCard({
   onSelect,
   onDecide,
   onDuplicateChoice,
+  onReapprove,
   disabled = false,
 }: ChronicleProposalCardProps) {
   const { t } = useTranslation();
   const alreadySatisfied = proposal.applicability === "already-satisfied";
   const applied = proposal.application !== null;
+  const appliedNow = appliedState(proposal);
+  const redecide =
+    proposal.redecide !== null && proposal.redecide !== "unverified"
+      ? proposal.redecide
+      : null;
+  const translate: ReapprovalTranslate = (key, fallback, values) =>
+    t(key, fallback, values);
+  const reapprovable =
+    appliedNow === "removed" && redecide?.reapproval.available === true;
+  const reapproveBlocked =
+    appliedNow === "removed" && !reapprovable
+      ? (describeReapprovalReason(redecide?.reapproval.reason, translate) ??
+        t(
+          "chronicle.extract.reapproveReason.unknown",
+          "確かめられませんでした",
+        ))
+      : null;
   const probable =
     proposal.match.status === "probable-duplicate" ? proposal.match : null;
   // Native's judgement only (BAO/1, B3): the card never computes it.
@@ -81,9 +125,33 @@ export function ChronicleProposalCard({
               既に同じEventが登録されています（適用不要）
             </span>
           )}
-          {applied && (
+          {appliedNow === "applied" && (
             <span className="block text-[10px] text-emerald-700 dark:text-emerald-400">
               取り込み済み（再適用しません）
+            </span>
+          )}
+          {appliedNow === "removed" && redecide && (
+            <span
+              className="block text-[10px] text-amber-700 dark:text-amber-400"
+              data-testid={`chronicle-proposal-removed-${proposal.proposalId}`}
+            >
+              {t(
+                "chronicle.extract.removedRejection",
+                "却下（出来事を消したため）",
+              )}
+              {" — "}
+              {describeRemoval(redecide, translate)}
+            </span>
+          )}
+          {appliedNow === "unverified" && (
+            <span
+              className="block text-[10px] text-muted-foreground"
+              data-testid={`chronicle-proposal-unverified-${proposal.proposalId}`}
+            >
+              {t(
+                "chronicle.extract.appliedUnverified",
+                "取り込んだ出来事の状態を確かめられませんでした",
+              )}
             </span>
           )}
           {probable && (
@@ -109,6 +177,28 @@ export function ChronicleProposalCard({
           )}
         </span>
       </button>
+
+      {appliedNow === "removed" && (
+        <div className="flex flex-wrap items-center gap-1 pl-6">
+          <button
+            type="button"
+            className="rounded px-1.5 py-0.5 text-[10px] text-primary hover:bg-primary/10 disabled:opacity-40"
+            disabled={disabled || !reapprovable}
+            onClick={() => onReapprove?.()}
+            data-testid={`chronicle-proposal-reapprove-${proposal.proposalId}`}
+          >
+            {t("chronicle.extract.reapprove", "承認し直す")}
+          </button>
+          {reapproveBlocked && (
+            <span
+              className="text-[10px] text-muted-foreground"
+              data-testid={`chronicle-proposal-reapprove-blocked-${proposal.proposalId}`}
+            >
+              {reapproveBlocked}
+            </span>
+          )}
+        </div>
+      )}
 
       {!alreadySatisfied && !applied && !probable && (
         <div className="flex flex-wrap gap-1 pl-6">

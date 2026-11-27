@@ -36,6 +36,7 @@ import {
   applyChronicleExtractionReview,
   abandonChroniclePartialReview,
   restoreChronicleExtractionReview,
+  refreshChronicleRedecideState,
 } from "./extractEventsApi";
 import type { ChronicleTaskResumeCandidate } from "@/application/narrative-extraction/nativeApi";
 import { measureSceneCanonicalBodyLength } from "@/application/narrative-extraction/sceneBodyLength";
@@ -259,7 +260,13 @@ export function ChronicleExtractDialog({
         current.projectId === scope.projectId &&
         current.workspacePath === scope.workspacePath &&
         current.openRevision === scope.openRevision;
-      if (!matched) {
+      if (matched) {
+        // SRD/1 RA7 (b') (3): the kept projection does not know what changed
+        // while the dialog was closed (an event removed, a re-approval).
+        void refreshChronicleRedecideState().catch(() => {
+          // The read marks applied proposals unverified on failure.
+        });
+      } else {
         const restoreGeneration = generationRef.current;
         void restoreChronicleExtractionReview({
           projectId: scope.projectId,
