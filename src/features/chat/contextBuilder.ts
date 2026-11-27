@@ -6,7 +6,6 @@ import type { L1TrimMarkers, L3TrimMarkers } from "@/prompts/shared/types";
 import {
   AUTHOR_POLICY_TAG,
   PROMPT_DATA_TAGS,
-  PROMPT_RESERVED_TAG_NAMES,
 } from "@/prompts/shared/dataLayerRegistry";
 import {
   JA_L1_TRIM_MARKERS,
@@ -18,7 +17,11 @@ import type { IntraContextRelationEdge } from "@/features/codex/relationExpansio
 import { selectContextItems } from "@/features/ai-context/budgetSelector";
 import { planContextCache } from "@/features/ai-context/cachePlanner";
 import { createContextPlan } from "@/features/ai-context/types";
-import { rankApprovedMentionedCodexItems } from "./context/approvedCodexRank";
+import { rankAndMaterializeApprovedMentionedCodexItems } from "./context/approvedCodexRank";
+import { wrapDataLayer, wrapPromptLayer } from "./context/promptLayer";
+export { escapeReservedTags, wrapDataLayer } from "./context/promptLayer";
+import { sanitizeSceneContent } from "./context/sceneContent";
+export { sanitizeSceneContent } from "./context/sceneContent";
 import type {
   ContextDecision,
   PlannedContextUsage,
@@ -642,18 +645,6 @@ function findLiveEstimateSuffixStart(
   return suffixStart;
 }
 
-/**
- * TipTap HTMLからAuthorshipMarkのspanタグ（data-authorship属性）を除去する。
- * ルビ・傍点等のHTMLタグは保持する。
- */
-export function sanitizeSceneContent(html: string): string {
-  // data-authorship属性を持つspanタグのみ除去（内容テキストは保持）
-  return html.replace(
-    /<span\b[^>]*\bdata-authorship\b[^>]*>([\s\S]*?)<\/span>/g,
-    "$1",
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Prompt-injection hardening: data-layer wrapper tags
 // ---------------------------------------------------------------------------
@@ -666,37 +657,6 @@ export function sanitizeSceneContent(html: string): string {
  * trim 関数群は `##` ヘッダ形式に依存するため、ラップは必ず trim 後に行うこと。
  */
 export { PROMPT_DATA_TAGS };
-
-// 予約タグ名の開閉タグ風文字列 (大文字小文字・空白変種を含む) を導く `<`。
-// データ内に閉じタグが混入するとブロック境界の終了を偽装できるため、`<` の
-// 直後に `\` を挿入して無害化する。挿入後は `<` の次が `\` になり再マッチ
-// しない (冪等)。`<note>` `<sticky>` `<map>` は予約外なので素通しになる。
-const escapeRegex = (value: string) =>
-  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const RESERVED_TAG_RE = new RegExp(
-  `<(?=\\s*\\/?\\s*(?:${PROMPT_RESERVED_TAG_NAMES.map(escapeRegex).join("|")})\\b)`,
-  "gi",
-);
-
-/** データ内の予約タグ偽装をエスケープする (`</current_scene>` → `<\/current_scene>`)。 */
-export function escapeReservedTags(text: string): string {
-  return text.replace(RESERVED_TAG_RE, "<\\");
-}
-
-/**
- * trim 済みのレイヤーテキストを予約タグで包む。空白のみなら空文字を返し、
- * 空レイヤーに `<story_so_far></story_so_far>` のような空ブロックを出さない。
- */
-function wrapPromptLayer(text: string, tag: string): string {
-  if (!text.trim()) return "";
-  const escaped = escapeReservedTags(text);
-  const body = escaped.startsWith("\n") ? escaped.slice(1) : escaped;
-  return `\n<${tag}>\n${body}\n</${tag}>`;
-}
-
-export function wrapDataLayer(text: string, tag: string): string {
-  return wrapPromptLayer(text, tag);
-}
 
 function mergeCodexContextsById(entries: CodexContext[]): CodexContext[] {
   const merged = new Map<string, CodexContext>();
@@ -1975,14 +1935,18 @@ function buildSystemPromptWithActiveTokenMode(
   /** Materialize the exact provider-facing representation for one selected L4
    * set. Budget correction below uses this same function as final delivery, so
    * escaping, wrappers, cache splitting, joins and reminder bytes cannot drift. */
-  const materializeSelection = (items: readonly ChatContextItem[]) => {
+  const materializeSelection = (
+    items: readonly ChatContextItem[],
+    cachePrefixEnd?: number,
+  ) => {
     const rawL4 = excludeL4 ? "" : renderL4Items(items);
-    const cachePlan = planContextCache(items);
+    const cachePrefixLength =
+      cachePrefixEnd ?? planContextCache(items).stableItems.length;
     const rawStableL4 = splitL4ByStability
-      ? renderL4Items(cachePlan.stableItems)
+      ? renderL4Items(items.slice(0, cachePrefixLength))
       : "";
     const rawVolatileL4 = splitL4ByStability
-      ? renderL4Items(cachePlan.volatileItems)
+      ? renderL4Items(items.slice(cachePrefixLength))
       : "";
     const wrappedL1 = wrapDataLayer(effectiveL1, PROMPT_DATA_TAGS.l1);
     const wrappedL2 = wrapDataLayer(effectiveL2, PROMPT_DATA_TAGS.l2);
@@ -2093,6 +2057,7 @@ function buildSystemPromptWithActiveTokenMode(
 
   const conversationTokens = input.conversationTokens ?? 0;
   let materialized = materializeSelection(selectedL4Items);
+  let exactSystemBudget: number | undefined;
   if (
     input.contextWindow !== undefined &&
     input.conversationTokens !== undefined &&
@@ -2101,7 +2066,7 @@ function buildSystemPromptWithActiveTokenMode(
     const outputReservedTokens =
       input.outputReservationTokens ??
       computeResponseReservation(input.contextWindow, input.maxOutputTokens);
-    const exactSystemBudget = Math.max(
+    exactSystemBudget = Math.max(
       0,
       // Known non-text request overhead is finalized separately but must take
       // part in selection while optional typed context can still yield.
@@ -2139,11 +2104,14 @@ function buildSystemPromptWithActiveTokenMode(
     }
   }
 
-  selectedL4Items = rankApprovedMentionedCodexItems(
-    selectedL4Items,
-    input.approvedCodexEntryIds,
-  );
-  materialized = materializeSelection(selectedL4Items);
+  ({ items: selectedL4Items, materialized } =
+    rankAndMaterializeApprovedMentionedCodexItems(
+      selectedL4Items,
+      input.approvedCodexEntryIds,
+      materialized,
+      materializeSelection,
+      exactSystemBudget,
+    ));
 
   // stable / volatile は最終 exact-fit item 集合だけを分類する。stability は
   // cache placement の属性であり、window budget の免除ではない。

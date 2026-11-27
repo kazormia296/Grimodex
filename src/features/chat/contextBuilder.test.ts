@@ -3300,7 +3300,7 @@ describe("prompt injection hardening", () => {
       const withoutRank = buildSystemPrompt(input);
       const withRank = buildSystemPrompt({
         ...input,
-        approvedCodexEntryIds: new Set(["third"]),
+        approvedCodexEntryIds: new Set(["first", "third"]),
       });
       const originalKeys = withoutRank.contextPlan!.items.map(
         (item) => item.key,
@@ -3311,7 +3311,52 @@ describe("prompt injection hardening", () => {
       expect(originalKeys).toHaveLength(2);
       expect(new Set(rankedKeys)).toEqual(new Set(originalKeys));
       expect(rankedKeys).toEqual(["codex:third", "codex:approved"]);
+      expect(rankedKeys).not.toContain("codex:first");
       expect(rankedKeys).not.toEqual(originalKeys);
+      expect(withRank.totalTokens).toBe(withoutRank.totalTokens);
+      expect(withRank.layers).toEqual(withoutRank.layers);
+      expect(withRank.contextPlan?.decisions).toEqual(
+        withoutRank.contextPlan?.decisions,
+      );
+      expect(withRank.contextPlan?.usage).toEqual(
+        withoutRank.contextPlan?.usage,
+      );
+      expect(withRank.trimmedLayers).toEqual(withoutRank.trimmedLayers);
+      const withoutL4 = (result: typeof withoutRank) =>
+        result.prompt.replace(/<codex_entries>[\s\S]*?<\/codex_entries>/g, "");
+      expect(withoutL4(withRank)).toBe(withoutL4(withoutRank));
+    });
+
+    it("keeps cache and volatile item sets and token totals when ranking mixed stability", () => {
+      const input = {
+        scene: { id: "s", title: "Scene", content: "本文" },
+        codexEntries: ["A", "B", "C"].map((id) => ({
+          id,
+          type: "character",
+          name: `Mention ${id}`,
+          summary: `${id}の設定`,
+        })),
+        sessionStableContextInitialized: true,
+        sessionStableCodexIds: ["A", "C"],
+        deliveryMode: "cache" as const,
+      } satisfies Parameters<typeof buildSystemPrompt>[0];
+      const baseline = buildSystemPrompt(input);
+      const ranked = buildSystemPrompt({
+        ...input,
+        approvedCodexEntryIds: new Set(["C"]),
+      });
+      const segmentItems = (segments: string[]) =>
+        ["A", "B", "C"].filter((id) =>
+          segments.some((segment) => segment.includes(`Mention ${id}`)),
+        );
+
+      expect(segmentItems(baseline.cacheSegments ?? [])).toEqual(
+        segmentItems(ranked.cacheSegments ?? []),
+      );
+      expect(segmentItems([baseline.volatileTail ?? ""])).toEqual(
+        segmentItems([ranked.volatileTail ?? ""]),
+      );
+      expect(ranked.totalTokens).toBe(baseline.totalTokens);
     });
 
     it("treats all L4 items as volatile after an initialized empty stable baseline", () => {

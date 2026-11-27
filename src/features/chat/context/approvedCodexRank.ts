@@ -1,4 +1,5 @@
 import type { ChatContextItem } from "./types";
+import { planContextCache } from "@/features/ai-context/cachePlanner";
 
 export function rankApprovedMentionedCodexItems(
   items: readonly ChatContextItem[],
@@ -7,21 +8,23 @@ export function rankApprovedMentionedCodexItems(
   if (!approvedCodexEntryIds?.size) return [...items];
 
   const ranked = [...items];
-  const stabilityGroups = new Map<ChatContextItem["stability"], number[]>();
-  items.forEach((item, index) => {
-    if (
-      item.kind === "codex" &&
-      item.provenance.sourceType === "codex-mentioned"
-    ) {
-      stabilityGroups.set(item.stability, [
-        ...(stabilityGroups.get(item.stability) ?? []),
-        index,
-      ]);
+  const prefixEnd = planContextCache(items).stableItems.length;
+  const cacheRanges = [
+    [0, prefixEnd],
+    [prefixEnd, items.length],
+  ];
+  for (const [start, end] of cacheRanges) {
+    const indices: number[] = [];
+    for (let index = start; index < end; index += 1) {
+      const item = items[index];
+      if (
+        item.kind === "codex" &&
+        item.provenance.sourceType === "codex-mentioned"
+      ) {
+        indices.push(index);
+      }
     }
-  });
-
-  for (const indices of stabilityGroups.values()) {
-    const slots = indices.map((index) => ranked[index]);
+    const slots = indices.map((index) => items[index]);
     const approved = slots.filter((item) =>
       approvedCodexEntryIds.has(item.provenance.sourceId),
     );
@@ -33,4 +36,31 @@ export function rankApprovedMentionedCodexItems(
     });
   }
   return ranked;
+}
+
+export function rankAndMaterializeApprovedMentionedCodexItems<
+  TMaterialized extends { systemTokens: number },
+>(
+  items: ChatContextItem[],
+  approvedCodexEntryIds: ReadonlySet<string> | undefined,
+  materialized: TMaterialized,
+  materialize: (
+    items: readonly ChatContextItem[],
+    cachePrefixEnd?: number,
+  ) => TMaterialized,
+  exactSystemBudget?: number,
+): { items: ChatContextItem[]; materialized: TMaterialized } {
+  const ranked = rankApprovedMentionedCodexItems(items, approvedCodexEntryIds);
+  if (ranked.every((item, index) => item === items[index])) {
+    return { items, materialized };
+  }
+  const cachePrefixEnd = planContextCache(items).stableItems.length;
+  const rankedMaterialized = materialize(ranked, cachePrefixEnd);
+  if (
+    exactSystemBudget !== undefined &&
+    rankedMaterialized.systemTokens > exactSystemBudget
+  ) {
+    return { items, materialized };
+  }
+  return { items: ranked, materialized: rankedMaterialized };
 }
