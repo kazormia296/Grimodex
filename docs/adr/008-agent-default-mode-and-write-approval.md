@@ -84,8 +84,8 @@ Agentモードはboolean既定値の反転ではなく、ユーザー設定
 以下の2軸へ置き換える。
 
 ```ts
-effect: "read" | "stage" | "mutate" | "destructive"
-approvalMode: "none" | "task-scope" | "always"
+effect: "read" | "stage" | "mutate" | "destructive";
+approvalMode: "none" | "task-scope" | "always";
 ```
 
 - `read / none` — 自動実行可能。
@@ -144,10 +144,12 @@ rebase可能、ポリシーが現在も有効、Runが取り消されていな�
 storeの要求値と実際の実行経路を分離する。
 
 ```ts
-agentPreference: "auto" | "off"
-effectiveMode: "agent" | "rag" | "chat" | "fallback-chat"
-fallbackReason: "tools-unsupported" | "provider-unsupported"
-  | "model-capability-unknown" | null
+agentPreference: "auto" | "off";
+effectiveMode: "agent" | "rag" | "chat" | "fallback-chat";
+fallbackReason: "tools-unsupported" |
+  "provider-unsupported" |
+  "model-capability-unknown" |
+  null;
 ```
 
 Auto時の解決順は「ツール対応ならAgent、非対応かつRAG利用可能ならRAG、
@@ -161,7 +163,7 @@ mutable stateを増やさず、route policyからUI projection（「このモデ
 ### 7. ツール能力は3値とし、不明時は試行から退避する
 
 ```ts
-toolSupport: "supported" | "unsupported" | "unknown"
+toolSupport: "supported" | "unsupported" | "unknown";
 ```
 
 `unknown`（現行の楽観フォールバック`supportsTools: true`に相当）はAgent経路を
@@ -197,7 +199,7 @@ type ParsedAiPolicy =
 
 - `missing` — 新規Projectの明示された製品既定値を使ってよい。
 - `invalid` — Chat・読み取りは許可してよいが、`bodyWrite / structureWrite /
-  knowledgeWrite`は`false`とし、UIに「AIポリシーが壊れているため書き込みを
+knowledgeWrite`は`false`とし、UIに「AIポリシーが壊れているため書き込みを
   停止した」と表示する。
 
 Agent Auto既定化後、設定破損が自動書き込み許可へ変換される現行挙動は許容しない。
@@ -297,3 +299,25 @@ Agent Auto既定化後、設定破損が自動書き込み許可へ変換され�
 6. **Invariant 12（renderer 単独の確認 UI は承認境界とみなさない）。** 承認を main が握るので、capability を持つ renderer の迂回は防ぐ。ただし、main は、承認の IPC の呼び手が人かを区別できない。「満たす」とは書かず、AWA/1 の受け入れる残り（乗っ取られた renderer は範囲外）と対応づける。
 7. **MCP。** MCP は、本 ADR の対象の文面に無い。MCP は、設定で許した、1 つの作品に固定した接続だけ、作者の出来事を承認なしで更新・削除できる（AWA/1-2。確認 70・73・74・76・77）。MCP の削除が承認なしであることを、ここに書く。
 8. **変えないもの。** Invariants 5・6（承認つきの経路で満たす）。Invariant 4 は、承認が要る（`needs-approval` の）呼出しについてだけ満たす（上の 3）。Gate A の全体（`effect`／`approvalMode` の導入、Task Grant、AiPolicy の fail-closed）。`requiresUserConfirmation`（tool manifest の宣言）は、AWA/1 では実行時に読まない。AWA/1 の承認は、持ち主の欄で決める別の仕組みで、`effect`／`approvalMode` への置き換えの前倒しではない。
+
+## 追補（2026-11-27）：途中再開での capability の発行（A3 の拡張）
+
+判断の経緯と規則の正本は [A3 の判断記録](../plans/a3-durable-agentrun-decisions.md)（DR-A3-4・DR-A3-6・DR-A3-14）。本 ADR の本文は書き換えない。
+
+1. **Decision §4「現行の『LLM応答受信時点でのCapability発行』は、`effect: "read"`および`effect: "stage"`のツールに限って維持してよい。」**
+   - 中断した Run の途中再開では、もう 1 つの発行の時点を足す。
+     - main は、provider の応答を受けて capability を発行するのと同じ時点で、tool 呼出しの台帳を Native に書く。
+     - 再開の後、落ちたときに実行中だった**読む tool**に限り、その台帳の tool 呼出しから capability を発行し直してよい。
+   - 条件：
+     - 台帳に記録があること。
+     - 引数が台帳の digest と合うこと。
+     - policy を確かめ直すこと。
+   - 台帳は、main が見た provider の応答だけから作る。renderer から受け取った tool 呼出しは、根拠にしない。
+2. **変更系の tool**（`mutate`・`destructive`）の扱い：
+   - 落ちたときに実行中だった呼出しは、Gate A の前は再実行しない。
+   - commit 済みかを、台帳の元の値（provenance と requestId）で照会して、AI に知らせるだけにする。
+   - 再開の後に新しく出た変更系の呼出しは、今どおりの経路と承認による。
+3. **Decision §4「承認待ちの間、既発行Capabilityを保存して延命してはならない。」は変えない。**
+   - 台帳には capability を保存しない。
+   - 保存した回答や承認は、認可に使わない。
+4. **2026-11-23 の追補 5（ApprovalRequest はメモリだけ）は変えない。** durable な ApprovalRequest は、Gate A で入れる。

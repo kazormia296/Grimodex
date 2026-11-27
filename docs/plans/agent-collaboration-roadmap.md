@@ -54,31 +54,31 @@ PR descriptionとChat historyはRoadmap authorityではない。
 
 ## Status legend
 
-| State | Meaning |
-| --- | --- |
-| **Complete** | merged実装が記載したexit criteriaを満たす。 |
-| **Active** | 具体的branchまたはPRが実装中。 |
-| **Planned** | 順序とscopeは確定したが未着手。 |
-| **Decision Gate** | 以降の投資にdogfoodまたは評価Evidenceが必要。 |
-| **Blocked** | named dependencyが完了するまで安全に着手できない。 |
-| **Experimental** | 別途計測し、production completion pathをblockしない。 |
-| **Deferred** | 現在のcritical path外へ意図的に遅延。 |
+| State             | Meaning                                               |
+| ----------------- | ----------------------------------------------------- |
+| **Complete**      | merged実装が記載したexit criteriaを満たす。           |
+| **Active**        | 具体的branchまたはPRが実装中。                        |
+| **Planned**       | 順序とscopeは確定したが未着手。                       |
+| **Decision Gate** | 以降の投資にdogfoodまたは評価Evidenceが必要。         |
+| **Blocked**       | named dependencyが完了するまで安全に着手できない。    |
+| **Experimental**  | 別途計測し、production completion pathをblockしない。 |
+| **Deferred**      | 現在のcritical path外へ意図的に遅延。                 |
 
 ## Current snapshot
 
-| Area | State | Current fact / next condition |
-| --- | --- | --- |
-| CLI long-run policy | **Planned** | `electron/main/cliAi.ts`には290秒の既定total stream deadlineが残る。 |
-| Transport detach | **Planned** | `src/features/chat/chatStreamTransport.ts`と`src/features/chat/cliApi.ts`のcleanupはabort要求も兼ねる。 |
-| Scene navigation | **Planned** | `src/application/chat/chatScopeStoreActions.ts`はScene-scope resetでactive generationを停止する。 |
-| Turn authority | **Planned** | `src/application/chat/chatTurnStoreActions.ts`はactive Session／scope／anchor driftをabort条件として扱う。 |
-| Durable AgentRun | **Planned** | Background AgentのCanonicalなdurable Run／Interaction authorityは未実装。 |
-| Session status UI | **Planned** | Session cardとscope selectorにはbackground run／question／unread statusがない。 |
-| SessionTasks | **Blocked** | 2026-11-26にDecision Gate Aを前提から外した（DR-ST-6）。Write-Safety RoadmapのGate A（A1・A2）、Release AのA3、Mastra移行のMP-6・MP-9の後に着手する。 |
-| Agent Workspace | **Gate BでBlocked** | Background Agent／SessionTasksの利用知見前にcontractを固定しない。 |
-| Deterministic Semantic CI | **Workspace merge receiptとSemantic Core readinessでBlocked** | 既存Narrative Run／Freshness authorityを利用し、複製しない。 |
-| Implicit semantic discovery | **Experimental** | annotated corpusでprecision／recallを測定するまで完了へ影響させない。 |
-| Project Focus / WorkBeacon | **Deferred** | まずSession-local statusを提供する。 |
+| Area                        | State                                                         | Current fact / next condition                                                                                                                         |
+| --------------------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CLI long-run policy         | **Planned**                                                   | `electron/main/cliAi.ts`には290秒の既定total stream deadlineが残る。                                                                                  |
+| Transport detach            | **Planned**                                                   | `src/features/chat/chatStreamTransport.ts`と`src/features/chat/cliApi.ts`のcleanupはabort要求も兼ねる。                                               |
+| Scene navigation            | **Planned**                                                   | `src/application/chat/chatScopeStoreActions.ts`はScene-scope resetでactive generationを停止する。                                                     |
+| Turn authority              | **Planned**                                                   | `src/application/chat/chatTurnStoreActions.ts`はactive Session／scope／anchor driftをabort条件として扱う。                                            |
+| Durable AgentRun            | **Planned**                                                   | Background AgentのCanonicalなdurable Run／Interaction authorityは未実装。                                                                             |
+| Session status UI           | **Planned**                                                   | Session cardとscope selectorにはbackground run／question／unread statusがない。                                                                       |
+| SessionTasks                | **Blocked**                                                   | 2026-11-26にDecision Gate Aを前提から外した（DR-ST-6）。Write-Safety RoadmapのGate A（A1・A2）、Release AのA3、Mastra移行のMP-6・MP-9の後に着手する。 |
+| Agent Workspace             | **Gate BでBlocked**                                           | Background Agent／SessionTasksの利用知見前にcontractを固定しない。                                                                                    |
+| Deterministic Semantic CI   | **Workspace merge receiptとSemantic Core readinessでBlocked** | 既存Narrative Run／Freshness authorityを利用し、複製しない。                                                                                          |
+| Implicit semantic discovery | **Experimental**                                              | annotated corpusでprecision／recallを測定するまで完了へ影響させない。                                                                                 |
+| Project Focus / WorkBeacon  | **Deferred**                                                  | まずSession-local statusを提供する。                                                                                                                  |
 
 ## Critical path
 
@@ -182,6 +182,14 @@ force-kill delay after explicit cancellation
 F0-liteはRelease Aと最小Task integrationが実際に使うcontractだけを固定する。
 Workspace／Semantic contractは明示的にscope外とする。
 
+> 注記（2026-11-27、[A3 の判断記録](a3-durable-agentrun-decisions.md) の DR-A3-13）：
+> F0-lite を 2 つに分ける。
+>
+> - F0-lite-A（A3 の lane）：`TransportExecutionHandle`、`AgentRunStatus`、`AgentRunInteractionStatus`、`ExecutionAuthority`、`ProjectionAttachment`、`AnalysisReadBasisEntryV1`。
+> - F0-lite-B（Release B の lane）：`WorkTaskStatus`、`minimal TaskContractSnapshotV1`、`AnalysisReadBasisV1`。
+>
+> Release B の前提にある「F0-lite」は、F0-lite-A と読む。
+
 ### Contracts
 
 ```text
@@ -248,6 +256,15 @@ result
 ## A3 — Durable AgentRun and durable interactions
 
 **State:** R1およびF0-lite state contractでBlocked。
+
+> 注記（2026-11-27）：
+> 利用者の決定により、A3 を「中断した瞬間の状態から、読み直しなしで同じ Run が続く」途中再開に拡張した（[A3 の判断記録](a3-durable-agentrun-decisions.md)、[ADR 007 の同日の追補](../adr/007-agent-collaboration-execution-boundary.md)）。
+> 下の Interaction contract の「明示的continuation contractがない限りRunを`interrupted`へ遷移」は、次のように読む。
+>
+> - legacy の API の agent loop には、その continuation contract がある。
+> - `interrupted` は非終端で、作者の操作で同じ Run を再開する。
+>
+> `AgentRunStatus` の値は判断記録の DR-A3-2 による（成功は `completed`）。
 
 ### Durable records
 
@@ -388,17 +405,17 @@ A3 → A4a → A4b → A6 / AH
 
 ### Hot-file ownership
 
-| Path | Release A owner |
-| --- | --- |
-| `electron/main/cliAi.ts` | Runtime |
-| `src/features/chat/chatStreamTransport.ts` | Runtime |
-| `src/features/chat/cliApi.ts` | Runtime |
-| `src/application/chat/chatTurnStoreActions.ts` | Runtime |
-| `src/application/chat/chatScopeStoreActions.ts` | Runtime |
-| `src/application/chat/chatUserQuestionRuntime.ts` | Runtime |
-| Native migration / schema registry | Integration owner |
-| `electron/shared/ipcContract.ts` | Integration owner |
-| Session card / scope selector UI | projection contract後のUI child PR |
+| Path                                              | Release A owner                    |
+| ------------------------------------------------- | ---------------------------------- |
+| `electron/main/cliAi.ts`                          | Runtime                            |
+| `src/features/chat/chatStreamTransport.ts`        | Runtime                            |
+| `src/features/chat/cliApi.ts`                     | Runtime                            |
+| `src/application/chat/chatTurnStoreActions.ts`    | Runtime                            |
+| `src/application/chat/chatScopeStoreActions.ts`   | Runtime                            |
+| `src/application/chat/chatUserQuestionRuntime.ts` | Runtime                            |
+| Native migration / schema registry                | Integration owner                  |
+| `electron/shared/ipcContract.ts`                  | Integration owner                  |
+| Session card / scope selector UI                  | projection contract後のUI child PR |
 
 他laneはRuntime hot fileを直接編集せず、port／contract変更を要求する。
 
@@ -698,13 +715,13 @@ Header／Drawer変更はreal Chromium geometry testを必要とし、closed stat
 
 # Cross-cutting consistency policy
 
-| Task / operation | Basis | Completion behavior |
-| --- | --- | --- |
-| Read-only analysis | capture-on-first-read per Source | 完走しbasisを開示。交差時にdelta recheckを提案。 |
-| Workspace rewrite | pinned resource version／digest | stageは完走し、mergeでconflict／rebase。 |
-| Canonical write | current OCC／digest／policy | mutation前にstale writeを拒否。 |
-| Semantic Verification | fixed barrier | historical reportを完走し、current-head適用性を別判定。 |
-| Follow-latest monitor | explicit opt-in＋hysteresis | 編集quiet period後にrefresh。 |
+| Task / operation      | Basis                            | Completion behavior                                     |
+| --------------------- | -------------------------------- | ------------------------------------------------------- |
+| Read-only analysis    | capture-on-first-read per Source | 完走しbasisを開示。交差時にdelta recheckを提案。        |
+| Workspace rewrite     | pinned resource version／digest  | stageは完走し、mergeでconflict／rebase。                |
+| Canonical write       | current OCC／digest／policy      | mutation前にstale writeを拒否。                         |
+| Semantic Verification | fixed barrier                    | historical reportを完走し、current-head適用性を別判定。 |
+| Follow-latest monitor | explicit opt-in＋hysteresis      | 編集quiet period後にrefresh。                           |
 
 ## Analysis read basis
 

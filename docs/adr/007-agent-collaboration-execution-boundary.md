@@ -153,13 +153,13 @@ Project policyの拡張、新規capability取得、必須の人間承認の代�
 常に最新状態へ追随する単一policyは、作者が執筆中の場合にlivelockを生む。以下の一貫性modelを
 採用する。
 
-| Work kind | Consistency basis | 実行中のCanonical変更 |
-| --- | --- | --- |
-| Read-only analysis | capture-on-first-readによるper-source repeatable basis | 継続し、完了時にread setとdeltaの交差を評価 |
-| Proposed rewrite | Workspaceのbase revision / digestを固定 | stageは継続し、merge時にrevalidateまたはconflict |
-| Canonical mutation | fresh OCC / digest precondition | stale writeを拒否し、rebase / reviewを要求 |
-| Semantic Verification | ChangeSet digestとcanonical-sequence Barrierを固定 | Barrierは完走し、current headへの適用可能性を別判定 |
-| 明示的live monitor | follow-latest＋debounce／hysteresis | ユーザーが選択した場合だけrefresh |
+| Work kind             | Consistency basis                                      | 実行中のCanonical変更                               |
+| --------------------- | ------------------------------------------------------ | --------------------------------------------------- |
+| Read-only analysis    | capture-on-first-readによるper-source repeatable basis | 継続し、完了時にread setとdeltaの交差を評価         |
+| Proposed rewrite      | Workspaceのbase revision / digestを固定                | stageは継続し、merge時にrevalidateまたはconflict    |
+| Canonical mutation    | fresh OCC / digest precondition                        | stale writeを拒否し、rebase / reviewを要求          |
+| Semantic Verification | ChangeSet digestとcanonical-sequence Barrierを固定     | Barrierは完走し、current headへの適用可能性を別判定 |
+| 明示的live monitor    | follow-latest＋debounce／hysteresis                    | ユーザーが選択した場合だけrefresh                   |
 
 #### Capture-on-first-read
 
@@ -282,3 +282,33 @@ idempotency、race test、startup reconciliationを必要とする。
 
 1. **「SessionTasksは、永続planと回復性の問題が実運用で観測された後に、製品上の回答として評価する。」**（Consequences）Release B（SessionTasks）は、実運用での観測（Roadmap の Decision Gate A）を待たずに作る。Gate A の問いは、作った後の振り返りに使う。§6（自動計画と、重大な authority の変更だけの承認）、§5（durable interaction）、不変条件 12 は変えない。
 2. SessionTask の手順の完了の方針は、ADR 012 の同日の追補に従う。§6 の Agent が自動で行えることに、本文などの書き換え（ADR 008 の `mutate`・`destructive`）を伴わない手順の `done` への遷移を加える（DR-ST-3）。§2 の「AgentRun の成功は WorkTask の完了を意味しない」、§6 の明示の承認の対象、不変条件 12・15 は変えない。
+
+## 追補（2026-11-27）：中断した Run の途中再開（A3 の拡張）
+
+判断の経緯と規則の正本は [A3 の判断記録](../plans/a3-durable-agentrun-decisions.md)。利用者の回答（構造化質問、2026-11-27。contracts の問 11〜17 と、その後の 3 問）による。本 ADR の本文は書き換えない。本文のどの文がどう読み替わるかを、ここに記す。
+
+1. **§4「v1は孤児Runを`interrupted`へ遷移させ、透明なresumeを装わずretryを提供する。」**
+   - legacy の API の agent loop に、直列化した continuation の契約を入れる。§4 の最後の文（provider thread または serialized continuation 契約の後からの導入）が許す範囲である。
+   - 契約の中身：
+     - 中断した Run は `interrupted`（非終端）として残る。
+     - 作者が「続ける」を押すか、質問に答えたときに、保存した途中の状態から同じ Run を再開する。
+     - 再開の前に、通常の開始と同じ検査（license、AI policy、profile の egress、route、endpoint）を通す。
+     - 中断の間に版の変わった source の結果は、本文を置き換えて AI に知らせる。
+     - 中断の間に hidden にした source を読んでいた Run は、再開しない。
+   - 起動時に自動では再開しない。
+   - CLI と Codex App Server の Run、当面の Mastra の経路は、この契約の外で、今どおり再開しない。
+2. **§4「Native-owned SQLiteは、durable Run／Interaction状態、OCC version、idempotency、recovery dataを保持する。」**
+   - recovery data に、次のものを含める。
+     - 途中の状態（作者の発言、AI の出力、tool の結果の本文）。
+     - main が provider の応答から書く tool 呼出しの台帳。
+   - 保持は、Run の終端まで。`interrupted` の間は、作者が破棄するまで残る。
+   - 自動の backup の写しには入れない。
+   - system prompt と Codex の注入は保存しない。
+3. **§5「renderer loss後はdurable interactionをEvidenceとして保持するが、明示的なcontinuation契約がない限り元Runのcontinuationをliveとはみなさない。」**
+   - 上の 1 の契約がある Run では、保留中の質問を起点の Session に再表示する。
+   - 回答は、元の tool 呼出しの結果として、再開した同じ Run に渡す。
+   - 保存した回答は、認可の根拠にしない。
+4. **2026-11-23 の追補 2（承認の要求はメモリだけ）は変えない。** A3 の v1 は承認を Interaction として記録しない。
+5. **変えないもの。**
+   - 不変条件 7〜9（終端は 1 つ、pending は一度だけ resolve、renderer loss を成功として扱わない）。
+   - §3 の cancel の理由。ただし、workspace や profile の切替、quit による強制中断は、再開できる中断として記録する。
