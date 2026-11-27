@@ -62,6 +62,7 @@ function proposal(
       evidenceMethods: ["exact"],
     }),
     probableDuplicateChoice: null,
+    redecide: null,
     ...overrides,
     application: overrides.application ?? null,
   };

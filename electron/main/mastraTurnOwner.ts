@@ -52,6 +52,13 @@ import {
   MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT_MS,
   parseMastraAgentTurnQuestionPayload,
 } from "../shared/mastraAgentTurnWire.js";
+import {
+  createMastraWriteToolDefinitions,
+  MASTRA_AGENT_WRITE_TOOL_NAMES,
+  type MastraAgentWriteToolName,
+} from "../shared/mastraWriteToolDefinitions.js";
+import { NAPI_COMMANDS, type CommandArgs } from "../shared/ipcContract.js";
+import { normalizeMastraAgentWriteInput } from "../shared/agentWriteNormalization.js";
 import type {
   MastraAgentTurnCitation,
   MastraAgentTurnLoopResult,
@@ -107,6 +114,7 @@ import type {
   AgentSend,
   AgentWireArgs,
   AgentWireResponse,
+  AgentWireCapabilityGrant,
 } from "./mastra/agentWire.js";
 import type {
   MastraAgentRuntime,
@@ -117,7 +125,10 @@ import type {
   MastraAgentTurnWindow,
 } from "./mastraAgentTurnGate.js";
 import { createMastraAgentTurnProgressSender } from "./mastraAgentTurnEvents.js";
-import { sendMainEventToWindow } from "./events.js";
+import {
+  sendMainEventToWindow,
+  sendMastraAgentWriteCompletedToWindow,
+} from "./events.js";
 import { runNativeRead, type MainReadHooks } from "./mastraRead/nativeCall.js";
 import type {
   MainEgressParticipantContext,
@@ -142,6 +153,25 @@ export const MASTRA_TURN_TOTAL_MAX = 8;
 export const MASTRA_TURN_FALLBACK_PROJECT_ID = "default-project";
 
 const START_COMMAND = MASTRA_AGENT_TURN_START_COMMAND;
+const MASTRA_WRITE_COMMANDS: Readonly<
+  Record<MastraAgentWriteToolName, string>
+> = {
+  create_codex_entry: "agent_codex_create",
+  update_codex_entry: "agent_codex_update",
+  create_foreshadow: "agent_foreshadow_create",
+  update_foreshadow: "agent_foreshadow_update",
+  create_snippet: "agent_snippet_create",
+  apply_ai_tree_plan: "ai_tree_plan_apply",
+  propose_scene_body: "agent_propose_scene_body",
+  create_event: "agent_event_create",
+  update_event: "agent_event_update",
+  delete_event: "agent_event_delete",
+  stamp_scene_event: "agent_scene_event_link",
+  unstamp_scene_event: "agent_scene_event_unlink",
+  set_event_participants: "agent_event_set_participants",
+  add_event_relation: "agent_event_relation_add",
+  remove_event_relation: "agent_event_relation_remove",
+};
 
 // ---------------------------------------------------------------------------
 // The causes a turn can end for, as errors the adapter hands to the sink.
@@ -250,7 +280,35 @@ export interface MastraTurnOwnerOptions {
     webContentsId: number,
     payload: MastraAgentTurnQuestionPayload,
   ) => boolean;
+  readonly issueWriteCapabilities?: (
+    senderId: number,
+    args: AgentWireArgs,
+    response: AgentWireResponse,
+    backend: MastraTurnBackend,
+    callerIdentity: unknown,
+  ) => Promise<unknown>;
+  readonly agentAuthorityRequestId?: (
+    toolName: string,
+    projectId: string,
+    toolCallId: string,
+  ) => string;
+  readonly bindWriteCapability?: (
+    command: string,
+    payload: CommandArgs,
+    senderId: number,
+  ) => CommandArgs | null;
+  readonly sendWriteCompleted?: (
+    webContentsId: number,
+    payload: unknown,
+  ) => boolean;
 }
+
+type SuccessfulWriteProcessor = (
+  command: string,
+  payload: CommandArgs,
+  result: unknown,
+  senderId: number,
+) => void;
 
 /** A workspace switch's lease: `resume` reopens admission. Idempotent. */
 export interface MastraTurnSwitchLease {
@@ -291,6 +349,8 @@ export interface MastraTurnOwner {
   quiesceForWorkspaceSwitch(): Promise<MastraTurnSwitchLease>;
   /** The quit finalizer's call (dispose and complete both): bounded, idempotent, never rejects. */
   shutdown(): Promise<void>;
+  /** Installed by the IPC router so main-owned writes share its success effects. */
+  setSuccessfulWriteProcessor(processor: SuccessfulWriteProcessor): void;
   /** A backend event: a changed workspace binding ends the turns whose identity is no longer issued. */
   handleBackendEvent(channel: string, payload: unknown): void;
   /** How many turns are attached (running or preparing). */
@@ -320,12 +380,14 @@ interface Turn {
   readonly windowId: number;
   readonly sessionKey: string;
   /**
-   * The three fields of the start request, bound once at start and never
+   * The scope and recorder fields of the start request, bound once and never
    * changed in the turn (DR-MP4-1). Claims of the renderer, form-checked by the
    * wire parser only. `projectId` is the audit scope the sink appends to and
    * the send names; `chatMessageId` rides the send's arguments.
    */
   readonly projectId: string;
+  readonly chatSessionId: string;
+  readonly writerSessionId: string;
   readonly currentSceneId: string | null;
   readonly chatMessageId: string;
   readonly identity: unknown;
@@ -471,6 +533,9 @@ export function createMastraTurnOwner(
         MASTRA_AGENT_TURN_QUESTION_EVENT,
         payload,
       ));
+  const sendWriteCompleted =
+    options.sendWriteCompleted ?? sendMastraAgentWriteCompletedToWindow;
+  let successfulWriteProcessor: SuccessfulWriteProcessor | undefined;
   const m4Tools = new Map(
     createM4ReadToolDefinitions().map((tool) => [tool.name, tool]),
   );
@@ -846,6 +911,7 @@ export function createMastraTurnOwner(
     turn: Turn,
     backend: MastraTurnBackend,
     credentials: { readonly settings: unknown; readonly apiKey: string },
+    capabilities: Map<string, AgentWireCapabilityGrant>,
   ): AgentSend => {
     return async (args: AgentWireArgs) => {
       assertLive(turn);
@@ -877,7 +943,29 @@ export function createMastraTurnOwner(
       };
       pending.then(settled, settled);
       const raw = await pending;
-      return JSON.parse(raw) as AgentWireResponse;
+      const response = JSON.parse(raw) as AgentWireResponse;
+      const withCapabilities = options.issueWriteCapabilities
+        ? await options.issueWriteCapabilities(
+            turn.senderId,
+            args,
+            response,
+            backend,
+            turn.identity,
+          )
+        : response;
+      const issued = (withCapabilities as AgentWireResponse)
+        .agentAuthorityCapabilities;
+      const writeToolNames = new Set<string>(MASTRA_AGENT_WRITE_TOOL_NAMES);
+      for (const [toolCallId, grant] of Object.entries(issued ?? {})) {
+        const block = response.blocks.find(
+          (candidate) =>
+            candidate.type === "tool_use" && candidate.id === toolCallId,
+        );
+        if (block?.type === "tool_use" && writeToolNames.has(block.name)) {
+          capabilities.set(toolCallId, grant);
+        }
+      }
+      return withCapabilities as AgentWireResponse;
     };
   };
 
@@ -935,6 +1023,7 @@ export function createMastraTurnOwner(
     toolCallId: string,
     toolName: MastraAgentTurnQuestionToolName,
     args: Readonly<Record<string, unknown>>,
+    authorization?: AgentWireCapabilityGrant,
   ): Promise<MastraAgentTurnUiToolResult> {
     const turn = attached.get(turnId);
     if (!turn || turn.finished) throw new Error("MASTRA_AGENT_TURN_NOT_ACTIVE");
@@ -960,6 +1049,7 @@ export function createMastraTurnOwner(
       toolCallId,
       toolName,
       args,
+      ...(authorization ? { authorization } : {}),
       deadlineAt: Date.now() + timeoutMs,
     };
     const parsed = parseMastraAgentTurnQuestionPayload(payload);
@@ -1176,10 +1266,18 @@ export function createMastraTurnOwner(
           createMastraUiToolDefinitions().map((tool) => [tool.name, tool]),
         )
       : null;
+    const writeTools = request.tools.some((name) =>
+      (MASTRA_AGENT_WRITE_TOOL_NAMES as readonly string[]).includes(name),
+    )
+      ? new Map(
+          createMastraWriteToolDefinitions().map((tool) => [tool.name, tool]),
+        )
+      : null;
     const toolDefinitions: AgentReadToolDefinition[] = [];
     const readToolDefinitions: AgentReadToolDefinition[] = [];
     const readToolNames: M4ReadToolName[] = [];
     const uiToolNames: MastraUiToolName[] = [];
+    const writeToolNames: MastraAgentWriteToolName[] = [];
     for (const name of request.tools) {
       const readToolName = M4_READ_TOOL_NAMES.find(
         (candidate) => candidate === name,
@@ -1196,9 +1294,20 @@ export function createMastraTurnOwner(
         (candidate) => candidate === name,
       );
       const definition = uiToolName ? uiTools?.get(uiToolName) : undefined;
-      if (!uiToolName || !definition) return refusal("invalid");
-      toolDefinitions.push(definition);
-      uiToolNames.push(uiToolName);
+      if (uiToolName && definition) {
+        toolDefinitions.push(definition);
+        uiToolNames.push(uiToolName);
+        continue;
+      }
+      const writeToolName = MASTRA_AGENT_WRITE_TOOL_NAMES.find(
+        (candidate) => candidate === name,
+      );
+      const writeDefinition = writeToolName
+        ? writeTools?.get(writeToolName)
+        : undefined;
+      if (!writeToolName || !writeDefinition) return refusal("invalid");
+      toolDefinitions.push(writeDefinition);
+      writeToolNames.push(writeToolName);
     }
 
     let rejectForced: (error: Error) => void = () => undefined;
@@ -1226,6 +1335,8 @@ export function createMastraTurnOwner(
       windowId: win.id,
       sessionKey: sessionKeyOf(sender.id, request.chatSessionId),
       projectId: request.projectId,
+      chatSessionId: request.chatSessionId,
+      writerSessionId: request.writerSessionId,
       currentSceneId: request.currentSceneId,
       chatMessageId: request.chatMessageId,
       identity: callerIdentity,
@@ -1384,6 +1495,11 @@ export function createMastraTurnOwner(
             });
       let uiOperationAttempts = 0;
       const uiToolResults = new Map<string, MastraAgentTurnUiToolResult>();
+      const writeCapabilities = new Map<string, AgentWireCapabilityGrant>();
+      const writeToolResults = new Map<
+        string,
+        { readonly content: unknown; readonly undoId?: string }
+      >();
       const uiToolBindings = uiToolNames.map((name) => {
         const definition = uiTools?.get(name);
         if (!definition) throw new Error("MASTRA_AGENT_UI_TOOL_MISSING");
@@ -1420,9 +1536,193 @@ export function createMastraTurnOwner(
           },
         };
       });
+      const writeToolBindings = writeToolNames.map((name) => {
+        const definition = writeTools?.get(name);
+        if (!definition) throw new Error("MASTRA_AGENT_WRITE_TOOL_MISSING");
+        return {
+          name,
+          description: definition.description,
+          execute: async (
+            args: unknown,
+            { toolCallId }: { toolCallId: string },
+          ) => {
+            assertLive(turn);
+            const grant = writeCapabilities.get(toolCallId);
+            writeCapabilities.delete(toolCallId);
+            if (!grant || !options.issueWriteCapabilities) {
+              throw new Error("MASTRA_AGENT_WRITE_CAPABILITY_MISSING");
+            }
+            const command = MASTRA_WRITE_COMMANDS[name];
+            const backend = options.backend;
+            if (!backend) throw new Error("IPC_BACKEND_UNAVAILABLE: writer");
+            const spec = NAPI_COMMANDS[command];
+            if (!spec) throw new Error("MASTRA_AGENT_WRITE_COMMAND_MISSING");
+            if (!args || typeof args !== "object" || Array.isArray(args)) {
+              throw new Error("MASTRA_AGENT_WRITE_INPUT_INVALID");
+            }
+            const requestId = options.agentAuthorityRequestId?.(
+              name,
+              turn.projectId,
+              toolCallId,
+            );
+            if (!requestId || !options.bindWriteCapability) {
+              throw new Error("MASTRA_AGENT_WRITE_BINDING_UNAVAILABLE");
+            }
+            const normalized = normalizeMastraAgentWriteInput(
+              name,
+              args as Record<string, unknown>,
+            );
+            if (
+              name === "apply_ai_tree_plan" ||
+              name === "propose_scene_body"
+            ) {
+              const result = await requestUiTool(
+                turn.turnId,
+                toolCallId,
+                name,
+                normalized,
+                grant,
+              );
+              uiToolResults.set(toolCallId, result);
+              if (result.error) throw new Error(result.error);
+              if (result.content !== undefined) {
+                writeToolResults.set(toolCallId, {
+                  content: result.content,
+                  ...(result.undoId ? { undoId: result.undoId } : {}),
+                });
+              }
+              if (name === "apply_ai_tree_plan") {
+                if (!result.undoId) {
+                  throw new Error("MASTRA_AGENT_WRITE_RESULT_INVALID");
+                }
+                writeToolResults.set(toolCallId, {
+                  content: result.content,
+                  undoId: result.undoId,
+                });
+                const content = result.content as Record<string, unknown>;
+                const targetId = ["createdIds", "movedIds", "renamedIds"]
+                  .flatMap((key) =>
+                    Array.isArray(content?.[key]) ? content[key] as unknown[] : [],
+                  )
+                  .find((id): id is string => typeof id === "string");
+                sendWriteCompleted(turn.senderId, {
+                  targetId: targetId ?? requestId,
+                  undoId: result.undoId,
+                });
+              }
+              assertLive(turn);
+              const text = JSON.stringify(result.content);
+              return {
+                text,
+                summary: result.summary,
+                tokensUsed: result.tokensUsed,
+              };
+            }
+            if (name === "update_codex_entry") {
+              const raw = await backend.dbExecute(
+                "SELECT version FROM codex_entries WHERE id = ? AND project_id = ? LIMIT 1",
+                [normalized.entryId, turn.projectId],
+                "get",
+                JSON.stringify(turn.identity),
+              );
+              const rows = (JSON.parse(raw) as { rows?: unknown }).rows;
+              const row = Array.isArray(rows) ? rows[0] : undefined;
+              normalized.baseVersion =
+                row &&
+                typeof row === "object" &&
+                typeof (row as Record<string, unknown>).version === "number"
+                  ? (row as Record<string, number>).version
+                  : 0;
+            }
+            if (
+              name === "update_event" ||
+              name === "delete_event" ||
+              name === "set_event_participants"
+            ) {
+              if (typeof backend.eventGetVersion !== "function") {
+                throw new Error("MASTRA_AGENT_EVENT_VERSION_UNAVAILABLE");
+              }
+              const rawVersion = await backend.eventGetVersion(
+                turn.projectId,
+                String(normalized.eventId ?? ""),
+              );
+              const version: unknown = JSON.parse(rawVersion);
+              if (
+                typeof version !== "number" ||
+                !Number.isSafeInteger(version)
+              ) {
+                throw new Error("Event not found");
+              }
+              normalized.baseVersion = version;
+            }
+            const payload: CommandArgs = {
+              ...normalized,
+              projectId: turn.projectId,
+              sessionId: turn.writerSessionId,
+              writerSessionId: turn.writerSessionId,
+              requestId,
+              eventUid: `${requestId}:event`,
+              origin: "ai-apply",
+              originalTransactionId: null,
+              undoJournalId: null,
+              toolCallId,
+              executionId: grant.executionId,
+              chatMessageId: grant.chatMessageId,
+              mainOwnedProvenanceId: grant.mainOwnedProvenanceId,
+              agentAuthorityCapability: grant.capability,
+            };
+            const bound = options.bindWriteCapability(
+              command,
+              payload,
+              turn.senderId,
+            );
+            if (!bound)
+              throw new Error("MASTRA_AGENT_WRITE_CAPABILITY_INVALID");
+            const content = await spec.run(
+              backend,
+              { payload: bound },
+              {
+                backend,
+                shell: {},
+              },
+            );
+            if (
+              !content ||
+              typeof content !== "object" ||
+              typeof (content as Record<string, unknown>).entityId !==
+                "string" ||
+              typeof (content as Record<string, unknown>).undoJournalId !==
+                "string"
+            ) {
+              throw new Error("MASTRA_AGENT_WRITE_RESULT_INVALID");
+            }
+            const result = content as {
+              entityId: string;
+              undoJournalId: string;
+            };
+            writeToolResults.set(toolCallId, {
+              content,
+              undoId: result.undoJournalId,
+            });
+            sendWriteCompleted(turn.senderId, {
+              targetId: result.entityId,
+              undoId: result.undoJournalId,
+            });
+            successfulWriteProcessor?.(command, bound, content, turn.senderId);
+            assertLive(turn);
+            const text = JSON.stringify(content);
+            return {
+              text,
+              summary: `${name} completed`,
+              tokensUsed: tokenizer.countTokens(text),
+            };
+          },
+        };
+      });
       const bindings = [
         ...(turnReadBindings?.bindings ?? []),
         ...uiToolBindings,
+        ...writeToolBindings,
       ];
       const run = runtime.runTurn({
         instructions: split.instructions,
@@ -1430,7 +1730,7 @@ export function createMastraTurnOwner(
         route: request.route as unknown as AgentRoute,
         systemCacheSegments: request.systemCacheSegments,
         systemVolatileTail: request.systemVolatileTail,
-        send: sendFor(turn, backend, credentials),
+        send: sendFor(turn, backend, credentials, writeCapabilities),
         audit: guardedSink(turn),
         assertSendAllowed: async ({ sendIndex }) => {
           await assertTurnAuthority(turn, backend);
@@ -1631,6 +1931,8 @@ export function createMastraTurnOwner(
           completedToolCallIds.add(toolCallId);
           const uiResult = uiToolResults.get(toolCallId);
           uiToolResults.delete(toolCallId);
+          const writeResult = writeToolResults.get(toolCallId);
+          writeToolResults.delete(toolCallId);
           loopState = recordToolResultTokens(
             loopState,
             uiResult?.tokensUsed ?? tokens,
@@ -1644,6 +1946,12 @@ export function createMastraTurnOwner(
                 resultSummary: uiResult?.summary ?? summary,
                 tokensUsed: uiResult?.tokensUsed ?? tokens,
                 ...(uiResult?.undoId ? { undoId: uiResult.undoId } : {}),
+                ...(writeResult
+                  ? {
+                      content: writeResult.content,
+                      undoId: writeResult.undoId,
+                    }
+                  : {}),
                 ...(uiResult?.settingProposal && !uiResult.error
                   ? { settingProposal: uiResult.settingProposal }
                   : {}),
@@ -1797,6 +2105,9 @@ export function createMastraTurnOwner(
     cancel: (context, request) => cancel(context, request),
     requestUiTool,
     answer,
+    setSuccessfulWriteProcessor(processor) {
+      successfulWriteProcessor = processor;
+    },
 
     async quiesceForProfileEgress(context) {
       // Admission first, and for good (a restricted or unavailable profile

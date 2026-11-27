@@ -386,6 +386,26 @@ function hasRendererHistoryJournal(
   );
 }
 
+function postprocessSuccessfulWriter(
+  cmd: string,
+  args: CommandArgs,
+  value: unknown,
+  senderId: number,
+  wakeRelatedScenes: () => void,
+): void {
+  if (RELATED_SCENES_MUTATION_WAKE_COMMANDS.has(cmd)) wakeRelatedScenes();
+  if (!HISTORY_JOURNAL_WRITER_COMMANDS.has(cmd) || !isRecord(value)) return;
+  const payload = isRecord(args.payload) ? args.payload : args;
+  const projectId = payload.projectId;
+  const journalId = value.undoJournalId;
+  if (
+    isNonEmptyTrimmedString(projectId) &&
+    isNonEmptyTrimmedString(journalId)
+  ) {
+    recordRendererHistoryJournalForIpc(senderId, projectId, journalId);
+  }
+}
+
 function isNonEmptyTrimmedString(value: unknown): value is string {
   return (
     typeof value === "string" &&
@@ -394,7 +414,7 @@ function isNonEmptyTrimmedString(value: unknown): value is string {
   );
 }
 
-function agentToolRequestId(
+export function agentAuthorityRequestId(
   toolName: string,
   projectId: string,
   toolCallId: string,
@@ -1671,7 +1691,7 @@ export async function issueAgentAuthorityCapabilitiesForSender(
     const now = Date.now();
     const token = randomUUID();
     const mainOwnedProvenanceId = randomUUID();
-    const requestId = agentToolRequestId(toolName, projectId, toolCallId);
+    const requestId = agentAuthorityRequestId(toolName, projectId, toolCallId);
     const expectedEntityId = mainOwnedEntityId(toolName, requestId);
     agentAuthorityCapabilities.set(token, {
       senderId,
@@ -1753,6 +1773,20 @@ export function consumeAgentAuthorityCapability(
   return bindMainOwnedAgentMutation(payload, record) ? record : null;
 }
 
+/** Consumes one grant and returns its main-bound Native payload. */
+export function consumeAndBindAgentAuthorityCapability(
+  cmd: string,
+  payload: CommandArgs,
+  senderId: number,
+): CommandArgs | null {
+  if (!Number.isInteger(senderId)) return null;
+  const args = bindRendererAuthorityForIpc(cmd, { payload }, senderId);
+  return isRecord(args.payload) &&
+    args.payload.authorityRoute === "interactive-agent-command"
+    ? args.payload
+    : null;
+}
+
 function authorityRouteForUnambiguousOrigin(
   origin: unknown,
   allowedRoutes?: readonly CanonicalAuthorityRoute[],
@@ -1777,6 +1811,9 @@ function authorityRouteForUnambiguousOrigin(
     ? route
     : undefined;
 }
+
+/** index.ts は ./ の import だけを使う（rendererContainment.startupOrder の試験の前提）ので、ここから型を再 export する。 */
+export type { CommandArgs };
 
 export type ExtraShellHandlers =
   | ShellCommandHandlers
@@ -2267,6 +2304,13 @@ export function registerIpcRouter(
     reportFailure: () =>
       console.warn("[related-scenes] Native generation reconciliation failed"),
   });
+  if (typeof mastraTurnOwner?.setSuccessfulWriteProcessor === "function") {
+    mastraTurnOwner.setSuccessfulWriteProcessor((cmd, args, value, senderId) =>
+      postprocessSuccessfulWriter(cmd, args, value, senderId, () =>
+        relatedScenesReconciler.wake(),
+      ),
+    );
+  }
   const relatedScenesAuthority = createRelatedScenesSearchAuthority({
     releaseOwner: (ownerKey) => {
       relatedScenesReconciler.releaseOwner(ownerKey);
@@ -2834,8 +2878,14 @@ export function registerIpcRouter(
             );
           }
         }
-        if (envelope.ok && RELATED_SCENES_MUTATION_WAKE_COMMANDS.has(cmd)) {
-          relatedScenesReconciler.wake();
+        if (envelope.ok) {
+          postprocessSuccessfulWriter(
+            cmd,
+            boundArgs,
+            envelope.value,
+            event.sender.id,
+            () => relatedScenesReconciler.wake(),
+          );
         }
         if (
           narrativeMaintenanceCiSeam.active &&
@@ -2861,27 +2911,6 @@ export function registerIpcRouter(
                 claimedRunId,
               );
             }
-          }
-        }
-        if (
-          envelope.ok &&
-          HISTORY_JOURNAL_WRITER_COMMANDS.has(cmd) &&
-          isRecord(envelope.value)
-        ) {
-          const payload = isRecord(boundArgs.payload)
-            ? boundArgs.payload
-            : boundArgs;
-          const projectId = payload.projectId;
-          const journalId = envelope.value.undoJournalId;
-          if (
-            isNonEmptyTrimmedString(projectId) &&
-            isNonEmptyTrimmedString(journalId)
-          ) {
-            recordRendererHistoryJournalForIpc(
-              event.sender.id,
-              projectId,
-              journalId,
-            );
           }
         }
         if (workspaceSwitchLeases.length > 0) {

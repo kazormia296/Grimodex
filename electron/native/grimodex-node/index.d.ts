@@ -316,7 +316,7 @@ export declare class Backend {
   /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
   memoryVectorDelete(indexName: string, id: string): Promise<string>
   /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
-  memoryVectorDeleteMany(indexName: string, ids: Array<string>): Promise<string>
+  memoryVectorDeleteMany(indexName: string, request: any): Promise<string>
   /**
    * DA-2b CW (DR-DA2-50): delete messages of one chat session. Typed
    * `internal` writer; Main attaches the caller identity as the trailing
@@ -788,6 +788,11 @@ export declare class Backend {
    * Revision identities are rechecked inside the same read transaction.
    */
   nir1EntityRelationRevisionRead(payload: any, callerIdentity?: string | undefined | null): Promise<string>
+  /**
+   * Filter caller-supplied Codex IDs through current, human-approved typed
+   * Entity/Relation Revisions in the workspace pinned by Main.
+   */
+  nir1EntityRelationApprovedCodexFilter(payload: any, callerIdentity?: string | undefined | null): Promise<string>
   /** Read the project-scoped typed change review without changing stored state. */
   nir1ChangeReviewRead(payload: any, callerIdentity?: string | undefined | null): Promise<string>
   /**

@@ -11142,11 +11142,13 @@ impl Backend {
     pub async fn memory_vector_delete_many(
         &self,
         index_name: String,
-        ids: Vec<String>,
+        request: serde_json::Value,
     ) -> Result<String> {
-        run_memory_operation(Arc::clone(&self.state), move |db| {
-            memory::vector_delete_many(db, &index_name, &ids)
-        })
+        run_memory_payload(
+            Arc::clone(&self.state),
+            request,
+            move |db, request| memory::vector_delete_many_request(db, &index_name, request),
+        )
         .await
     }
 
@@ -13810,6 +13812,42 @@ impl Backend {
             })?;
             let response =
                 narrative_extraction::nir1_entity_relation_revision_read_for_renderer(response)?;
+            let wire = serde_json::to_string(&response).map_err(anyhow::Error::from)?;
+            finish_publication_entry(&state, &guard)?;
+            Ok(wire)
+        })
+        .await
+    }
+
+    /// Filter caller-supplied Codex IDs through current, human-approved typed
+    /// Entity/Relation Revisions in the workspace pinned by Main.
+    #[napi]
+    pub async fn nir1_entity_relation_approved_codex_filter(
+        &self,
+        payload: serde_json::Value,
+        caller_identity: Option<String>,
+    ) -> Result<String> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Request {
+            expected_workspace_path: String,
+            project_id: String,
+            codex_entry_ids: Vec<String>,
+        }
+
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let guard = admit_publication_entry(&state, caller_identity)?;
+            let request: Request = from_wire("payload", payload)?;
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
+            let response = workspace.authority.db().with_read_transaction(|conn| {
+                narrative_extraction::read_nir1_entity_relation_approved_codex_filter(
+                    conn,
+                    &request.project_id,
+                    &request.codex_entry_ids,
+                )
+            })?;
             let wire = serde_json::to_string(&response).map_err(anyhow::Error::from)?;
             finish_publication_entry(&state, &guard)?;
             Ok(wire)

@@ -13,6 +13,7 @@ import type {
 import type {
   ChronicleBulkApproval,
   ChronicleTaskResumeCandidate,
+  RedecideStatus,
   ReviewBundleProposalApplication,
 } from "@/application/narrative-extraction/nativeApi";
 import type { NarrativeSceneScopeMode } from "@/application/narrative-extraction/projectSnapshotAdapter";
@@ -99,6 +100,7 @@ export interface ChronicleReviewProposal {
   readonly probableDuplicateChoice: ProbableDuplicateChoice | null;
   /** Native application proof. Non-null proposals are immutable/read-only. */
   readonly application: ReviewBundleProposalApplication | null;
+  readonly redecide: RedecideStatus | "unverified" | null;
   readonly blockedReason?: string;
   /**
    * Native's bulk-approval judgement (BAO/1, B3). `null`/absent means "not
@@ -123,6 +125,25 @@ export function isBulkApprovalTarget(
     proposal.status === "unreviewed" &&
     proposal.revisionId !== null &&
     proposal.bulkApproval?.eligible === true
+  );
+}
+
+export function isChronicleReapprovalTarget(
+  proposal: ChronicleReviewProposal,
+): proposal is ChronicleReviewProposal & { readonly revisionId: string } {
+  return (
+    proposal.application !== null &&
+    proposal.revisionId !== null &&
+    proposal.redecide !== "unverified" &&
+    proposal.redecide?.reapproval.available === true
+  );
+}
+
+export function selectChronicleReapprovalCount(state: {
+  readonly projection: ChronicleExtractionReviewProjection | null;
+}): number {
+  return (
+    state.projection?.proposals.filter(isChronicleReapprovalTarget).length ?? 0
   );
 }
 
@@ -151,6 +172,10 @@ export interface ChronicleNativeReviewRow {
    */
   readonly revisionId?: string | null;
   readonly bulkApproval: ChronicleBulkApproval | null;
+  readonly appliedDecision?: {
+    readonly status: NarrativeProposalStatus;
+    readonly redecide: RedecideStatus | null;
+  };
   /** Present only when the caller wants the revision/status copied too. */
   readonly sync?: ChronicleNativeRevisionSync;
 }
@@ -443,8 +468,8 @@ interface ChronicleExtractionState {
   /**
    * Merge Native's re-read judgements (and, after a bulk approval, the new
    * revision/status) into the projection the result was computed for. A result
-   * for another run/project/workspace is dropped. Only `bulkApproval` (and the
-   * synced fields) change: the author's selection and choices are untouched.
+   * for another run/project/workspace is dropped. Applied rows also mirror
+   * their decision status and reapproval judgement.
    */
   applyNativeReviewRows: (
     identity: ChronicleReviewProjectionIdentity,
@@ -484,7 +509,7 @@ function judgementFor(
   return row.bulkApproval;
 }
 
-function sameProjectionIdentity(
+export function sameProjectionIdentity(
   projection: ChronicleExtractionReviewProjection | null,
   identity: ChronicleReviewProjectionIdentity,
 ): projection is ChronicleExtractionReviewProjection {
@@ -814,10 +839,19 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
         const row = byId.get(current.proposalId);
         if (!row) {
           // Not in Native's answer: nothing is known about it.
-          return current.bulkApproval === null ||
-            current.bulkApproval === undefined
-            ? current
-            : { ...current, bulkApproval: null };
+          return { ...current, bulkApproval: null, redecide: null };
+        }
+        if (current.application !== null) {
+          const decision =
+            current.revisionId === row.revisionId
+              ? row.appliedDecision
+              : undefined;
+          return {
+            ...current,
+            status: decision?.status ?? current.status,
+            redecide: decision?.redecide ?? null,
+            bulkApproval: judgementFor(current, row),
+          };
         }
         const sync = row.sync;
         // Only a row whose revision differs is synced: the same revision must
@@ -825,7 +859,6 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
         if (
           sync &&
           sync.revisionId !== current.revisionId &&
-          current.application === null &&
           current.applicability === "applicable"
         ) {
           return {
@@ -868,12 +901,11 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
       set({
         projection: {
           ...projection,
-          proposals: projection.proposals.map((proposal) =>
-            proposal.bulkApproval === null ||
-            proposal.bulkApproval === undefined
-              ? proposal
-              : { ...proposal, bulkApproval: null },
-          ),
+          proposals: projection.proposals.map((proposal) => ({
+            ...proposal,
+            bulkApproval: null,
+            redecide: proposal.application === null ? null : "unverified",
+          })),
         },
       });
     },

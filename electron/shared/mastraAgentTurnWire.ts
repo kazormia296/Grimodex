@@ -9,9 +9,9 @@
  * turn owner is 3c's. A refusal is an `ok:true` value, not an error: the
  * renderer falls back to the legacy route on any of them.
  *
- * This file imports the shared M4 names and seven UI definitions; neither
- * dependency imports chat IR. The renderer and `electron/tsconfig.json` both
- * compile it. Issues contain fixed codes, never request values.
+ * This file imports the shared M4 names, seven UI definitions and the fixed
+ * write-tool allowlist; the renderer and `electron/tsconfig.json` both compile
+ * it. Issues contain fixed codes, never request values.
  *
  * What a request cannot carry (DR-MP3-4, -5): `capability`, `auditContext`,
  * `pathId`, `executionId` and `callerIdentity` are Main's. Main issues the
@@ -29,6 +29,26 @@ import {
   type MastraUiToolName,
 } from "./mastraUiToolDefinitions.js";
 import { AGENT_SETTING_KEYS } from "./agentSettingCatalog.js";
+
+export const MASTRA_AGENT_WRITE_TOOL_NAMES = [
+  "create_codex_entry",
+  "update_codex_entry",
+  "create_foreshadow",
+  "update_foreshadow",
+  "create_snippet",
+  "apply_ai_tree_plan",
+  "propose_scene_body",
+  "create_event",
+  "update_event",
+  "delete_event",
+  "stamp_scene_event",
+  "unstamp_scene_event",
+  "set_event_participants",
+  "add_event_relation",
+  "remove_event_relation",
+] as const;
+export type MastraAgentWriteToolName =
+  (typeof MASTRA_AGENT_WRITE_TOOL_NAMES)[number];
 
 export const MASTRA_AGENT_TURN_START_COMMAND = "mastra_agent_turn_start";
 export const MASTRA_AGENT_TURN_CANCEL_COMMAND = "mastra_agent_turn_cancel";
@@ -97,7 +117,7 @@ export const MASTRA_AGENT_TURN_ROUTE_JSON_DEPTH_MAX = 6;
 export const MASTRA_AGENT_TURN_ROUTE_JSON_NODES_MAX = 512;
 
 /**
- * Tool names: 21 M4 plus seven shared UI tools. Legacy bounds: 25 calls
+ * Tool names: 21 M4, seven shared UI and 13 main-owned write tools. Legacy bounds: 25 calls
  * (`modelLimits.ts:1121-1124`), 8 default questions with an unbounded
  * override (`agentLoop.ts:32,66-77,156-158`),
  * `ja`/`en` (`chronicleReadContext.ts:27-33`), positive u32 output tokens
@@ -107,7 +127,9 @@ export const MASTRA_AGENT_TURN_ROUTE_JSON_NODES_MAX = 512;
  * text and result traversal caps below reuse this wire's existing total.
  */
 export const MASTRA_AGENT_TURN_TOOLS_MAX =
-  M4_READ_TOOL_NAMES.length + MASTRA_UI_TOOL_NAMES.length;
+  M4_READ_TOOL_NAMES.length +
+  MASTRA_UI_TOOL_NAMES.length +
+  MASTRA_AGENT_WRITE_TOOL_NAMES.length;
 export const MASTRA_AGENT_TURN_FULLY_INJECTED_IDS_MAX = 65_536;
 export const MASTRA_AGENT_TURN_LOOP_NUMBER_MAX = 1_000_000_000;
 export const MASTRA_AGENT_TURN_CONTEXT_NUMBER_MAX = Number.MAX_SAFE_INTEGER;
@@ -147,6 +169,7 @@ export const MASTRA_AGENT_TURN_ANSWER_TOKENS_MAX =
 const MASTRA_AGENT_TURN_START_TOOL_NAMES: readonly string[] = [
   ...M4_READ_TOOL_NAMES,
   ...MASTRA_UI_TOOL_NAMES,
+  ...MASTRA_AGENT_WRITE_TOOL_NAMES,
 ];
 const MASTRA_UI_TOOL_DEFINITION_MAP = new Map(
   createMastraUiToolDefinitions().map((tool) => [tool.name, tool]),
@@ -265,6 +288,8 @@ export interface MastraAgentTurnStartRequest {
   readonly turnId: string;
   /** The chat session (`sessionIdForPersist ?? activeSessionId`); one turn per sender and session. */
   readonly chatSessionId: string;
+  /** Renderer recorder session used as the native writerSessionId. */
+  readonly writerSessionId: string;
   /**
    * The project the turn's audit rows are chained to (`project:<id>`, as the
    * legacy route does; MP-4a, DR-MP4-1, -2). The renderer's own claim: Main
@@ -295,10 +320,25 @@ export interface MastraAgentTurnStartRequest {
   readonly fullyInjectedIds: readonly string[];
   readonly loop: MastraAgentTurnLoopOptions;
   /** The renderer sends only names; Main owns and resolves the definitions. */
-  readonly tools: readonly (M4ReadToolName | MastraUiToolName)[];
+  readonly tools: readonly (
+    | M4ReadToolName
+    | MastraUiToolName
+    | MastraAgentWriteToolName
+  )[];
 }
 
-export type MastraAgentTurnQuestionToolName = MastraUiToolName;
+export type MastraAgentTurnQuestionToolName =
+  | MastraUiToolName
+  | "apply_ai_tree_plan"
+  | "propose_scene_body";
+
+export interface MastraAgentTurnQuestionAuthorization {
+  readonly capability: string;
+  readonly executionId: string;
+  readonly chatMessageId: string;
+  readonly mainOwnedProvenanceId: string;
+  readonly expectedEntityId?: string;
+}
 
 export interface MastraAgentTurnQuestionPayload {
   readonly turnId: string;
@@ -306,6 +346,7 @@ export interface MastraAgentTurnQuestionPayload {
   readonly toolCallId: string;
   readonly toolName: MastraAgentTurnQuestionToolName;
   readonly args: Readonly<Record<string, unknown>>;
+  readonly authorization?: MastraAgentTurnQuestionAuthorization;
   /** Absolute Unix time in milliseconds. */
   readonly deadlineAt: number;
 }
@@ -366,6 +407,7 @@ export type MastraAgentTurnQuestionParse<T> =
 const START_KEYS = [
   "turnId",
   "chatSessionId",
+  "writerSessionId",
   "projectId",
   "currentSceneId",
   "chatMessageId",
@@ -451,6 +493,7 @@ export interface MastraAgentTurnToolCallRecord {
   readonly resultSummary: string;
   readonly tokensUsed: number;
   readonly undoId?: string;
+  readonly content?: unknown;
   readonly settingProposal?: Readonly<Record<string, unknown>>;
 }
 
@@ -501,6 +544,7 @@ export type MastraAgentTurnWireIssue =
   | "forbidden-key"
   | "turn-id"
   | "chat-session-id"
+  | "writer-session-id"
   | "project-id"
   | "current-scene-id"
   | "chat-message-id"
@@ -862,6 +906,9 @@ export function parseMastraAgentTurnStartRequest(
   if (!isTrimmedId(entries.get("chatSessionId"))) {
     return fail("chat-session-id");
   }
+  if (!isTrimmedId(entries.get("writerSessionId"))) {
+    return fail("writer-session-id");
+  }
   if (!isScopeId(entries.get("projectId"))) return fail("project-id");
   const currentSceneId = entries.get("currentSceneId");
   // An empty string is "no scene" (the chat store's `activeSceneId` can be
@@ -1167,6 +1214,26 @@ function hasMastraUiToolArgumentBounds(
   toolName: MastraAgentTurnQuestionToolName,
   args: Readonly<Record<string, unknown>>,
 ): boolean {
+  const entries = plainEntries(args);
+  if (entries === null) return false;
+  if (toolName === "apply_ai_tree_plan") {
+    return (
+      questionKeyIssue(entries, ["kind", "ops"]) === null &&
+      (args.kind === "scaffold" || args.kind === "reorganize") &&
+      Array.isArray(args.ops) &&
+      args.ops.length <= 200 &&
+      args.ops.every((op) => plainEntries(op) !== null)
+    );
+  }
+  if (toolName === "propose_scene_body") {
+    return (
+      questionKeyIssue(entries, ["sceneId", "text"], ["mode"]) === null &&
+      typeof args.sceneId === "string" &&
+      args.sceneId.length <= MASTRA_AGENT_TURN_QUESTION_FIELD_UTF16_MAX &&
+      typeof args.text === "string" &&
+      (args.mode === undefined || args.mode === "append" || args.mode === "insert")
+    );
+  }
   if (toolName === "get_app_help_index") {
     return (
       args.query === undefined ||
@@ -1245,7 +1312,7 @@ export function parseMastraAgentTurnQuestionPayload(
     "toolName",
     "args",
     "deadlineAt",
-  ]);
+  ], ["authorization"]);
   if (issue !== null) return questionFail(issue);
   const turnId = entries.get("turnId");
   const requestId = entries.get("requestId");
@@ -1256,23 +1323,58 @@ export function parseMastraAgentTurnQuestionPayload(
   if (!isMastraAgentTurnId(turnId)) return questionFail("turn-id");
   if (!isMastraAgentTurnId(requestId)) return questionFail("request-id");
   if (!isQuestionWireId(toolCallId)) return questionFail("tool-call-id");
-  if (!(MASTRA_UI_TOOL_NAMES as readonly unknown[]).includes(toolName)) {
+  const isWriteQuestion =
+    toolName === "apply_ai_tree_plan" || toolName === "propose_scene_body";
+  if (isWriteQuestion !== entries.has("authorization")) {
+    return questionFail("args");
+  }
+  if (
+    !(MASTRA_UI_TOOL_NAMES as readonly unknown[]).includes(toolName) &&
+    !isWriteQuestion
+  ) {
     return questionFail("tool-name");
   }
   const tool = MASTRA_UI_TOOL_DEFINITION_MAP.get(toolName as string);
+  const authorization = entries.get("authorization");
+  const authEntries = isWriteQuestion ? plainEntries(authorization) : null;
+  const authValid =
+    !isWriteQuestion ||
+    (authEntries !== null &&
+      questionKeyIssue(
+        authEntries,
+        ["capability", "executionId", "chatMessageId", "mainOwnedProvenanceId"],
+        ["expectedEntityId"],
+      ) === null &&
+      [
+        "capability",
+        "executionId",
+        "chatMessageId",
+        "mainOwnedProvenanceId",
+      ].every((key) => isQuestionWireId(authEntries.get(key))) &&
+      (!authEntries.has("expectedEntityId") ||
+        isQuestionWireId(authEntries.get("expectedEntityId"))));
   if (
-    !tool ||
-    !matchesMastraUiSchema(args, tool.inputSchema) ||
+    !authValid ||
+    (isWriteQuestion
+      ? !hasMastraUiToolArgumentBounds(
+          toolName as MastraAgentTurnQuestionToolName,
+          args as Readonly<Record<string, unknown>>,
+        )
+      : !tool ||
+        !matchesMastraUiSchema(args, tool.inputSchema) ||
+        !hasMastraUiToolArgumentBounds(
+          toolName as MastraAgentTurnQuestionToolName,
+          args as Readonly<Record<string, unknown>>,
+        )) ||
     !isBoundedQuestionJson(args, {
       text: MASTRA_AGENT_TURN_QUESTION_ARGS_UTF16_MAX,
       nodes: MASTRA_AGENT_TURN_QUESTION_JSON_NODES_MAX,
       depth: MASTRA_AGENT_TURN_QUESTION_JSON_DEPTH_MAX,
-      array: MASTRA_AGENT_TURN_QUESTION_OPTIONS_MAX,
-    }) ||
-    !hasMastraUiToolArgumentBounds(
-      toolName as MastraAgentTurnQuestionToolName,
-      args as Readonly<Record<string, unknown>>,
-    )
+      array:
+        toolName === "apply_ai_tree_plan"
+          ? 200
+          : MASTRA_AGENT_TURN_QUESTION_OPTIONS_MAX,
+    })
   ) {
     return questionFail("args");
   }
@@ -1309,7 +1411,9 @@ function isMastraAgentTurnUiToolResult(
   const tokensUsed = entries.get("tokensUsed");
   if (
     !isQuestionWireId(entries.get("toolCallId")) ||
-    !(MASTRA_UI_TOOL_NAMES as readonly unknown[]).includes(name) ||
+    (!(MASTRA_UI_TOOL_NAMES as readonly unknown[]).includes(name) &&
+      name !== "apply_ai_tree_plan" &&
+      name !== "propose_scene_body") ||
     !isBoundedQuestionJson(content, {
       text: MASTRA_AGENT_TURN_ANSWER_CONTENT_UTF16_MAX,
       nodes: MASTRA_AGENT_TURN_ANSWER_JSON_NODES_MAX,
@@ -1438,7 +1542,7 @@ function isToolCallRecord(
   const issue = keyIssue(
     entries,
     ["name", "params", "resultSummary", "tokensUsed"],
-    ["undoId", "settingProposal"],
+    ["undoId", "settingProposal", "content"],
   );
   return (
     issue === null &&
@@ -1447,6 +1551,8 @@ function isToolCallRecord(
     typeof entries.get("resultSummary") === "string" &&
     isNonNegativeFiniteNumber(entries.get("tokensUsed")) &&
     (!entries.has("undoId") || typeof entries.get("undoId") === "string") &&
+    (!entries.has("content") ||
+      isBoundedLoopResultJson(entries.get("content"))) &&
     (!entries.has("settingProposal") ||
       isSafePlainRecord(entries.get("settingProposal")))
   );
