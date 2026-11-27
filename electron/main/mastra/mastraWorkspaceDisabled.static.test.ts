@@ -34,11 +34,12 @@ const MASTRA_DIR = path.join("electron", "main", "mastra");
 const LOADER_FILE = path.join("electron", "main", "mastraAgentLoader.ts");
 
 /**
- * `@mastra` の module 指定の許可リスト（完全一致）。今の製品（agentRuntime）と MP-2 の adapter が使う subpath だけ。
+ * `@mastra` の module 指定の許可リスト（完全一致）。agentRuntime と MP-8 の main adapters が使う subpath だけ。
  * 型だけの import も含める。足すときは、この試験を意図して改訂する（workspace 系を持ち込まないことを確かめてから）。
  */
 const MASTRA_IMPORT_ALLOWLIST: readonly string[] = Object.freeze([
   "@mastra/core/agent",
+  "@mastra/memory",
   "@mastra/core/llm",
   // storage・vector の import の閉包の picomatch と workspace の chunk は agent と同じで、到達を防ぐのはこの静的検査と mastra-ee-check の importer の pin（DR-MP3-14・15）。
   "@mastra/core/storage",
@@ -392,9 +393,10 @@ describe(
       }
     });
 
-    it("許可リストは今の製品と MP-2 の adapter の subpath だけで、workspace 系を含まない", () => {
+    it("許可リストは実装済み main adapter の subpath だけで、workspace 系を含まない", () => {
       expect([...MASTRA_IMPORT_ALLOWLIST]).toEqual([
         "@mastra/core/agent",
+        "@mastra/memory",
         "@mastra/core/llm",
         "@mastra/core/storage",
         "@mastra/core/tools",

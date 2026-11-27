@@ -242,6 +242,7 @@ pub struct MemoryVectorInput {
     pub vector: Vec<f32>,
     pub metadata: Option<Value>,
     pub message_id: String,
+    pub project_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -251,6 +252,13 @@ pub struct MemoryVectorResult {
     pub score: f32,
     pub metadata: Value,
     pub message_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum MemoryVectorDeleteManyRequest {
+    Ids(Vec<String>),
+    MessageIds { message_ids: Vec<String> },
 }
 
 fn valid_vector(values: &[f32]) -> Result<()> {
@@ -271,9 +279,10 @@ fn vector_values(bytes: &[u8]) -> Result<Vec<f32>> {
     if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
         return refuse(MemoryRefusal::InvalidRequest);
     }
-    let values = bytes
-        .chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+    let (chunks, _) = bytes.as_chunks::<4>();
+    let values = chunks
+        .iter()
+        .map(|chunk| f32::from_le_bytes(*chunk))
         .collect::<Vec<_>>();
     valid_vector(&values)?;
     Ok(values)
@@ -321,6 +330,16 @@ pub fn vector_upsert(
             valid_vector(&item.vector)?;
             if item.vector.len() != dimension {
                 return refuse(MemoryRefusal::InvalidRequest);
+            }
+            let message_project: Option<String> = conn
+                .query_row(
+                    "SELECT s.project_id FROM chat_messages m JOIN chat_sessions s ON s.id=m.session_id WHERE m.id=?1 AND s.id NOT LIKE 'nir1-local-%'",
+                    [&item.message_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if message_project.as_deref() != Some(item.project_id.as_str()) {
+                return refuse(MemoryRefusal::ScopeMismatch);
             }
             let local_message: bool = conn.query_row(
                 "SELECT EXISTS (SELECT 1 FROM chat_messages m JOIN chat_sessions s ON s.id = m.session_id WHERE m.id = ?1 AND s.id LIKE 'nir1-local-%')",
@@ -475,6 +494,31 @@ pub fn vector_delete_many(db: &Database, index_name: &str, ids: &[String]) -> Re
         }
         Ok(())
     })
+}
+
+pub fn vector_delete_many_request(
+    db: &Database,
+    index_name: &str,
+    request: MemoryVectorDeleteManyRequest,
+) -> Result<()> {
+    match request {
+        MemoryVectorDeleteManyRequest::Ids(ids) => vector_delete_many(db, index_name, &ids),
+        MemoryVectorDeleteManyRequest::MessageIds { message_ids } => {
+            require_id(index_name)?;
+            if message_ids.iter().any(|id| require_id(id).is_err()) {
+                return refuse(MemoryRefusal::InvalidRequest);
+            }
+            with_immediate_transaction(db, |conn| {
+                for message_id in message_ids {
+                    conn.execute(
+                        "DELETE FROM mastra_memory_vectors WHERE index_name=?1 AND message_id=?2",
+                        params![index_name, message_id],
+                    )?;
+                }
+                Ok(())
+            })
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1416,7 +1460,7 @@ pub fn resource_read(db: &Database, request: ResourceReadCommand) -> Result<Valu
     require_id(&project_id)?;
     db.with_conn(|conn| {
         Ok(conn.query_row(
-            "SELECT json_object('id',id,'projectId',project_id,'workingMemory',working_memory,'metadata',json(metadata_json)) FROM mastra_resources WHERE project_id=?1",
+            "SELECT json_object('id',id,'projectId',project_id,'workingMemory',working_memory,'metadata',json(metadata_json),'createdAt',strftime('%Y-%m-%dT%H:%M:%fZ',created_at),'updatedAt',strftime('%Y-%m-%dT%H:%M:%fZ',updated_at)) FROM mastra_resources WHERE project_id=?1",
             params![project_id], |row| row.get::<_, String>(0),
         ).optional()?.map(|json| serde_json::from_str(&json)).transpose()?.unwrap_or(Value::Null))
     })
@@ -1448,9 +1492,7 @@ pub fn resource_write(db: &Database, request: ResourceWriteCommand) -> Result<Va
                     "INSERT INTO mastra_resources(id,project_id,working_memory,metadata_json) VALUES (?1,?2,?3,?4) ON CONFLICT(project_id) DO UPDATE SET working_memory=excluded.working_memory,metadata_json=excluded.metadata_json,updated_at=datetime('now') WHERE (working_memory,metadata_json) IS NOT (excluded.working_memory,excluded.metadata_json)",
                     params![id, project_id, working_memory, metadata],
                 )?;
-                Ok(
-                    json!({"id":id,"projectId":project_id,"workingMemory":working_memory,"metadata":serde_json::from_str::<Value>(&metadata)?}),
-                )
+                resource_json_by_project(conn, &project_id)
             })
         }
         ResourceWriteCommand::Update {
@@ -1517,12 +1559,12 @@ pub fn resource_write(db: &Database, request: ResourceWriteCommand) -> Result<Va
 }
 
 fn resource_json_by_id(conn: &Connection, id: &str) -> Result<Value> {
-    let raw: String = conn.query_row("SELECT json_object('id',id,'workingMemory',working_memory,'metadata',json(metadata_json)) FROM mastra_resources WHERE id=?1", params![id], |row| row.get(0)).optional()?.ok_or_else(|| anyhow::Error::new(MemoryRefusal::NotFound))?;
+    let raw: String = conn.query_row("SELECT json_object('id',id,'projectId',project_id,'workingMemory',working_memory,'metadata',json(metadata_json),'createdAt',strftime('%Y-%m-%dT%H:%M:%fZ',created_at),'updatedAt',strftime('%Y-%m-%dT%H:%M:%fZ',updated_at)) FROM mastra_resources WHERE id=?1", params![id], |row| row.get(0)).optional()?.ok_or_else(|| anyhow::Error::new(MemoryRefusal::NotFound))?;
     Ok(serde_json::from_str(&raw)?)
 }
 
 fn resource_json_by_project(conn: &Connection, project_id: &str) -> Result<Value> {
-    let raw: String = conn.query_row("SELECT json_object('id',id,'projectId',project_id,'workingMemory',working_memory,'metadata',json(metadata_json)) FROM mastra_resources WHERE project_id=?1", params![project_id], |row| row.get(0)).optional()?.ok_or_else(|| anyhow::Error::new(MemoryRefusal::NotFound))?;
+    let raw: String = conn.query_row("SELECT json_object('id',id,'projectId',project_id,'workingMemory',working_memory,'metadata',json(metadata_json),'createdAt',strftime('%Y-%m-%dT%H:%M:%fZ',created_at),'updatedAt',strftime('%Y-%m-%dT%H:%M:%fZ',updated_at)) FROM mastra_resources WHERE project_id=?1", params![project_id], |row| row.get(0)).optional()?.ok_or_else(|| anyhow::Error::new(MemoryRefusal::NotFound))?;
     Ok(serde_json::from_str(&raw)?)
 }
 
@@ -1922,7 +1964,7 @@ mod tests {
             }
         ));
         let db = db();
-        resource_write(
+        let saved = resource_write(
             &db,
             ResourceWriteCommand::Save {
                 id: "r1".into(),
@@ -1932,6 +1974,8 @@ mod tests {
             },
         )
         .unwrap();
+        assert!(saved["createdAt"].as_str().unwrap().ends_with('Z'));
+        assert!(saved["updatedAt"].as_str().unwrap().ends_with('Z'));
         resource_write(
             &db,
             ResourceWriteCommand::MergeWorkingMemory {
@@ -1960,6 +2004,8 @@ mod tests {
         assert_eq!(working_memory["name"], "Ada");
         assert_eq!(working_memory["role"], "writer");
         assert_eq!(row["metadata"]["a"], 1);
+        assert!(row["createdAt"].as_str().unwrap().ends_with('Z'));
+        assert!(row["updatedAt"].as_str().unwrap().ends_with('Z'));
         let error = resource_write(
             &db,
             ResourceWriteCommand::Save {
@@ -2410,7 +2456,8 @@ mod tests {
                 id: "bad".into(),
                 vector: vec![1.0],
                 metadata: None,
-                message_id: "vm1".into()
+                message_id: "vm1".into(),
+                project_id: "p1".into(),
             }]
         )
         .is_err());
@@ -2423,18 +2470,36 @@ mod tests {
                     vector: vec![1.0, 0.0],
                     metadata: Some(json!({"tag":"a"})),
                     message_id: "vm1".into(),
+                    project_id: "p1".into(),
                 },
                 MemoryVectorInput {
                     id: "v2".into(),
                     vector: vec![0.0, 1.0],
                     metadata: None,
                     message_id: "vm2".into(),
+                    project_id: "p1".into(),
                 },
             ],
         )
         .unwrap();
         let results = vector_query(&db, "memory", &[0.9, 0.1], 2).unwrap();
         assert_eq!(results[0].id, "v1");
+        let wrong_project = vector_upsert(
+            &db,
+            "memory",
+            &[MemoryVectorInput {
+                id: "cross-project".into(),
+                vector: vec![1.0, 0.0],
+                metadata: None,
+                message_id: "vm1".into(),
+                project_id: "p2".into(),
+            }],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            wrong_project.downcast_ref::<MemoryRefusal>(),
+            Some(MemoryRefusal::ScopeMismatch)
+        ));
         assert!(vector_create_index(&db, "memory", 3).is_err());
         db.with_conn(|conn| {
             conn.execute("DELETE FROM chat_messages WHERE id='vm1'", [])?;
@@ -2442,6 +2507,15 @@ mod tests {
         })
         .unwrap();
         assert_eq!(vector_describe_index(&db, "memory").unwrap()["count"], 1);
+        vector_delete_many_request(
+            &db,
+            "memory",
+            MemoryVectorDeleteManyRequest::MessageIds {
+                message_ids: vec!["vm2".into()],
+            },
+        )
+        .unwrap();
+        assert_eq!(vector_describe_index(&db, "memory").unwrap()["count"], 0);
         vector_delete_many(&db, "memory", &["v2".into()]).unwrap();
         assert_eq!(vector_describe_index(&db, "memory").unwrap()["count"], 0);
         assert_eq!(vector_list_indexes(&db).unwrap(), vec!["memory"]);
@@ -2467,6 +2541,7 @@ mod tests {
                 vector: vec![1.0, 0.0],
                 metadata: None,
                 message_id: "local-message".into(),
+                project_id: "p1".into(),
             }],
         )
         .unwrap_err();
@@ -2504,9 +2579,9 @@ mod tests {
             &db,
             "memory",
             &[
-                MemoryVectorInput { id: "v-b".into(), vector: vec![1.0, 0.0], metadata: None, message_id: "vector-message".into() },
-                MemoryVectorInput { id: "v-a".into(), vector: vec![1.0, 0.0], metadata: None, message_id: "vector-message".into() },
-                MemoryVectorInput { id: "v-zero".into(), vector: vec![0.0, 0.0], metadata: None, message_id: "vector-message".into() },
+                MemoryVectorInput { id: "v-b".into(), vector: vec![1.0, 0.0], metadata: None, message_id: "vector-message".into(), project_id: "p1".into() },
+                MemoryVectorInput { id: "v-a".into(), vector: vec![1.0, 0.0], metadata: None, message_id: "vector-message".into(), project_id: "p1".into() },
+                MemoryVectorInput { id: "v-zero".into(), vector: vec![0.0, 0.0], metadata: None, message_id: "vector-message".into(), project_id: "p1".into() },
             ],
         )
         .unwrap();

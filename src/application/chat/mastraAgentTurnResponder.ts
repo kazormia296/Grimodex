@@ -46,8 +46,20 @@ function errorResult(
   };
 }
 
+function isRecordWithUndoId(value: unknown): value is { undoId: string } {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    typeof (value as Record<string, unknown>).undoId === "string"
+  );
+}
+
 async function loadHandler(
-  name: MastraAgentTurnQuestionToolName,
+  name: Exclude<
+    MastraAgentTurnQuestionToolName,
+    "apply_ai_tree_plan" | "propose_scene_body"
+  >,
   askUserContext: AskUserContext,
 ): Promise<
   (
@@ -129,15 +141,20 @@ export async function registerMastraAgentTurnResponder(
       return;
     }
 
-    let handler: Awaited<ReturnType<typeof loadHandler>>;
-    try {
-      handler = await loadHandler(question.toolName, askUserContext);
-    } catch {
-      await answerMastraAgentTurnQuestion({
-        requestId: question.requestId,
-        result: errorResult(question, "UI tool handler failed to load"),
-      }).catch(() => undefined);
-      return;
+    let handler: Awaited<ReturnType<typeof loadHandler>> | null = null;
+    if (
+      question.toolName !== "apply_ai_tree_plan" &&
+      question.toolName !== "propose_scene_body"
+    ) {
+      try {
+        handler = await loadHandler(question.toolName, askUserContext);
+      } catch {
+        await answerMastraAgentTurnQuestion({
+          requestId: question.requestId,
+          result: errorResult(question, "UI tool handler failed to load"),
+        }).catch(() => undefined);
+        return;
+      }
     }
     if (!active) return;
     if (Date.now() >= question.deadlineAt) {
@@ -217,11 +234,46 @@ export async function registerMastraAgentTurnResponder(
       activeAskUserToolCallId = question.toolCallId;
     }
     try {
-      result = {
-        ...(await handler(question.toolCallId, { ...question.args })),
-        toolCallId: question.toolCallId,
-        name: question.toolName,
-      };
+      if (
+        question.toolName === "apply_ai_tree_plan" ||
+        question.toolName === "propose_scene_body"
+      ) {
+        const { executeTool } = await import("@/features/chat/agent/toolExecutors");
+        if (!active) return;
+        try {
+          assertTurnAuthority();
+        } catch {
+          await answerMastraAgentTurnQuestion({
+            requestId: question.requestId,
+            refusal: "authority-revoked",
+          }).catch(() => undefined);
+          return;
+        }
+        const executed = await executeTool(
+          question.toolName,
+          question.toolCallId,
+          { ...question.args },
+          question.authorization,
+        );
+        result = {
+          toolCallId: question.toolCallId,
+          name: question.toolName,
+          content: executed.content,
+          summary: executed.summary,
+          tokensUsed: executed.tokensUsed,
+          ...(executed.error ? { error: executed.error } : {}),
+          ...(question.toolName === "apply_ai_tree_plan" &&
+          isRecordWithUndoId(executed.content)
+            ? { undoId: executed.content.undoId }
+            : {}),
+        };
+      } else {
+        result = {
+          ...(await handler!(question.toolCallId, { ...question.args })),
+          toolCallId: question.toolCallId,
+          name: question.toolName,
+        };
+      }
     } catch {
       result = errorResult(question, "UI tool handler failed");
     } finally {

@@ -14,9 +14,11 @@ import { BrowserWindow, ipcMain } from "electron";
 
 import {
   IPC,
+  MASTRA_AGENT_WRITE_COMPLETED_EVENT,
   isAllowedBackendEventChannel,
   isAllowedMainEventChannel,
   isAllowedRendererEventChannel,
+  parseMastraAgentWriteCompletedEvent,
 } from "../shared/ipcContract.js";
 import type { NapiBackendLike } from "../shared/ipcContract.js";
 import {
@@ -284,11 +286,30 @@ export function sendAiStreamTerminalToWindow(
 
 /** Electron main 専用イベントを検証して配信する。 */
 export function broadcastMainEvent(channel: string, payload: unknown): void {
-  if (!isAllowedMainEventChannel(channel)) {
+  if (
+    channel === MASTRA_AGENT_WRITE_COMPLETED_EVENT ||
+    !isAllowedMainEventChannel(channel)
+  ) {
     console.warn(`[main:event] rejected non-main channel: ${String(channel)}`);
     return;
   }
   broadcastEvent(channel, payload);
+}
+
+/** Sends a validated, body-free write receipt only to the originating window. */
+export function sendMastraAgentWriteCompletedToWindow(
+  webContentsId: number,
+  payload: unknown,
+): boolean {
+  const parsed = parseMastraAgentWriteCompletedEvent(payload);
+  return (
+    parsed !== null &&
+    sendMainEventToWindow(
+      webContentsId,
+      MASTRA_AGENT_WRITE_COMPLETED_EVENT,
+      parsed,
+    )
+  );
 }
 
 /**

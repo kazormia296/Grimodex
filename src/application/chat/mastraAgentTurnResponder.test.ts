@@ -12,6 +12,7 @@ const response = vi.hoisted(() => ({
     createAskUserToolHandler: vi.fn(),
     createUiOperationLimitHandler: vi.fn(),
   },
+  toolExecutors: { executeTool: vi.fn() },
 }));
 
 vi.mock("@/lib/mastraAgentTurn", () => ({
@@ -20,6 +21,7 @@ vi.mock("@/lib/mastraAgentTurn", () => ({
 }));
 vi.mock("@/features/chat/agent/appHelpTools", () => response.help);
 vi.mock("./chatAgentToolHandlers", () => response.chatAgent);
+vi.mock("@/features/chat/agent/toolExecutors", () => response.toolExecutors);
 vi.mock("@/features/commands/commandContext", () => ({
   getRegisteredCommandContext: () => ({ phoneWorkspace: false }),
 }));
@@ -172,6 +174,65 @@ describe("registerMastraAgentTurnResponder", () => {
 
     expect(response.answer).not.toHaveBeenCalled();
     expect(response.help.getUiStateTool).not.toHaveBeenCalled();
+    unregister();
+  });
+
+  it("runs a Main-authorized tree tool through the existing renderer writer and returns its undo id", async () => {
+    const authorization = {
+      capability: "cap-1",
+      executionId: "execution-1",
+      chatMessageId: "message-1",
+      mainOwnedProvenanceId: "provenance-1",
+    };
+    response.toolExecutors.executeTool.mockResolvedValue({
+      content: {
+        createdIds: ["scene-1"],
+        movedIds: [],
+        renamedIds: [],
+        undoId: "undo-1",
+      },
+      summary: "Applied tree plan",
+      tokensUsed: 5,
+    });
+    const unregister = await registerMastraAgentTurnResponder(
+      "turn-1",
+      () => {},
+      {} as never,
+    );
+
+    receive({
+      turnId: "turn-1",
+      requestId: "req-1",
+      toolCallId: "call-tree",
+      toolName: "apply_ai_tree_plan",
+      args: { kind: "scaffold", ops: [{ op: "create" }] },
+      authorization,
+      deadlineAt: Date.now() + 10_000,
+    });
+
+    await vi.waitFor(() => expect(response.answer).toHaveBeenCalledOnce());
+    expect(response.toolExecutors.executeTool).toHaveBeenCalledWith(
+      "apply_ai_tree_plan",
+      "call-tree",
+      { kind: "scaffold", ops: [{ op: "create" }] },
+      authorization,
+    );
+    expect(response.answer).toHaveBeenCalledWith({
+      requestId: "req-1",
+      result: {
+        toolCallId: "call-tree",
+        name: "apply_ai_tree_plan",
+        content: {
+          createdIds: ["scene-1"],
+          movedIds: [],
+          renamedIds: [],
+          undoId: "undo-1",
+        },
+        summary: "Applied tree plan",
+        tokensUsed: 5,
+        undoId: "undo-1",
+      },
+    });
     unregister();
   });
 

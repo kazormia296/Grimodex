@@ -91,7 +91,8 @@ pub use nir1_entity_relation::{
     evaluate_nir1_entity_relation_disclosure, find_nir1_entity_relation_revision_run,
     nir1_entity_relation_revision_current_read_for_renderer,
     nir1_entity_relation_revision_prepare_receipt, nir1_entity_relation_revision_read_for_renderer,
-    prepare_nir1_entity_relation_revision, read_nir1_entity_relation_revision,
+    prepare_nir1_entity_relation_revision, read_nir1_entity_relation_approved_codex_filter,
+    read_nir1_entity_relation_revision,
     read_nir1_entity_relation_revision_current,
     read_nir1_entity_relation_revision_current_for_revision,
     revalidate_nir1_entity_relation_disclosure, Nir1EntityRelationDisclosure,
@@ -100,7 +101,8 @@ pub use nir1_entity_relation::{
     Nir1EntityRelationRevisionPrepareRequest, Nir1EntityRelationRevisionRead,
     Nir1EntityRelationRevisionRequest, Nir1EntityRelationRevisionRestoreMatch,
     NIR1_ENTITY_RELATION_DECISION_LOCKED, NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
-    NIR1_ENTITY_RELATION_SET_KIND,
+    NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_EDGE_CANDIDATES_PER_ID,
+    NIR1_ENTITY_RELATION_APPROVED_CODEX_FILTER_MAX_IDS, NIR1_ENTITY_RELATION_SET_KIND,
 };
 #[cfg(feature = "native-current-human-capture")]
 pub use nir1_graph::{

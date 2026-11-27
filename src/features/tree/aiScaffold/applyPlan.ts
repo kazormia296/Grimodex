@@ -478,5 +478,8 @@ async function applyAiTreePlanWithAuthority(
     });
   }
 
-  return { createdIds, movedIds, renamedIds };
+  if (!originalUndoJournalId) {
+    throw new Error("AI tree plan Native undo receipt is unavailable");
+  }
+  return { createdIds, movedIds, renamedIds, undoId: originalUndoJournalId };
 }
