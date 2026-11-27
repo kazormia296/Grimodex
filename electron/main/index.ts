@@ -47,6 +47,7 @@ import {
   nir1LocalGenerationLaunchFromApp,
   registerIpcRouter,
 } from "./ipc.js";
+import type { CommandArgs } from "./ipc.js";
 import { createMastraAgentLoader } from "./mastraAgentLoader.js";
 import {
   createMainO200kTokenizer,
@@ -122,7 +123,6 @@ import {
 } from "./windows.js";
 import { createProfileEgressGate } from "./profileEgress.js";
 import type { MainIssuedCallerIdentity } from "./profileEgress.js";
-import type { CommandArgs } from "../shared/ipcContract.js";
 import {
   applySessionPermissionPolicy,
   registerSecurityHandlers,

@@ -1812,6 +1812,9 @@ function authorityRouteForUnambiguousOrigin(
     : undefined;
 }
 
+/** index.ts は ./ の import だけを使う（rendererContainment.startupOrder の試験の前提）ので、ここから型を再 export する。 */
+export type { CommandArgs };
+
 export type ExtraShellHandlers =
   | ShellCommandHandlers
   | ((win: BrowserWindow | null) => ShellCommandHandlers);
