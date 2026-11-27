@@ -2,14 +2,14 @@
 
 - 状態：**確認済み（2026-11-27、第 7 節の 4 問）**。**起案（draft）**。第 7 節の回答まで確定しない。
 - 基点：`b991907b9`。変更対象は本書のみ。実装・脅威モデル本文は変更しない。
-- 前提：Write-Safety Roadmap Gate A、ADR 008、SessionTasks DR-ST-4・6、Mastra MP-6、AWA/1、A3 durable AgentRun。
-- 合意（2026-11-27）：Gate A は Release B（SessionTasks）の前提。Mastra の担当は MP-6 の後に続けて持つ。A3 は「中断した瞬間の状態から、読み直しなしで続く」までを担う。Gate A の承認要求は A3 の durable `waiting_approval` Interaction を参照し、Gate A は承認と Capability の交換 authority を持つ。
+- 前提：Write-Safety Roadmap Gate A、ADR 008、SessionTasks DR-ST-4・6、Mastra MP-6、AWA/1、Release A の A3（durable AgentRun）。
+- 合意（2026-11-27）：Gate A は Release B（SessionTasks）の前提。Mastra の担当は MP-6 の後に続けて持つ。Release A の A3 は「中断した瞬間の状態から、読み直しなしで続く」までを担う。Gate A の承認要求は Release A の A3 の durable `waiting_approval` Interaction を参照し、Gate A は承認と Capability の交換 authority を持つ。
 
 ## 1. 範囲
 
-Roadmap Gate A の A1（tool の効果・承認方式の分類）と A2（main の承認検証と Capability 発行時点）を設計する。現行は変更系 15 tool すべてに応答時 Capability が出る。Gate A 後は、正規状態への各変更を executor と main の両方で個別承認なしに実行できないことを境界とする。stage の提案作成は自動のまま、accept だけ承認する（A3）。
+Roadmap Gate A の A1（tool の効果・承認方式の分類）と A2（main の承認検証と Capability 発行時点）を設計する。現行は変更系 15 tool すべてに応答時 Capability が出る。Gate A 後は、正規状態への各変更を executor と main の両方で個別承認なしに実行できないことを境界とする。stage の提案作成は自動のまま、accept だけ承認する（Roadmap の A3）。
 
-Gate A は A3（stage の分離）・A4（AI policy parse の fail-closed 化）を含めない。MCP の AWA/1-2 も対象外。Gate C の Task Grant 永続化・範囲編集、Gate B の Agent Auto 化、製品公開も含めない。Task Grant が導入されるまでは `mutate/task-scope` も個別承認とする。
+Gate A は Roadmap の A3（stage の分離）・A4（AI policy parse の fail-closed 化）を含めない。MCP の AWA/1-2 も対象外。Gate C の Task Grant 永続化・範囲編集、Gate B の Agent Auto 化、製品公開も含めない。Task Grant が導入されるまでは `mutate/task-scope` も個別承認とする。
 
 ## 2. 確かめた事実
 
@@ -20,23 +20,23 @@ Gate A は A3（stage の分離）・A4（AI policy parse の fail-closed 化）
 - Capability の現行 TTL は 5 分（`ipc.ts:231`）。承認待ちは ADR 008 §5 の `expired` として扱い、推奨 30 分で失効させる（`ask_user` と同じ）。待機中も main turn と書込み行列の枠を保持する（脅威モデル:452）。
 - Manifest の画面操作 3 本（`run_app_command`、`apply_layout_preset`、`propose_setting_change`。:45-47）は作品内容を変えないため、承認なしを推奨する。`propose_scene_body` は stage として提案作成まで自動、正規状態への適用は別の承認。
 - AWA/1（[提案書](nir1-agent-event-write-approval-proposal-1-draft.md) :284-299）は、main が要求を作り、承認が確定するまで Capability を出さず、確定後に束縛を検査して one-shot Capability に交換する経路を記録している。Gate A ではこの交換境界を参照し、対象を 15 tool に広げる。AWA/1-2 の MCP 経路は含めない。
-- A3（`docs/plans/a3-durable-agentrun-decisions.md`）は `waiting_approval` Interaction の durable な実体と再開を担う。Gate A は Interaction の `interaction_id` を参照し、交換時に承認・引数・project・版・policy を確かめ直して Capability を発行／消費する。保存された承認だけを信頼しない。Gate A の要求と交換状態は memory の中だけに持ち、再開時の durable な続きは A3 の Interaction から交換し直す。従来案の「再起動後に復元しない」は、この境界に改める。
+- Release A の A3（`docs/plans/a3-durable-agentrun-decisions.md`）は `waiting_approval` Interaction の durable な実体と再開を担う。Gate A は Interaction の `interaction_id` を参照し、交換時に承認・引数・project・版・policy を確かめ直して Capability を発行／消費する。保存された承認だけを信頼しない。Gate A の要求と交換状態は memory の中だけに持ち、再開時の durable な続きは Release A の A3 の Interaction から交換し直す。従来案の「再起動後に復元しない」は、この境界に改める。
 - MP-6 の [DR-MP6-1・5](mastra-mp6-decisions.md) は、既存の Capability issuer／consumer と束縛を維持し、`requiresUserConfirmation` の確認時点を前倒ししない。したがって Gate A の発行時点変更を先に実装し、その後に MP-6 を接続する。flag L は A2 完了前に開けない。
 
 ## 3. 判断（案）
 
 - **DR-GA-1 Gate と順序。** Roadmap の Gate A を Release B の前提とする。A1 の分類、A2 の main enforcement を分け、MP-6 は A2 の後に接続する。Decision Gate A（SessionTasks DR-ST-6 が指す判断点）と Roadmap の Gate A は別の名称として扱う。
 - **DR-GA-2 A1 の分類。** Roadmap の `read | stage | mutate | destructive` と `none | task-scope | always` を採る。`mutate/task-scope` は Task Grant が無い間は毎回個別承認。`destructive/always` は Grant に関わらず毎回個別承認。未知値・分類不整合は fail-closed。旧 `requiresUserConfirmation` は全 tool の移行と確認が済むまで残す。
-- **DR-GA-3 A2 の発行・交換。** `mutate`／`destructive` の応答時には実行 Capability を発行せず、main が A3 Interaction を参照する承認要求を作る。要求を作る時点で入力 digest と base version を固定する。承認時に main が digest、project、OCC／base version、未使用状態を再検証し、policy の再検証は A4 の fail-closed 化に依存する。全条件が一致したときだけ既存束縛を保った one-shot Capability に交換する。renderer executor も承認前 dispatch を拒む。二重回答・失効・不一致は fail-closed。
+- **DR-GA-3 A2 の発行・交換。** `mutate`／`destructive` の応答時には実行 Capability を発行せず、main が Release A の A3 Interaction を参照する承認要求を作る。要求を作る時点で入力 digest と base version を固定する。承認時に main が digest、project、OCC／base version、未使用状態を再検証し、policy の再検証は A4 の fail-closed 化に依存する。全条件が一致したときだけ既存束縛を保った one-shot Capability に交換する。renderer executor も承認前 dispatch を拒む。二重回答・失効・不一致は fail-closed。
 - **DR-GA-4 Mastra 承認の候補。** UI のカードを同じにして、Mastra の `requireApproval` を停止・再開部品として使う案を問う。main の承認検証と Capability を置き換えない。`resumeData`、モデルの `approved`、再開時に保存された承認を authority にしない。Stop 後に suspend／snapshot が止まりきらない点は未解決で、採用前の条件として残す。AWA/1 の main 経路と比較して選ぶ（第 7 節 Q3）。Mastra を選ぶ場合に限り W12 と DR-MP5-7 の改訂を別途確認する。
-- **DR-GA-5 A3・A4 との境界。** A3 は stage の自動提案と accept 承認を分ける作業、A4 は不正 AI policy を fail-closed にする作業として別に扱う（Roadmap exit criteria 3・6）。A2 の承認時 policy 再検証は A4 に依存する。これらを A2 に混ぜず、flag L を先に開けない。
+- **DR-GA-5 Roadmap の A3・A4 との境界。** Roadmap の A3 は stage の自動提案と accept 承認を分ける作業、A4 は不正 AI policy を fail-closed にする作業として別に扱う（Roadmap exit criteria 3・6）。A2 の承認時 policy 再検証は A4 に依存する。これらを A2 に混ぜず、flag L を先に開けない。
 
 ## 4. owner／lifecycle（GDX-PRECHECK-001）
 
 | 経路 | owner／開始 | 停止・失効 | error／再開・終端 |
 | --- | --- | --- | --- |
-| turn／tool 応答 | main turn owner。応答時に要求だけを作り、Capability は出さない | Stop・権限失効で未承認要求を閉じ、新規 dispatch を拒む。承認待ちの上限は 30 分 | main memory 内の Gate A 状態は再起動で復元しない。durable な続きは A3 Interaction から交換し直す |
-| 承認・Capability 交換 | main owner が A3 `interaction_id`、sender／turn／toolCall、要求作成時の digest・base version を束縛 | 承認の時点で digest・project・OCC／版・policy・未使用性を再検証。失効、不一致、二重回答を拒否。一度だけ消費 | issuer の失敗は fail-closed。Native dispatch 後の cancellation／終端 receipt は MP-6 の確認対象 |
+| turn／tool 応答 | main turn owner。応答時に要求だけを作り、Capability は出さない | Stop・権限失効で未承認要求を閉じ、新規 dispatch を拒む。承認待ちの上限は 30 分 | main memory 内の Gate A 状態は再起動で復元しない。durable な続きは Release A の A3 Interaction から交換し直す |
+| 承認・Capability 交換 | main owner が Release A の A3 `interaction_id`、sender／turn／toolCall、要求作成時の digest・base version を束縛 | 承認の時点で digest・project・OCC／版・policy・未使用性を再検証。失効、不一致、二重回答を拒否。一度だけ消費 | issuer の失敗は fail-closed。Native dispatch 後の cancellation／終端 receipt は MP-6 の確認対象 |
 | Mastra suspend／resume | 採用する場合も Mastra runtime は停止・再開のみ、認可と保留は main owner | Stop で suspend／snapshot が有限に閉じる証拠は未確認 | 条件を満たせなければ Mastra 組込み承認を採らない |
 
 承認待ちの上限は推奨値。待機中に turn と書込み行列の枠を保持するため、30 分の待ちと既存の停止上限との整合を実装時に確認する。
@@ -48,7 +48,7 @@ Gate A は A3（stage の分離）・A4（AI policy parse の fail-closed 化）
 | A1 | `agent-tool-manifest.json`、`src/features/chat/agent/toolManifest.ts` と executor、Rust `grimodex-ai/build.rs`、manifest parity／build 検査 |
 | A2 | `electron/main/ipc.ts` の issuer／consumer、承認要求と one-shot 交換、`electron/main/mastraTurnOwner.ts`、executor／UI、main・executor の負試験 |
 | MP-6 接続 | Mastra write definitions／turn owner、承認・停止・再開の lifecycle。DR-MP6-1・5 を保ち、Gate A 完了後に接続 |
-| A3・A4 | 別レーン。Roadmap exit criteria 3・6 を満たす。A2 の policy 再検証は A4 完了後 |
+| Roadmap の A3・A4 | 別レーン。Roadmap exit criteria 3・6 を満たす。A2 の policy 再検証は A4 完了後 |
 
 ## 6. 脅威モデルへの影響（案）
 
@@ -73,11 +73,11 @@ Gate A は A3（stage の分離）・A4（AI policy parse の fail-closed 化）
 - LLM 応答時に `mutate`／`destructive` Capability を先に発行し、後から承認で守る：承認前にも main が認める token が存在し、ADR 008 §4 と合わない。
 - Mastra `requireApproval` を製品認可そのものにする：Mastra の承認情報は authority ではなく、main の one-shot Capability を置き換えない。
 - Gate A で Task Grant の永続化・範囲編集を行う：Roadmap の Gate C／Release B の範囲を越える。
-- Gate A が A3 の Interaction を重複して永続化する：A3 が durable waiting state を持ち、Gate A は交換 authority に限る。
+- Gate A が Release A の A3 の Interaction を重複して永続化する：Release A の A3 が durable waiting state を持ち、Gate A は交換 authority に限る。
 
 ## 9. 未確認
 
-- 承認要求から A3 Interaction への `interaction_id` の結び方と、再開時に承認状態・base version・policy を交換時に再検証する具体的 API。
+- 承認要求から Release A の A3 Interaction への `interaction_id` の結び方と、再開時に承認状態・base version・policy を交換時に再検証する具体的 API。
 - 承認待ち 30 分の間に main turn と書込み行列が枠を保持する影響、および Stop／workspace 切替時の終端証拠。
 - Mastra suspend／resume の Stop 後の有限終端と snapshot 破棄。Q3 の選択肢②を採る場合だけ採用可否を決める。
-- 15 tool の A1 最終分類、A3／A4 の別レーン完了証跡、base version を要求作成時に固定する読み取り経路。
+- 15 tool の A1 最終分類、Roadmap の A3／A4 の別レーン完了証跡、base version を要求作成時に固定する読み取り経路。
