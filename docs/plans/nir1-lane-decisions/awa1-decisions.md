@@ -14,6 +14,15 @@
 
 理由：(i) は MCP を route の例外にするので、`field-authority` の検査そのものが MCP に掛からない形になり、免除の範囲（作者の持ち主の拒みだけ）より広く外れる。(ii) は必須の control を全部の呼び出しに残したまま、外せる拒みを 1 種類に絞れる。名前は、validator が「required と conditional に同じ control を置けない」と拒むので、`field-authority` と別にする（§2.7）。
 
+## DR-AWA-2　承認待ちの記録（2026-11-27 の問 22〜23 による改訂）
+
+ユーザーが、Gate A で承認が要る書き換え系の tool の承認待ちを DB に記録し、AWA/1 の作者の出来事の更新・削除の承認にも同じ記録を及ぼすと決めた（問 22「記録する」・問 23「及ぼす」。記録は contracts `2bb2083ee` の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-26-integrator-s11-leftovers.md`。A3 の担当〔grimodex-59〕のセッションの問いで、統合者が写した）。設計 AWA/1 の「承認の要求は main のメモリだけ、却下・時間切れは DB の行を足さない」と、ADR 007・008 の 11-23 の追補の同じ読みは、この範囲で改める。この PR では、ADR 007・008 の該当の項目の直後に 11-27 の改訂を足した（11-23 の文は残す）。設計の下書きの本文は、確認の SHA に結ばれているので書き換えず、この記録と ADR の改訂を正とする。
+
+- 記録の実体は A3 の `agent_run_interactions`（`kind=approval`、Run は `waiting_approval`）。再起動の後も、承認待ちのカードを起点の会話に出し直して続けられる。
+- 保存した承認はそのまま認可に使わない。一回限りの capability に交換する時点で、main が確かめ直す。
+- 記録の中身は対象の要約と作者の判断。承認・却下・時間切れの行は Run の終端で消える。
+- 帰結：AWA/1 の main の PR（PR 4）と画面の PR（PR 5）は、A3 の記録（`agent_run_interactions`）が master に入ることに依存する。A3 の担当は、AWA/1 の実装に触る前にこちらへ連絡すると言っている。
+
 ## 信頼境界
 
 この PR は文書と方針の JSON だけで、製品の挙動を変えない。承認の仕組みの実装（Native の probe、main の承認の状態、renderer のカード）は PR 2〜6、AI の削除を開ける旗（O1）は PR 7（SRD/1 の X の後）。

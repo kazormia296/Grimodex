@@ -277,6 +277,7 @@ idempotency、race test、startup reconciliationを必要とする。
 
 1. **「destructive、external、publish、credential、広範なstructure effectは常に明示的な人間承認を必要とする。」** この節は、Task の review を対象にし、MCP に触れない。MCP の削除は、ユーザーの選択により、承認なしである（設定で許した、1 つの作品に固定した接続だけ。AWA/1-2。確認 70・74・77・142）。MCP の削除は、SRD/1 の X（出来事が無くなったら承認を外す規則）が入ってから開ける。間に合わなければ、閉じたまま公開する。Task の review の文は、変えない。
 2. **保留中の承認の保持（§5 AgentRunInteraction）。** 「request payload、対象Session、status、OCC versionを永続化する」に対し、AWA/1 の承認の要求は、main のメモリだけに置く（再起動で消える）。型・指紋・交換の API は、後で永続にできる形にする。renderer を失った後の Evidence の保持は、満たさない。ADR 008 が許すメモリ置きの範囲である（ADR 008 の同日の追補を参照）。
+   - **2026-11-27 の改訂（問 22〜23。記録は contracts `2bb2083ee` の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-26-integrator-s11-leftovers.md`）。** ユーザーが、Gate A で承認が要る書き換え系の tool の承認待ちを DB に記録し（問 22「記録する」）、AWA/1 の作者の出来事の更新・削除の承認にも同じ記録を及ぼす（問 23「及ぼす」）と決めた。この項目の「メモリだけに置く」は、この範囲で改める。承認待ちは A3 の `agent_run_interactions`（`kind=approval`、Run は `waiting_approval`）に記録し、再起動の後も承認待ちのカードを起点の会話に出し直して続けられる。保存した承認はそのまま認可に使わず、続けるとき（一回限りの capability に交換する時点）に main が確かめ直す。記録の中身は対象の要約と作者の判断で、承認・却下・時間切れの行は Run の終端で消える。型・指紋・交換の API は、この記録に合わせる。
 
 ## 追補（2026-11-26）：SessionTasks の評価の時期（DR-ST-6）
 
