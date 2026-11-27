@@ -315,4 +315,4 @@ Agent Auto既定化後、設定破損が自動書き込み許可へ変換され�
 3. **Decision §4「承認待ちの間、既発行Capabilityを保存して延命してはならない。」は変えない。**
    - 台帳には、capability の token を保存しない。保存するのは、状態（未発行・承認待ち・発行・消費）だけ。
    - 保存した回答や承認は、認可に使わない。
-4. **2026-11-23 の追補 5（ApprovalRequest はメモリだけ）は変えない。** durable な ApprovalRequest は、Gate A で入れる。
+4. **2026-11-23 の追補 5（ApprovalRequest はメモリだけ）を改める**（利用者の回答、問 22・23）。ApprovalRequest の durable な実体は、A3 の `approval` の AgentRunInteraction とする。交換の状態（capability の発行・消費）は、memory の中だけに置く。再起動の後は、A3 の記録から承認のカードを出し直し、交換で確かめ直す。AWA/1 の承認にも及ぼす（AWA/1 の判断記録 DR-AWA-2）。

@@ -158,7 +158,7 @@
   - Release B 用に今は空で置く：`continuation_of`、`task_id`。
 - **status は 9 つ**：
   - 非終端の 5 つ：`running`、`waiting_user`、`finalizing`、`interrupted`、`waiting_approval`。
-    - `waiting_approval` は Gate A のために値だけ置き、v1 では使わない（DR-A3-14）。
+    - `waiting_approval` は、承認待ちで止まっている（DR-A3-14）。
   - 終端の 4 つ：`completed`、`failed`、`cancelled`、`discarded`。
   - `interrupted` は非終端で、`resumable` が真なら途中再開の候補になる。
 - **`resumable` と `interrupt_reason` は、別の列にする**：
@@ -169,7 +169,8 @@
     - `route_unsupported`：Mastra の経路の当面の扱い（DR-A3-8）。
     - 回収では真に戻さない。
   - `interrupt_reason`：なぜ止まったか。再開の門の結果では変えない。
-    - `app_shutdown`、`renderer_lost`、`workspace_switched`、`profile_switched`、`question_timeout`（Mastra の 30 分）。
+    - `app_shutdown`、`renderer_lost`、`workspace_switched`、`profile_switched`。
+    - `question_timeout`（Mastra の質問の 30 分）、`approval_timeout`（Gate A の承認の 30 分）。
     - `copied_snapshot`：写しの中で、非終端の行を中断に倒した（DR-A3-7）。
 - **terminal_reason と status の対応**は、CHECK で固定する：
   - `completed`：`completed`、`limit_tokens`、`output_truncated`、`context_window_exceeded`。
@@ -196,13 +197,15 @@
   - 中身：`request`（表示文。上限の長さを置く）、`resolution`（作者の回答）。
   - 状態：`status`、`version`。
 - **kind**：
-  - v1 で使うのは `user_question`（ask_user）だけ。
-  - `approval`・`plan_amendment`・`permission` は、値だけ予約する（DR-A3-14）。
+  - v1 で使うのは `user_question`（ask_user）と `approval`（DR-A3-14）。
+  - `plan_amendment`・`permission` は、値だけ予約する。
   - Mastra の UI 系 6 本（10 秒）は記録しない。
 - **status と遷移**：
   - `pending` → `resolved`：作者が答えた。live の回答でも、claim と一緒の回答でもよい。
   - `pending` → `cancelled`：Run が終端（Stop、破棄、`superseded_by_new_turn` を含む）になった。
-  - `superseded` と `expired` は Gate A 用に予約し、v1 では使わない。
+  - 承認の Interaction では、`resolution` に承認か却下かを書く。
+  - `superseded`：承認の対象が変わり、Gate A の交換で確かめ直しに通らなかった。
+  - `expired`：Gate A の交換で失効と判定された。live の 30 分の期限そのものでは使わない（DR-A3-14）。
 - **期限で閉じない**：
   - Mastra の 30 分の期限が切れても、Interaction は `pending` のままにする。
   - Run は `interrupted`（`question_timeout`）にする。live の保留は今どおり消費し、遅い live の回答は捨てる（DR-MP5-5）。
@@ -441,17 +444,24 @@ SessionTasks の材料に対応して、次を受入れの条件に入れる。
   - DR-ST-9 で、作者が書く目的と条件の欄が外れた。そのため `TaskContractSnapshotV1` は、中身を定め直す必要がある。
 - roadmap の F0-lite と、Release B の前提（`session-tasks-decisions-2026-11.md:84-85`）の「F0-lite」を、F0-lite-A に読み替える注記を、docs の PR で足す。
 
-### DR-A3-14 承認は v1 で記録しない（B6）
+### DR-A3-14 承認待ちも記録する（問 22・23）
 
-- 事実：
-  - AWA/1 の承認のカードは memory だけに置く。
-  - AWA/1 には「却下・時間切れは DB の行を足さない」（確認 69）がある。
-  - ADR 007 と ADR 008 の 2026-11-23 の追補も、同じ扱い。
-  - Gate A の草稿も、ApprovalRequest を memory に置く。
+- 経緯：
+  - 第 3 版までは「v1 では承認を記録しない」とした。AWA/1 の「却下・時間切れは DB の行を足さない」と、ADR 007・008 の 2026-11-23 の追補（承認の要求はメモリだけ）に合わせるためだった。
+  - Gate A の判断記録（#1201・#1206）が、承認の要求は Release A の A3 の Interaction を参照する形で確定した。そこで、このぶつかりを示して利用者に伺った。
+  - 回答：問 22「記録する (推奨)」、問 23「及ぼす (推奨)」（第 7 節）。
 - 判断：
-  - v1 では、承認を Interaction として記録しない。`approval` と `waiting_approval` は値だけ予約する。
-  - 途中再開の後に変更系の tool が出れば、その時点で今どおりの承認（AWA/1 など）が live に出る。
-  - Gate A が durable な承認を入れるときに、AWA/1 の R2・R4、ADR 007・008 の追補とともに改訂する。
+  - Gate A で承認が要る書換え系の tool の承認待ちを、`approval` の Interaction として記録する。Run は `waiting_approval` になる。
+  - AWA/1 の作者の出来事の更新・削除の承認にも、同じ記録を及ぼす。AWA/1 の追補の改訂は、年表の担当が DR-AWA-2（`claude/awa1-docs`）で行う。
+  - 記録するもの：承認の要求、承認、却下、live の期限切れ。中身は、対象の要約と作者の判断。Run の終端で、Interaction の `request` と `resolution` を空にする（DR-A3-7）。
+  - 保存した承認は、認可に使わない。
+    - 再起動の後は、承認のカードを起点の会話に出し直す。
+    - 作者が承認したら、Gate A の交換で main が確かめ直し、一回限りの capability を出す。
+    - 交換の状態（capability の発行・消費）は、memory の中だけに置く（Gate A の判断記録の 23 行目）。
+  - Gate A の live の 30 分の期限が切れたとき：
+    - Interaction は `pending` のままにし、Run を `interrupted`（`approval_timeout`）にする。
+    - 作者は、後から「続ける」で承認できる。そのときも、交換で確かめ直す。
+  - port：A3 は、承認の Interaction の開閉を port に出す。Gate A の A2 は、承認の要求を開くときと閉じるときに、それを呼ぶ（Mastra の担当）。
 
 ## 4. owner／lifecycle の表（GDX-PRECHECK-001）
 
@@ -589,6 +599,19 @@ roadmap の A3 の出口条件との対応：
 - 統合者の注 1：保持が期限なしなので、作者が消し忘れると、作品の本文の写しが残り続ける。破棄の操作の置き場所と文言は、画面の PR（PR 5）の前にユーザーに見せる。
 - 統合者の注 2：問 13 のすり合わせ、ADR 007 §4・§5 の追補、脅威モデルの改訂は、この範囲を含めて行う。
 
+### 承認の記録（2026-11-27、AskUserQuestion。contracts の問 22・23、Gate A の改訂の確認）
+
+- 選択肢の全文は contracts に写した。
+- 回答：
+  - 問 22「承認の記録」：「記録する (推奨)」。
+  - 問 23「AWA/1」：「及ぼす (推奨)」。
+- 統合者の注：問 23 の問いの文にある「AWA/1 は確認 69 の…で実装済み」は不正確だった。
+  - その文は、確認 69 の原文ではなく、AWA/1 の下書きの推奨の中身にある。
+  - AWA/1 の実装は、Native の probe 以降が未着手。
+- 関係する直し：
+  - Gate A の判断記録の 23 行目と第 4 節（Mastra の担当、#1206）。
+  - AWA/1 の ADR の追補の改訂（年表の担当、DR-AWA-2、`88845006e`）。
+
 ## 8. 問 3 のすり合わせ
 
 ### Mastra の担当（grimodex-57、2026-11-27）：大きな異論なし。条件と懸念は次のとおり。
@@ -618,6 +641,13 @@ roadmap の A3 の出口条件との対応：
 - DR-A3-9 は DR-MP5-5（期限で保留を消費し、turn を終える）と合う。期限の経路で recorder を呼ぶ接続は、Mastra の側で入れる。
 - W12 と DR-MP5-11 の改訂文に、「再開した Run でも、保存した回答や承認を認可には使わない。capability は交換の時点で取り直す（Gate A）」を足す（第 5 節に反映した）。
 - 改訂は、Mastra を port につなぐ Mastra の担当の PR で入れる。
+
+### Mastra の担当との MP-9 の合意（2026-11-27、DR-MP9-9、#1202）
+
+- 写しの扱い：backup、復元の前の退避、migration の前の snapshot では、終わっていない Run の途中の段の tool の結果の本文を、MP-9 の側でも空にする（問 19・21）。
+- 保持：MP-9 の段ごとの本文は Run の終端まで残し、終端で今どおりの digest に置き換える（DR-MP8-4）。
+  - 完了した turn の本文は残さない。問 14・15 の範囲の内側。
+  - 置き換えは、A3 の port の終端の記録から呼べる口を MP-9 に置く。
 
 ### advisor（Fable、effort high、read-only、2026-11-27。範囲の拡張の前の版 58c21dcef を点検）
 
@@ -686,7 +716,7 @@ blocker（実装の前に文書を直す）：
   - **対の維持と注入の stub**（実現性 F6）：置き換えにし、stub も basis に入れた。
   - **束ねる値**（実現性 F7、安全 F3）：台帳の値を使う。
   - **file:line の誤り**（実現性 F8、Fable の「記録の不正確」）：第 2 節を直した。legacy の ask_user に期限が無いことを足した。
-  - **承認の記録**（整合 F1、Fable B6）：v1 では記録しない（DR-A3-14）。
+  - **承認の記録**（整合 F1、Fable B6）：第 3 版では v1 で記録しないとした。その後、問 22・23 で記録する形に改めた（DR-A3-14）。
   - **roadmap の読み替え**（整合 F7）：F0-lite を A と B に分け、docs の PR に roadmap の注記を入れる。
   - **送信先の変化**（Fable 懸念 11）：endpoint の識別子が違えば再開しない。
   - **ADR 008 の追補**（Fable 懸念 12）：第 5 節に足した。
@@ -742,6 +772,7 @@ PR 5 の画面を作る前に、次をユーザーに見せる。
 6. **実行中だった変更系の tool**：再実行しない。AI には、commit 済みか未実行かを伝える。`run_app_command` などは「結果が分からない」と伝える。
 7. **中断の間に変わった場面や項目**：その結果だけを外して、AI に知らせる。
 8. **同期フォルダの上の workspace**：中断の検出が遅れることがある（最長で既定 24 時間）。
+9. **承認待ちで中断した実行**（問 22・23）：再開すると、承認のカードを起点の会話に出し直す。承認すると、main が確かめ直してから書き換える。年表の承認のカードも同じ。
 
 ### 回答（2026-11-27、AskUserQuestion）
 

@@ -308,7 +308,7 @@ idempotency、race test、startup reconciliationを必要とする。
    - 上の 1 の契約がある Run では、保留中の質問を起点の Session に再表示する。
    - 回答は、元の tool 呼出しの結果として、再開した同じ Run に渡す。
    - 保存した回答は、認可の根拠にしない。
-4. **2026-11-23 の追補 2（承認の要求はメモリだけ）は変えない。** A3 の v1 は承認を Interaction として記録しない。
+4. **2026-11-23 の追補 2（承認の要求はメモリだけ）を改める**（利用者の回答、問 22・23）。承認待ちは `approval` の AgentRunInteraction として記録し、Run は `waiting_approval` になる。AWA/1 の承認にも及ぼす（その追補の改訂は AWA/1 の判断記録 DR-AWA-2）。承認・却下・期限切れの行は、Run の終端で中身を消す。保存した承認は認可に使わず、交換の時点で main が確かめ直す。
 5. **変えないもの。**
    - 不変条件 7〜9（終端は 1 つ、pending は一度だけ resolve、renderer loss を成功として扱わない）。
    - §3 の cancel の理由。ただし、legacy の API の agent loop では、workspace や profile の切替、quit による強制中断を、再開できる中断として記録する。Mastra の経路は、再開の実証まで「続けられない」中断として記録する。CLI と Codex App Server は、今どおり cancel として記録する。
