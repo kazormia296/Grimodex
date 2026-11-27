@@ -949,6 +949,10 @@ export declare class Backend {
    * 返り値: 行オブジェクト配列の JSON 文字列。
    */
   plotThreadListLinks(projectId: string): Promise<string>
+  identityCorrectionRuleCreate(payload: any): Promise<string>
+  identityCorrectionRuleSupersede(previousRevisionId: string, payload: any): Promise<string>
+  identityCorrectionRuleRetire(payload: any): Promise<string>
+  identityCorrectionRulesList(projectId: string): Promise<string>
   /**
    * 伏線作成 (load_bearing 検証を含む)。`payload` は camelCase の
    * ForeshadowCreatePayload。返り値: 作成行 (snake_case) の JSON 文字列。

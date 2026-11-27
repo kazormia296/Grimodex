@@ -1185,6 +1185,13 @@ export interface NapiBackendLike {
   foreshadowCreate(payload: unknown): Promise<string>;
   foreshadowUpdate(id: string, patch: unknown): Promise<string>;
   foreshadowDelete(payload: unknown): Promise<string>;
+  identityCorrectionRuleCreate?(payload: unknown): Promise<string>;
+  identityCorrectionRuleSupersede?(
+    previousRevisionId: string,
+    payload: unknown,
+  ): Promise<string>;
+  identityCorrectionRuleRetire?(payload: unknown): Promise<string>;
+  identityCorrectionRulesList?(projectId: string): Promise<string>;
   foreshadowListWithLabels(projectId: string): Promise<string>;
   foreshadowListOpenForContext(projectId: string): Promise<string>;
   foreshadowGetSceneInfo(sceneId: string): Promise<string>;
@@ -2382,6 +2389,119 @@ function requireForeshadowVersionedPatch(
     );
   }
   return patch;
+}
+
+const IDENTITY_CORRECTION_WRITE_CONTEXT_KEYS = [
+  "requestId",
+  "sessionId",
+  "writerSessionId",
+  "eventUid",
+  "origin",
+  "authorityRoute",
+  "caller",
+  "controls",
+  "provenance",
+  "writesAuthorityProtectedField",
+  "originalTransactionId",
+  "undoJournalId",
+] as const;
+
+const IDENTITY_CORRECTION_RULE_FIELDS_KEYS = [
+  "kind",
+  "scopeKind",
+  "scopeSceneId",
+  "surfaceText",
+  "entryId",
+  "otherEntryId",
+  "canonicalName",
+  "keepPreviousAsAlias",
+  "reason",
+] as const;
+
+function requireIdentityCorrectionWritePayload(
+  args: CommandArgs,
+  command: string,
+): CommandArgs {
+  requireExactKeys(
+    args,
+    command === "identity_correction_rule_supersede"
+      ? ["previousRevisionId", "payload"]
+      : ["payload"],
+    command,
+  );
+  const payload = requireRecord(args, "payload", command);
+  const isRetire = command === "identity_correction_rule_retire";
+  requireExactKeys(
+    payload,
+    [
+      ...(isRetire
+        ? ["projectId", "previousRevisionId", "context"]
+        : ["projectId", "fields", "context"]),
+      ...IDENTITY_CORRECTION_WRITE_CONTEXT_KEYS,
+    ],
+    command,
+  );
+  requireNonEmptyString(payload, "projectId", command);
+  if (isRetire) {
+    requireNonEmptyString(payload, "previousRevisionId", command);
+  } else {
+    const fields = requireRecord(payload, "fields", command);
+    requireExactKeys(fields, IDENTITY_CORRECTION_RULE_FIELDS_KEYS, command);
+    requireNonEmptyString(fields, "kind", command);
+    requireNonEmptyString(fields, "scopeKind", command);
+    for (const key of [
+      "scopeSceneId",
+      "surfaceText",
+      "entryId",
+      "otherEntryId",
+      "canonicalName",
+      "reason",
+    ]) {
+      if (
+        Object.hasOwn(fields, key) &&
+        fields[key] !== null &&
+        typeof fields[key] !== "string"
+      ) {
+        throw new Error(
+          `invalid args \`${key}\` for command \`${command}\`: expected a string or null`,
+        );
+      }
+    }
+    if (
+      Object.hasOwn(fields, "keepPreviousAsAlias") &&
+      fields.keepPreviousAsAlias !== null &&
+      typeof fields.keepPreviousAsAlias !== "boolean"
+    ) {
+      throw new Error(
+        `invalid args \`keepPreviousAsAlias\` for command \`${command}\`: expected a boolean or null`,
+      );
+    }
+  }
+  const context = requireRecord(payload, "context", command);
+  requireExactKeys(context, ["sessionId"], command);
+  requireNonEmptyString(context, "sessionId", command);
+  if (
+    requireString(payload, "origin", command) !== "human" ||
+    requireString(payload, "authorityRoute", command) !== "human-direct"
+  ) {
+    throw new Error(
+      `invalid authority route for command \`${command}\`: only human-direct writes are allowed`,
+    );
+  }
+  if (
+    payload.provenance !== null ||
+    payload.originalTransactionId !== null ||
+    payload.undoJournalId !== null
+  ) {
+    throw new Error(
+      `invalid authority context for command \`${command}\`: revision writes are forward human mutations`,
+    );
+  }
+  requireCanonicalAuthorityContext(payload, command);
+  if (command === "identity_correction_rule_supersede") {
+    requireNonEmptyString(args, "previousRevisionId", command);
+  }
+  return payload;
 }
 
 function requireForeshadowMutationIdentity(
@@ -11082,6 +11202,69 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           requireString(a, "projectId", "plot_thread_list_links"),
         ),
       ),
+  },
+  identity_correction_rule_create: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.identityCorrectionRuleCreate,
+          "identityCorrectionRuleCreate",
+        )(requireIdentityCorrectionWritePayload(a, "identity_correction_rule_create")),
+      ),
+  },
+  identity_correction_rule_supersede: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.identityCorrectionRuleSupersede,
+          "identityCorrectionRuleSupersede",
+        )(
+          requireNonEmptyString(
+            a,
+            "previousRevisionId",
+            "identity_correction_rule_supersede",
+          ),
+          requireIdentityCorrectionWritePayload(
+            a,
+            "identity_correction_rule_supersede",
+          ),
+        ),
+      ),
+  },
+  identity_correction_rule_retire: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.identityCorrectionRuleRetire,
+          "identityCorrectionRuleRetire",
+        )(
+          requireIdentityCorrectionWritePayload(
+            a,
+            "identity_correction_rule_retire",
+          ),
+        ),
+      ),
+  },
+  identity_correction_rules_list: {
+    run: async (b, a) => {
+      requireExactKeys(a, ["projectId"], "identity_correction_rules_list");
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.identityCorrectionRulesList,
+          "identityCorrectionRulesList",
+        )(
+          requireNonEmptyString(
+            a,
+            "projectId",
+            "identity_correction_rules_list",
+          ),
+        ),
+      );
+    },
   },
   // foreshadow 20 コマンド（Phase 3 バッチ1 — grimodex-db::foreshadow を Tauri と
   // 共用。到達不能だった旧 foreshadow_list は両ランタイムから撤去済み）。

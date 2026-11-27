@@ -1,5 +1,5 @@
 // NIR-1 DA-1 ST3 (K3/2 "restricted 下の route 区分"): the five publication route
-// classes, the 44-command own-data-read ledger, the generic-SQL early
+// classes, the 45-command own-data-read ledger, the generic-SQL early
 // classification, and the Main -> Native own-data-read classification.
 //
 // The own-data-read opening is a single switch (`D2A_OWN_DATA_READ_OPEN`, true
@@ -70,7 +70,7 @@ vi.mock("./windows.js", () => ({
 
 const { registerIpcRouter } = await import("./ipc.js");
 
-/** K3/2 "区分の構成": the 44 own-data-read commands, by group. */
+/** K3/2 "区分の構成": the 45 own-data-read commands, by group. */
 const OWN_DATA_READ_BY_GROUP = {
   search: [
     "fts_search",
@@ -97,6 +97,7 @@ const OWN_DATA_READ_BY_GROUP = {
     "foreshadow_get",
     "foreshadow_list_linked_codex",
   ],
+  identityCorrection: ["identity_correction_rules_list"],
   plot: ["plot_thread_list", "plot_thread_list_links"],
   lint: [
     "lint_ignore_list",
@@ -198,15 +199,15 @@ const DENIED = (route: string) =>
   new RegExp(`^${D2A_EGRESS_DENIED_MARKER} ${route}:`);
 
 describe("own-data-read ledger (K3/2 区分の構成)", () => {
-  it("holds exactly the 44 confirmed commands, each a real NAPI command", () => {
+  it("holds exactly the 45 confirmed commands, each a real NAPI command", () => {
     const ledgers = d2aRouteLedgersForTest();
-    expect(OWN_DATA_READ_COMMANDS).toHaveLength(44);
-    expect(new Set(OWN_DATA_READ_COMMANDS).size).toBe(44);
+    expect(OWN_DATA_READ_COMMANDS).toHaveLength(45);
+    expect(new Set(OWN_DATA_READ_COMMANDS).size).toBe(45);
     expect([...ledgers.ownDataRead].sort()).toEqual(
       [...OWN_DATA_READ_COMMANDS].sort(),
     );
     expect(Object.values(OWN_DATA_READ_BY_GROUP).map((g) => g.length)).toEqual([
-      7, 3, 9, 2, 3, 2, 6, 12,
+      7, 3, 9, 1, 2, 3, 2, 6, 12,
     ]);
     for (const command of OWN_DATA_READ_COMMANDS) {
       expect(Object.hasOwn(NAPI_COMMANDS, command), command).toBe(true);
@@ -326,6 +327,27 @@ describe("own-data-read ledger (K3/2 区分の構成)", () => {
       expect(ledgers.internal, command).toContain(command);
       expect(ledgers.denied, command).not.toContain(command);
       expect(route(command), command).toBe("internal");
+    }
+  });
+
+  it("keeps identity correction revision writes internal in restricted profiles", () => {
+    const ledgers = d2aRouteLedgersForTest();
+    const restricted = {
+      restricted: true,
+      unavailable: false,
+      activating: false,
+      identityIssued: true,
+    } as const;
+    for (const command of [
+      "identity_correction_rule_create",
+      "identity_correction_rule_supersede",
+      "identity_correction_rule_retire",
+    ]) {
+      expect(ledgers.internal, command).toContain(command);
+      expect(route(command), command).toBe("internal");
+      expect(d2aRouteDecision("internal", restricted).allow, command).toBe(
+        true,
+      );
     }
   });
 

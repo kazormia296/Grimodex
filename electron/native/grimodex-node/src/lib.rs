@@ -14896,6 +14896,79 @@ impl Backend {
         .await
     }
 
+    // ───────────────── identity correction rule revisions (ADR 015) ───────
+
+    #[napi]
+    pub async fn identity_correction_rule_create(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            |db, payload: grimodex_db::identity_correction::RuleRevisionPayload, context| {
+                grimodex_db::identity_correction::create_rule_revision(db, payload, context)
+            },
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn identity_correction_rule_supersede(
+        &self,
+        previous_revision_id: String,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            move |db, payload: grimodex_db::identity_correction::RuleRevisionPayload, context| {
+                grimodex_db::identity_correction::supersede_rule_revision(
+                    db,
+                    &previous_revision_id,
+                    payload,
+                    context,
+                )
+            },
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn identity_correction_rule_retire(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            |db, payload: grimodex_db::identity_correction::RetireRuleRevisionPayload, context| {
+                grimodex_db::identity_correction::retire_rule_revision(db, payload, context)
+            },
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn identity_correction_rules_list(&self, project_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let rows = db.with_conn(|conn| {
+                    grimodex_db::identity_correction::list_current_rule_revisions(
+                        conn,
+                        &project_id,
+                    )
+                })?;
+                Ok(serde_json::to_string(&rows)?)
+            })
+        })
+        .await
+    }
+
     // ─────────────────────── foreshadow (Phase 3 バッチ1 — grimodex-db の
     // foreshadow モジュールを Tauri と共用。commands/foreshadow.rs の写像) ──
     //
