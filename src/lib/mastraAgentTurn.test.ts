@@ -22,6 +22,9 @@ vi.mock("@/lib/tauri", async (importOriginal) => ({
   invokeMastraAgentTurnControl: invokeMock,
   listen: listenMock,
 }));
+vi.mock("@/features/timelapse/recorder", () => ({
+  getRecorderSessionId: () => "writer-session-1",
+}));
 
 import { IpcInvokeError } from "@/lib/tauri";
 import {
@@ -37,6 +40,7 @@ const TURN_ID = "8f14e45f-ceea-467e-a5d4-1b9c6d0e2f3a";
 const REQUEST: MastraAgentTurnStartRequest = {
   turnId: TURN_ID,
   chatSessionId: "session-1",
+  writerSessionId: "writer-session-1",
   projectId: "project-1",
   currentSceneId: "scene-1",
   chatMessageId: "message-1",

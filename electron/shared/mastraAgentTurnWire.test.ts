@@ -121,6 +121,7 @@ function start(overrides: Record<string, unknown> = {}) {
   return {
     turnId: TURN_ID,
     chatSessionId: "session-1",
+    writerSessionId: "writer-session-1",
     projectId: "project-1",
     currentSceneId: "scene-1",
     chatMessageId: "message-1",
@@ -305,6 +306,7 @@ describe("parseMastraAgentTurnStartRequest", () => {
     for (const key of [
       "turnId",
       "chatSessionId",
+      "writerSessionId",
       "projectId",
       "currentSceneId",
       "chatMessageId",
@@ -484,7 +486,7 @@ describe("parseMastraAgentTurnStartRequest", () => {
     expect(issueOf(start({ currentSceneId: false }))).toBe("current-scene-id");
   });
 
-  it("the three scope fields are required keys (START_KEYS is twelve)", () => {
+  it("the start request has thirteen exact required keys", () => {
     const wire = readFileSync(
       new URL("./mastraAgentTurnWire.ts", import.meta.url),
       "utf8",
@@ -492,7 +494,7 @@ describe("parseMastraAgentTurnStartRequest", () => {
     const keys = /const START_KEYS = \[([^\]]*)\]/u
       .exec(wire)?.[1]
       ?.match(/"([A-Za-z]+)"/gu);
-    expect(keys).toHaveLength(12);
+    expect(keys).toHaveLength(13);
     expect(Object.keys(start()).sort()).toEqual(
       keys?.map((key) => key.slice(1, -1)).sort(),
     );
@@ -876,6 +878,17 @@ describe("parseMastraAgentTurnStartRequest", () => {
         start({ chatSessionId: "s".repeat(MASTRA_AGENT_TURN_ID_UTF16_MAX) }),
       ),
     ).toBeNull();
+  });
+
+  it("requires the renderer recorder session for Native write attribution", () => {
+    for (const writerSessionId of [
+      "",
+      " writer",
+      "writer ",
+      "w".repeat(MASTRA_AGENT_TURN_ID_UTF16_MAX + 1),
+    ]) {
+      expect(issueOf(start({ writerSessionId }))).toBe("writer-session-id");
+    }
   });
 
   it("accepts messages of text only", () => {
