@@ -249,6 +249,7 @@ describe("Mastra turn wiring", () => {
     expect(source).toMatch(
       /onLegacyFallback: \(\) => \{\s*mastraTurnAdmitted = false;/,
     );
+    expect(source.match(/runAgentLoop\(\{/g)).toHaveLength(1);
     expect(
       chatTurnMastraEngine.shouldUse({
         ...eligibility,
@@ -316,6 +317,36 @@ describe("Mastra turn wiring", () => {
 });
 
 describe("Mastra attempt terminal cleanup", () => {
+  it("does not start when authority changes during listener registration", async () => {
+    const runtime = {
+      claimMastraTurn: vi.fn(() => true),
+      hasActiveMastraTurn: vi.fn(() => false),
+      releaseMastraTurn: vi.fn(),
+      setStreamCleanup: vi.fn(),
+      clearStreamCleanupIf: vi.fn(),
+    };
+    mastraMocks.flushSceneWrites.mockReset().mockResolvedValue(undefined);
+    let selectedModel = "gpt-test";
+    mastraMocks.registerQuestion.mockReset().mockImplementation(async () => {
+      selectedModel = "gpt-new";
+      return vi.fn();
+    });
+    mastraMocks.listenProgress.mockReset().mockResolvedValue(vi.fn());
+    mastraMocks.start.mockReset();
+
+    const attempt = createMastraTurnAttempt(admission, runtime as never)!;
+    await attempt.preflight;
+    const context = executionContext();
+    context.assertAuthority = vi.fn(() => {
+      if (selectedModel !== "gpt-test") throw new Error("model changed");
+    });
+    context.cancelBeforeTransport = vi.fn(() => true);
+
+    await expect(attempt.run(context)).resolves.toEqual({ kind: "cancelled" });
+    expect(mastraMocks.start).not.toHaveBeenCalled();
+    expect(context.cancelBeforeTransport).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ["scene-write preflight", "preflight"],
     ["listener registration", "listener"],

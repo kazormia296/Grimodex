@@ -486,7 +486,7 @@ Mastra の既定の送信先（google／gemini、同 provider の低価格 model
 - **vector の削除の保証**（X7、R-15）：message_id の食い違いの原因は未確定。成り立たなければ U-13。
 - **OM の部分削除の方式と、WM の扱い**（X10、R-16）：未設計。決まるまで、message 削除後も OM・WM に内容が残りうる。
 - **背景仕事の取りこぼし**（X21、X22、R-17）：AbortSignal が届かない仕事は、quit で ambiguous の audit 行になりうる。件数は MP-11 で audit から数える。`T_quit` は暫定。
-- **4c-2 renderer turn の Q5 受容窓**（2026-11-27）：(a) 場面切替後も開始時の scene に固定する、(b) `resolutionMode`・tree の並びなど DB が古い間は画面より多くを解除する向きにずれうる、(c) scene 本文 read に barrier がなく DB に到着した本文だけを読む、(d) batch 中の tree 変更を再計算しない、(e) workspace・project・chat authority・policy・license の変化から cancel が届くまで送信または tool 呼出しがもう 1 回進みうる（AI policy の store 変更が DB に永続化されるまでの K-17 の窓を含む）、(f) events・scene-events・Codex 名の年表 cache は turn 中 `clear()` まで変更を見ない。license の変更は画面の watcher のみが検知する。
+- **4c-2 renderer turn の Q5 受容窓**（2026-11-27）：(a) 場面切替後も開始時の scene に固定する、(b) `resolutionMode`・tree の並びなど DB が古い間は画面より多くを解除する向きにずれうる、(c) scene 本文 read に barrier がなく DB に到着した本文だけを読む、(d) batch 中の tree 変更を再計算しない、(e) workspace・project・policy・license の変化から cancel が届くまで、もう 1 回送信または tool 呼出しが進みうる（会話・対象の表示・model と接続先・場面の切替は継続の条件を除く。AI policy の store 変更が DB に永続化されるまでの K-17 の窓を含む）、(f) events・scene-events・Codex 名の年表 cache は turn 中 `clear()` まで変更を見ない。license の変更は画面の watcher のみが検知する。
 - **4c-2 開始時 context の継続**（2026-11-27）：会話・表示対象・model／接続先・scene の変更では停止せず、開始時の会話・model・scene で処理を続け、応答は開始時の会話へ保存する。送信の後に、より前の scene へ移ると、その scene の位置では出さない情報を含む応答が見える可能性がある（開示は送信時点の scene で計算する。閲覧者は作者本人）。
 - **背景仕事の失敗時の挙動**（X1、X3、X5、X6、X9、R-35）：未確認。縮退の実行の裏付けが無い（P12）。
 - **clock の増加と Graph／IR の失効**（T6、R-3）：1 turn で clock は +10（chat と NIR-1 だけなら +6）。模型の通しの値で、実 Mastra の保存回数で増える。失効への影響は未測定。閾値は緩めない。
