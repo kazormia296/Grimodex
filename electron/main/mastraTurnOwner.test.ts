@@ -3375,6 +3375,16 @@ describe("workspace switch: the owner's lease (DR-MP3-12)", () => {
     const c = h.newContext();
     await first.resume(false);
     expect(
+      refusalReason(
+        await h.owner.start(
+          c.context,
+          startRequest(uuid(), {
+            messages: [{ role: "user", content: "no system" }],
+          }),
+        ),
+      ),
+    ).toBe("unsupported");
+    expect(
       refusalReason(await h.owner.start(c.context, startRequest(uuid()))),
     ).toBe("busy");
     await second.resume(true);
