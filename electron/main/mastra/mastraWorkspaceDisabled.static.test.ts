@@ -39,6 +39,7 @@ const LOADER_FILE = path.join("electron", "main", "mastraAgentLoader.ts");
  */
 const MASTRA_IMPORT_ALLOWLIST: readonly string[] = Object.freeze([
   "@mastra/core/agent",
+  "@mastra/memory",
   "@mastra/core/llm",
   // storage・vector の import の閉包の picomatch と workspace の chunk は agent と同じで、到達を防ぐのはこの静的検査と mastra-ee-check の importer の pin（DR-MP3-14・15）。
   "@mastra/core/storage",
@@ -395,6 +396,7 @@ describe(
     it("許可リストは実装済み main adapter の subpath だけで、workspace 系を含まない", () => {
       expect([...MASTRA_IMPORT_ALLOWLIST]).toEqual([
         "@mastra/core/agent",
+        "@mastra/memory",
         "@mastra/core/llm",
         "@mastra/core/storage",
         "@mastra/core/tools",
