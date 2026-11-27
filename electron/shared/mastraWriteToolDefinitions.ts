@@ -20,6 +20,16 @@ export const MASTRA_WRITE_TOOL_NAMES = [
 ] as const;
 export type MastraWriteToolName = (typeof MASTRA_WRITE_TOOL_NAMES)[number];
 
+export const MASTRA_AGENT_WRITE_TOOL_NAMES = [
+  "create_codex_entry",
+  "update_codex_entry",
+  "create_foreshadow",
+  "update_foreshadow",
+  "create_snippet",
+] as const;
+export type MastraAgentWriteToolName =
+  (typeof MASTRA_AGENT_WRITE_TOOL_NAMES)[number];
+
 export interface MastraWritePort {
   execute(
     toolName: MastraWriteToolName,

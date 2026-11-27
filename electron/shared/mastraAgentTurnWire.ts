@@ -28,6 +28,10 @@ import {
   MASTRA_UI_TOOL_NAMES,
   type MastraUiToolName,
 } from "./mastraUiToolDefinitions.js";
+import {
+  MASTRA_AGENT_WRITE_TOOL_NAMES,
+  type MastraAgentWriteToolName,
+} from "./mastraWriteToolDefinitions.js";
 import { AGENT_SETTING_KEYS } from "./agentSettingCatalog.js";
 
 export const MASTRA_AGENT_TURN_START_COMMAND = "mastra_agent_turn_start";
@@ -107,7 +111,9 @@ export const MASTRA_AGENT_TURN_ROUTE_JSON_NODES_MAX = 512;
  * text and result traversal caps below reuse this wire's existing total.
  */
 export const MASTRA_AGENT_TURN_TOOLS_MAX =
-  M4_READ_TOOL_NAMES.length + MASTRA_UI_TOOL_NAMES.length;
+  M4_READ_TOOL_NAMES.length +
+  MASTRA_UI_TOOL_NAMES.length +
+  MASTRA_AGENT_WRITE_TOOL_NAMES.length;
 export const MASTRA_AGENT_TURN_FULLY_INJECTED_IDS_MAX = 65_536;
 export const MASTRA_AGENT_TURN_LOOP_NUMBER_MAX = 1_000_000_000;
 export const MASTRA_AGENT_TURN_CONTEXT_NUMBER_MAX = Number.MAX_SAFE_INTEGER;
@@ -147,6 +153,7 @@ export const MASTRA_AGENT_TURN_ANSWER_TOKENS_MAX =
 const MASTRA_AGENT_TURN_START_TOOL_NAMES: readonly string[] = [
   ...M4_READ_TOOL_NAMES,
   ...MASTRA_UI_TOOL_NAMES,
+  ...MASTRA_AGENT_WRITE_TOOL_NAMES,
 ];
 const MASTRA_UI_TOOL_DEFINITION_MAP = new Map(
   createMastraUiToolDefinitions().map((tool) => [tool.name, tool]),
@@ -295,7 +302,11 @@ export interface MastraAgentTurnStartRequest {
   readonly fullyInjectedIds: readonly string[];
   readonly loop: MastraAgentTurnLoopOptions;
   /** The renderer sends only names; Main owns and resolves the definitions. */
-  readonly tools: readonly (M4ReadToolName | MastraUiToolName)[];
+  readonly tools: readonly (
+    | M4ReadToolName
+    | MastraUiToolName
+    | MastraAgentWriteToolName
+  )[];
 }
 
 export type MastraAgentTurnQuestionToolName = MastraUiToolName;
@@ -451,6 +462,7 @@ export interface MastraAgentTurnToolCallRecord {
   readonly resultSummary: string;
   readonly tokensUsed: number;
   readonly undoId?: string;
+  readonly content?: unknown;
   readonly settingProposal?: Readonly<Record<string, unknown>>;
 }
 
@@ -1438,7 +1450,7 @@ function isToolCallRecord(
   const issue = keyIssue(
     entries,
     ["name", "params", "resultSummary", "tokensUsed"],
-    ["undoId", "settingProposal"],
+    ["undoId", "settingProposal", "content"],
   );
   return (
     issue === null &&
@@ -1447,6 +1459,8 @@ function isToolCallRecord(
     typeof entries.get("resultSummary") === "string" &&
     isNonNegativeFiniteNumber(entries.get("tokensUsed")) &&
     (!entries.has("undoId") || typeof entries.get("undoId") === "string") &&
+    (!entries.has("content") ||
+      isBoundedLoopResultJson(entries.get("content"))) &&
     (!entries.has("settingProposal") ||
       isSafePlainRecord(entries.get("settingProposal")))
   );

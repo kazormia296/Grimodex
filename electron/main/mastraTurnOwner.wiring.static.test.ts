@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
+import { MASTRA_AGENT_WRITE_TOOL_NAMES } from "../shared/mastraWriteToolDefinitions.js";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -145,13 +146,12 @@ describe("the owner module", () => {
     expect(OWNER).not.toMatch(/mastra-agent|require\(/);
   });
 
-  it("never forwards the caller identity to Native, and never issues a capability", () => {
+  it("never forwards the caller identity to Native and uses the injected main capability issuer", () => {
     expect(OWNER).toMatch(
       /const \{ callerIdentity: _identity, \.\.\.nativeArgs \} = args;/,
     );
-    expect(OWNER).not.toMatch(
-      /issueAgentAuthorityCapabilities|agentAuthorityCapabilities/,
-    );
+    expect(OWNER).toMatch(/options\.issueWriteCapabilities\(/);
+    expect(OWNER).not.toMatch(/issueAgentAuthorityCapabilities/);
   });
 
   it("binds the shared seven UI definitions through the one-shot question registry", () => {
@@ -162,6 +162,36 @@ describe("the owner module", () => {
     );
     expect(OWNER).toMatch(/result\.content == null \? result\.summary/);
     expect(OWNER).toMatch(/JSON\.stringify\(result\.content\)/);
+  });
+
+  it("binds only the approved five main-owned write tools through one-shot Native writes", () => {
+    expect([...MASTRA_AGENT_WRITE_TOOL_NAMES]).toEqual([
+      "create_codex_entry",
+      "update_codex_entry",
+      "create_foreshadow",
+      "update_foreshadow",
+      "create_snippet",
+    ]);
+    for (const command of [
+      "agent_codex_create",
+      "agent_codex_update",
+      "agent_foreshadow_create",
+      "agent_foreshadow_update",
+      "agent_snippet_create",
+    ]) {
+      expect(IPC).toContain(command);
+    }
+    expect(OWNER).toMatch(/createMastraWriteToolDefinitions\(\)/);
+    expect(OWNER).toMatch(/MASTRA_AGENT_WRITE_TOOL_NAMES\.find/);
+    expect(OWNER).toMatch(/options\.bindWriteCapability\(/);
+    expect(OWNER).toMatch(/await spec\.run\( backend, \{ payload: bound \},/);
+    expect(OWNER.indexOf("options.bindWriteCapability(")).toBeLessThan(
+      OWNER.indexOf("await spec.run( backend, { payload: bound },"),
+    );
+    expect(OWNER).toMatch(/sendWriteCompleted\(turn\.senderId/);
+    expect(OWNER).toMatch(/content: writeResult\.content/);
+    expect(OWNER).toMatch(/undoId: writeResult\.undoId/);
+    expect(OWNER).not.toMatch(/\b(?:resumeData|approved)\b/u);
   });
 
   it("does not read Mastra resume or approval context as a UI answer", () => {

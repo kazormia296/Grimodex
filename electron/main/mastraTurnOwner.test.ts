@@ -42,6 +42,11 @@ import {
   createProfileEgressGate,
 } from "./profileEgress.js";
 import type { NapiBackendLike } from "../shared/ipcContract.js";
+import {
+  agentAuthorityRequestId,
+  consumeAndBindAgentAuthorityCapability,
+  issueAgentAuthorityCapabilitiesForSender,
+} from "./ipc.js";
 import type { CoreReadContext } from "../shared/mastraRead/ports.js";
 import { createReadExecutors } from "../shared/readDomain/core/readExecutors.js";
 import type {
@@ -260,6 +265,9 @@ function harness(
         | "foreshadowListOpenForContext"
       >
     >;
+    nativeWriterMethods?: Partial<
+      Pick<NapiBackendLike, "agentForeshadowCreate">
+    >;
   } = {},
 ): Harness {
   const {
@@ -335,6 +343,7 @@ function harness(
       return hold.promise;
     },
     ...overrides.nativeReadMethods,
+    ...overrides.nativeWriterMethods,
   } as unknown as NapiBackendLike;
 
   const runtimeModule: MastraAgentRuntimeModule = {
@@ -5410,5 +5419,126 @@ describe("MP-5 main-owned question holds", () => {
       "utf8",
     );
     expect(source).not.toMatch(/\b(?:resumeData|approved)\b/u);
+  });
+
+  it("executes a one-shot foreshadow write before the next read and records its Native result", async () => {
+    const order: string[] = [];
+    const writeReceipt = vi.fn(() => true);
+    const writeResponse: AgentWireResponse = {
+      blocks: [
+        {
+          type: "tool_use",
+          id: "write-call-1",
+          name: "create_foreshadow",
+          input: { title: "A hidden clue" },
+        },
+      ],
+      stopReason: "tool_use",
+    };
+    const readBindings = {
+      clear: () => undefined,
+      createTurnReadBindings: async () => ({
+        clear: () => undefined,
+        bindings: [
+          {
+            name: "get_foreshadow_detail",
+            description: "read",
+            execute: async () => {
+              order.push("read");
+              return { text: "read result", summary: "read", tokensUsed: 1 };
+            },
+          },
+        ],
+      }),
+    };
+    const h = harness({
+      responses: [
+        writeResponse,
+        { blocks: [{ type: "text", content: "done" }], stopReason: "end_turn" },
+      ],
+      loadReadBindings: async () => readBindings as never,
+      nativeWriterMethods: {
+        agentForeshadowCreate: vi.fn(async () => {
+          order.push("write");
+          return JSON.stringify({
+            entityId: "foreshadow-1",
+            version: 0,
+            changeEventUid: "event-1",
+            undoJournalId: "undo-1",
+          });
+        }),
+      },
+      policyDbExecute: async () =>
+        JSON.stringify({
+          __grimodexDbResultKind: "read",
+          rows: [{ ai_policy: null }],
+        }),
+      issueWriteCapabilities: (senderId, args, response, backend, identity) =>
+        issueAgentAuthorityCapabilitiesForSender(
+          senderId,
+          args as never,
+          response,
+          backend,
+          identity as never,
+        ),
+      agentAuthorityRequestId,
+      bindWriteCapability: consumeAndBindAgentAuthorityCapability,
+      sendWriteCompleted: writeReceipt,
+      runTurn: async (input) => {
+        const first = await sendPreparedRequest(
+          input,
+          auditRequestFor(input),
+          0,
+        );
+        const tool = first.response.blocks.find(
+          (block) => block.type === "tool_use",
+        );
+        if (tool?.type !== "tool_use") throw new Error("write tool missing");
+        const bindings = input.bindings ?? [];
+        const write = bindings.find((binding) => binding.name === tool.name);
+        const read = bindings.find(
+          (binding) => binding.name === "get_foreshadow_detail",
+        );
+        if (!write || !read) throw new Error("write/read binding missing");
+        const writeResult = await write.execute(tool.input, {
+          toolCallId: tool.id,
+          signal: input.signal,
+        });
+        input.onToolResult?.({
+          toolCallId: tool.id,
+          toolName: tool.name,
+          tokens: writeResult.tokensUsed,
+          summary: writeResult.summary,
+        });
+        await read.execute(
+          { id: "foreshadow-1" },
+          {
+            toolCallId: "read-call-1",
+            signal: input.signal,
+          },
+        );
+        await sendPreparedRequest(input, auditRequestFor(input), 1);
+      },
+    });
+    const { context } = h.newContext();
+    const result = completed(
+      await h.owner.start(
+        context,
+        startRequest(TURN_A, {
+          tools: ["create_foreshadow", "get_foreshadow_detail"] as never,
+        }),
+      ),
+    );
+
+    expect(order).toEqual(["write", "read"]);
+    expect(writeReceipt).toHaveBeenCalledExactlyOnceWith(context.sender.id, {
+      targetId: "foreshadow-1",
+      undoId: "undo-1",
+    });
+    expect(result.loopResult?.toolCallRecords[0]).toMatchObject({
+      name: "create_foreshadow",
+      undoId: "undo-1",
+      content: { entityId: "foreshadow-1", undoJournalId: "undo-1" },
+    });
   });
 });

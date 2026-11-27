@@ -15,6 +15,7 @@ import type { NapiBackendLike } from "../../shared/ipcContract.js";
 import type { MastraAgentTurnStartRequest } from "../../shared/mastraAgentTurnWire.js";
 import { M4_READ_TOOL_NAMES } from "../../shared/agentReadToolDefinitions.js";
 import { MASTRA_UI_TOOL_NAMES } from "../../shared/mastraUiToolDefinitions.js";
+import { MASTRA_AGENT_WRITE_TOOL_NAMES } from "../../shared/mastraWriteToolDefinitions.js";
 import { createPerCodePointTokenizer } from "../../shared/mastraRead/tokenizer.testSupport.js";
 import { createMastraAgentLoader } from "../mastraAgentLoader.js";
 import { createMastraEnvPin } from "../mastraEnv.js";
@@ -385,6 +386,7 @@ describe("the runtime tool allow-list (DR-MP3-14, layer 2)", () => {
     expect([...MASTRA_AGENT_TOOL_ALLOWLIST]).toEqual([
       ...M4_READ_TOOL_NAMES,
       ...MASTRA_UI_TOOL_NAMES,
+      ...MASTRA_AGENT_WRITE_TOOL_NAMES,
     ]);
     expect(MASTRA_AGENT_TOOL_ALLOWLIST).not.toContain(
       "narrative_extraction_list_redecidable_proposals",

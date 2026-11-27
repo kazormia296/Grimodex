@@ -11,6 +11,7 @@ import {
 } from "../main/mastra/agentWire.js";
 import { M4_READ_TOOL_NAMES } from "./agentReadToolDefinitions.js";
 import { MASTRA_UI_TOOL_NAMES } from "./mastraUiToolDefinitions.js";
+import { MASTRA_AGENT_WRITE_TOOL_NAMES } from "./mastraWriteToolDefinitions.js";
 import {
   hasMastraAgentTurnForbiddenKey,
   isMastraAgentTurnCommand,
@@ -1072,7 +1073,10 @@ describe("parseMastraAgentTurnStartRequest", () => {
   it("allows only distinct M4 or MP-5 UI tool names", () => {
     expect(issueOf(start({ tools: [...M4_READ_TOOL_NAMES] }))).toBeNull();
     expect(issueOf(start({ tools: [...MASTRA_UI_TOOL_NAMES] }))).toBeNull();
-    expect(MASTRA_AGENT_TURN_TOOLS_MAX).toBe(28);
+    expect(
+      issueOf(start({ tools: [...MASTRA_AGENT_WRITE_TOOL_NAMES] })),
+    ).toBeNull();
+    expect(MASTRA_AGENT_TURN_TOOLS_MAX).toBe(33);
     expect(issueOf(start({ tools: ["get_scene"] }))).toBeNull();
     expect(issueOf(start({ tools: ["not_a_tool"] }))).toBe("tools");
     expect(issueOf(start({ tools: ["get_scene", "get_scene"] }))).toBe("tools");
@@ -1369,14 +1373,16 @@ describe("MP-5 UI question and answer wire", () => {
     expect(
       parseMastraAgentTurnQuestionPayload(
         question({
-          deadlineAt: Date.now() + MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS + 60_000,
+          deadlineAt:
+            Date.now() + MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS + 60_000,
         }),
       ),
     ).toEqual({ ok: false, issue: "deadline" });
     expect(
       parseMastraAgentTurnQuestionPayload(
         question({
-          deadlineAt: Date.now() + MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT_MS + 60_000,
+          deadlineAt:
+            Date.now() + MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT_MS + 60_000,
         }),
       ),
     ).toEqual({ ok: false, issue: "deadline" });

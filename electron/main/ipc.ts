@@ -394,7 +394,7 @@ function isNonEmptyTrimmedString(value: unknown): value is string {
   );
 }
 
-function agentToolRequestId(
+export function agentAuthorityRequestId(
   toolName: string,
   projectId: string,
   toolCallId: string,
@@ -1671,7 +1671,7 @@ export async function issueAgentAuthorityCapabilitiesForSender(
     const now = Date.now();
     const token = randomUUID();
     const mainOwnedProvenanceId = randomUUID();
-    const requestId = agentToolRequestId(toolName, projectId, toolCallId);
+    const requestId = agentAuthorityRequestId(toolName, projectId, toolCallId);
     const expectedEntityId = mainOwnedEntityId(toolName, requestId);
     agentAuthorityCapabilities.set(token, {
       senderId,
@@ -1751,6 +1751,19 @@ export function consumeAgentAuthorityCapability(
     return null;
   }
   return bindMainOwnedAgentMutation(payload, record) ? record : null;
+}
+
+/** Consumes one grant and returns its main-bound Native payload. */
+export function consumeAndBindAgentAuthorityCapability(
+  cmd: string,
+  payload: CommandArgs,
+  senderId: number,
+): CommandArgs | null {
+  const args = bindRendererAuthorityForIpc(cmd, { payload }, senderId);
+  return isRecord(args.payload) &&
+    args.payload.authorityRoute === "interactive-agent-command"
+    ? args.payload
+    : null;
 }
 
 function authorityRouteForUnambiguousOrigin(
