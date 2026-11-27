@@ -304,7 +304,7 @@ Agent Auto既定化後、設定破損が自動書き込み許可へ変換され�
 
 1. **Decision §4「現行の『LLM応答受信時点でのCapability発行』は、`effect: "read"`および`effect: "stage"`のツールに限って維持してよい。」**
    - 中断した Run の途中再開では、もう 1 つの発行の時点を足す。
-     - main は、provider の応答を受けて capability を発行するのと同じ時点で、tool 呼出しの台帳を Native に書く。
+     - main は、model の応答から tool の呼出しを受け取った時点で、tool 呼出しの台帳を Native に書く。capability の状態（未発行・承認待ち・発行・消費）は、台帳の別の欄に持つ。
      - 再開の後、落ちたときに実行中だった**読む tool**に限り、その台帳の tool 呼出しから capability を発行し直してよい。
    - 条件：
      - 台帳に記録があること。

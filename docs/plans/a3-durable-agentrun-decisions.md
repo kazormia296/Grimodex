@@ -209,8 +209,13 @@
   - `checkpoint`（JSON）、`checkpoint_step`、`checkpoint_digest`。
   - `tool_call_ledger`（JSON）。
 - **tool 呼出しの台帳**：書き手は main だけ（第 2 版のレビューの N1・F1）。
-  - main は、provider の応答を受けて capability を発行するのと同じ時点で、tool_use を台帳に書く。
-  - 書くもの：`tool_call_id`、名前、引数の正規形と digest、`executionId`、`chatMessageId`、`mainOwnedProvenanceId`、model、実行の状態（`issued`／`committed`／`failed`）。
+  - main は、model の応答から tool の呼出しを受け取った時点で、tool_use を台帳に書く。
+    - capability の発行の時点には結ばない。Gate A（A2）で発行が「承認が確定した後」に動いても、台帳の時点は動かない（Mastra の担当の指摘、2026-11-27）。
+    - Mastra の経路では、owner が tool の呼出しを受け取る所（binding の execute の入口）から、port の台帳の操作を呼ぶ。
+  - 書くもの：`tool_call_id`、名前、引数の正規形と digest、`executionId`、`chatMessageId`、`mainOwnedProvenanceId`、model。
+  - 状態は 2 つを別に持つ：
+    - capability の状態：`not_issued`／`awaiting_approval`／`issued`／`consumed`。
+    - 実行の状態：`pending`／`committed`／`failed`。
   - 台帳は、main が見た provider の応答だけから作る。画面から受け取らない。
 - **画面から受け取るもの**：
   - tool_result の本文と、その basis。
@@ -625,6 +630,10 @@ blocker（実装の前に文書を直す）：
   - PR 1（docs）は、上を入れれば進めてよい。
   - PR 2 は、列に効く点が文書で決まってから。第 3 版で決めた。
   - PR 4・5 は、残りの全部、B6 の照合、ユーザーに見せる点が条件。
+- **Mastra の担当の第 3 版の照合（2026-11-27）**：
+  - (1) 強制中断を中断として記録すること、(3) 期限切れでも Interaction を pending のままにすること、(4) MP-9 の前は resumable を偽にすることは、合意。
+    - Mastra の owner は、「中断の記録」と「終端の記録」を別々の操作として 1 回ずつ呼ぶ。turn と audit は、今どおり終わる。
+  - (2) 台帳の時点への異論を受けて、capability の発行の時点でなく、tool の呼出しを受け取った時点に直した（DR-A3-4、ADR 008 の追補 1）。
 - 第 8 節の「Mastra の担当」の (4) にある「再起動の後の回答は、新しい Run の中で受ける」は、範囲の拡張で置き換わった。今は、同じ Run の再開の中で受ける。
 
 ## 9. 画面で見える挙動（ユーザーに見せる）
