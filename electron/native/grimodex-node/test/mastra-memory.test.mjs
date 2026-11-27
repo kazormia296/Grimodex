@@ -37,7 +37,7 @@ test("all typed Mastra memory commands roundtrip through the main-only N-API", a
     thread: { id: threadId, resourceId: resource.id, title: "test" },
   });
   assert.ok(wire(await backend.memoryThreadRead({
-    operation: "get", thread_id: threadId, resource_id: resource.id,
+    operation: "get", threadId, resourceId: resource.id,
   })));
   await backend.memoryMessageWrite({
     operation: "save",
@@ -50,7 +50,7 @@ test("all typed Mastra memory commands roundtrip through the main-only N-API", a
     }],
   });
   assert.equal(wire(await backend.memoryMessageRead({
-    operation: "byId", message_ids: [messageId],
+    operation: "byId", messageIds: [messageId],
   })).messages.length, 1);
 
   await backend.memoryVectorCreateIndex(indexName, 3);

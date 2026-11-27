@@ -287,8 +287,6 @@ pub fn vector_create_index(db: &Database, index_name: &str, dimension: usize) ->
     let sql_dimension = i64::try_from(dimension)
         .map_err(|_| anyhow::Error::new(MemoryRefusal::InvalidRequest))?;
     with_immediate_transaction(db, |conn| {
-        // MP-7 databases may already be at the current schema version.
-        conn.execute_batch("CREATE TABLE IF NOT EXISTS mastra_memory_vector_indexes (index_name TEXT PRIMARY KEY, dimension INTEGER NOT NULL CHECK(dimension > 0))")?;
         conn.execute("INSERT INTO mastra_memory_vector_indexes(index_name, dimension) VALUES (?1, ?2) ON CONFLICT(index_name) DO NOTHING", params![index_name, sql_dimension])?;
         let existing: usize = conn.query_row(
             "SELECT dimension FROM mastra_memory_vector_indexes WHERE index_name = ?1",
@@ -324,11 +322,19 @@ pub fn vector_upsert(
             if item.vector.len() != dimension {
                 return refuse(MemoryRefusal::InvalidRequest);
             }
+            let local_message: bool = conn.query_row(
+                "SELECT EXISTS (SELECT 1 FROM chat_messages m JOIN chat_sessions s ON s.id = m.session_id WHERE m.id = ?1 AND s.id LIKE 'nir1-local-%')",
+                [&item.message_id],
+                |row| row.get(0),
+            )?;
+            if local_message {
+                return refuse(MemoryRefusal::ScopeMismatch);
+            }
             let metadata_json = match &item.metadata {
                 Some(metadata) => json_object(metadata)?,
                 None => "{}".into(),
             };
-            conn.execute("INSERT INTO mastra_memory_vectors(index_name,id,vector,metadata_json,message_id) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(index_name,id) DO UPDATE SET vector=excluded.vector, metadata_json=excluded.metadata_json, message_id=excluded.message_id", params![index_name, item.id, vector_blob(&item.vector), metadata_json, item.message_id])?;
+            conn.execute("INSERT INTO mastra_memory_vectors(index_name,id,vector,metadata_json,message_id) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(index_name,id) DO UPDATE SET vector=excluded.vector, metadata_json=excluded.metadata_json, message_id=excluded.message_id WHERE vector IS NOT excluded.vector OR metadata_json IS NOT excluded.metadata_json OR message_id IS NOT excluded.message_id", params![index_name, item.id, vector_blob(&item.vector), metadata_json, item.message_id])?;
         }
         Ok(vectors.iter().map(|item| item.id.clone()).collect())
     })
@@ -348,7 +354,7 @@ pub fn vector_query(
     db.with_conn(|conn| {
         let dimension: usize = conn.query_row("SELECT dimension FROM mastra_memory_vector_indexes WHERE index_name = ?1", [index_name], |row| sql_usize(row, 0)).optional()?.ok_or_else(|| anyhow::Error::new(MemoryRefusal::NotFound))?;
         if query.len() != dimension { return refuse(MemoryRefusal::InvalidRequest); }
-        let mut statement = conn.prepare("SELECT id, vector, metadata_json, message_id FROM mastra_memory_vectors WHERE index_name = ?1 LIMIT ?2")?;
+        let mut statement = conn.prepare("SELECT v.id, v.vector, v.metadata_json, v.message_id FROM mastra_memory_vectors v JOIN chat_messages m ON m.id = v.message_id JOIN chat_sessions s ON s.id = m.session_id WHERE v.index_name = ?1 AND s.id NOT LIKE 'nir1-local-%' LIMIT ?2")?;
         let mut rows = statement.query(params![index_name, MAX_VECTOR_ROWS as i64 + 1])?;
         let mut results = Vec::new();
         while let Some(row) = rows.next()? {
@@ -360,7 +366,7 @@ pub fn vector_query(
             let score = if qn == 0.0 || vn == 0.0 { 0.0 } else { (dot / (qn * vn)) as f32 };
             results.push(MemoryVectorResult { id: row.get(0)?, score, metadata: serde_json::from_str(&row.get::<_, String>(2)?)?, message_id: row.get(3)? });
         }
-        results.sort_by(|a,b| b.score.total_cmp(&a.score)); results.truncate(top_k); Ok(results)
+        results.sort_by(|a,b| b.score.total_cmp(&a.score).then_with(|| a.id.cmp(&b.id))); results.truncate(top_k); Ok(results)
     })
 }
 
@@ -472,7 +478,7 @@ pub fn vector_delete_many(db: &Database, index_name: &str, ids: &[String]) -> Re
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "operation", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(tag = "operation", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
 pub enum ThreadReadCommand {
     Get {
         thread_id: String,
@@ -518,7 +524,7 @@ pub struct ThreadDeleteRequest {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "operation", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(tag = "operation", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
 pub enum MessageReadCommand {
     List {
         thread_id: IdList,
@@ -796,7 +802,11 @@ fn save_thread_row(conn: &Connection, thread: ThreadInput) -> Result<Value> {
         ],
     )
     .map_err(|error| match error {
-        rusqlite::Error::SqliteFailure(_, _) => anyhow::Error::new(MemoryRefusal::ScopeMismatch),
+        rusqlite::Error::SqliteFailure(failure, _)
+            if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
+            anyhow::Error::new(MemoryRefusal::ScopeMismatch)
+        }
         other => other.into(),
     })?;
     if let Some(metadata) = metadata {
@@ -1424,8 +1434,18 @@ pub fn resource_write(db: &Database, request: ResourceWriteCommand) -> Result<Va
             require_id(&project_id)?;
             let metadata = json_object(&metadata.unwrap_or_else(|| json!({})))?;
             with_immediate_transaction(db, |conn| {
+                let existing_id: Option<String> = conn
+                    .query_row(
+                        "SELECT id FROM mastra_resources WHERE project_id = ?1",
+                        [&project_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if existing_id.as_deref().is_some_and(|existing| existing != id) {
+                    return refuse(MemoryRefusal::ScopeMismatch);
+                }
                 conn.execute(
-                    "INSERT INTO mastra_resources(id,project_id,working_memory,metadata_json) VALUES (?1,?2,?3,?4) ON CONFLICT(project_id) DO UPDATE SET id=excluded.id,working_memory=excluded.working_memory,metadata_json=excluded.metadata_json,updated_at=datetime('now') WHERE (id,working_memory,metadata_json) IS NOT (excluded.id,excluded.working_memory,excluded.metadata_json)",
+                    "INSERT INTO mastra_resources(id,project_id,working_memory,metadata_json) VALUES (?1,?2,?3,?4) ON CONFLICT(project_id) DO UPDATE SET working_memory=excluded.working_memory,metadata_json=excluded.metadata_json,updated_at=datetime('now') WHERE (working_memory,metadata_json) IS NOT (excluded.working_memory,excluded.metadata_json)",
                     params![id, project_id, working_memory, metadata],
                 )?;
                 Ok(
@@ -1834,69 +1854,27 @@ pub fn observational_memory_write(
 mod tests {
     use super::*;
     use rusqlite::Connection;
+    use std::path::Path;
 
     const CREATED: &str = "2026-11-01T00:00:00.000Z";
 
     fn db() -> Database {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "PRAGMA foreign_keys = ON;
-             CREATE TABLE projects (id TEXT PRIMARY KEY);
-             CREATE TABLE mastra_resources (
-                 id TEXT PRIMARY KEY, project_id TEXT NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
-                 working_memory TEXT, metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT ''
-             );
-             CREATE TABLE chat_sessions (
-                 id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL DEFAULT '',
-                 title_manual INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
-                 updated_at TEXT NOT NULL
-             );
-             CREATE TABLE chat_messages (
-                 id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-                 role TEXT NOT NULL CHECK(role IN ('user','assistant','system')), content TEXT NOT NULL,
-                 metadata TEXT, created_at TEXT NOT NULL
-             );
-             CREATE TABLE mastra_thread_metadata (
-                 session_id TEXT PRIMARY KEY REFERENCES chat_sessions(id) ON DELETE CASCADE,
-                 metadata_json TEXT NOT NULL
-             );
-             CREATE TABLE mastra_message_parts (
-                 message_id TEXT PRIMARY KEY REFERENCES chat_messages(id) ON DELETE CASCADE,
-                 parts_json TEXT NOT NULL
-             );
-             CREATE TABLE mastra_observational_memory (
-                 id TEXT PRIMARY KEY, scope TEXT NOT NULL, thread_id TEXT REFERENCES chat_sessions(id) ON DELETE CASCADE,
-                 project_id TEXT REFERENCES projects(id) ON DELETE CASCADE, resource_id TEXT NOT NULL,
-                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_observed_at TEXT,
-                 origin_type TEXT NOT NULL, generation_count INTEGER NOT NULL, superseded_by TEXT,
-                 active_observations TEXT NOT NULL, buffered_observation_chunks_json TEXT, buffered_observations TEXT,
-                 buffered_observation_tokens INTEGER, buffered_message_ids_json TEXT, buffered_reflection TEXT,
-                 buffered_reflection_tokens INTEGER, buffered_reflection_input_tokens INTEGER,
-                 reflected_observation_line_count INTEGER, observed_message_ids_json TEXT, observed_timezone TEXT,
-                 total_tokens_observed INTEGER NOT NULL DEFAULT 0, observation_token_count INTEGER NOT NULL DEFAULT 0,
-                 pending_message_tokens INTEGER NOT NULL DEFAULT 0, is_reflecting INTEGER NOT NULL DEFAULT 0,
-                 is_observing INTEGER NOT NULL DEFAULT 0, is_buffering_observation INTEGER NOT NULL DEFAULT 0,
-                 is_buffering_reflection INTEGER NOT NULL DEFAULT 0, last_buffered_at_tokens INTEGER NOT NULL DEFAULT 0,
-                 last_buffered_at_time TEXT, config_json TEXT NOT NULL DEFAULT '{}', metadata_json TEXT,
-                 CHECK((scope='thread' AND thread_id IS NOT NULL AND project_id IS NULL) OR (scope='resource' AND thread_id IS NULL AND project_id IS NOT NULL))
-             );
-             CREATE TABLE mastra_memory_vector_indexes (index_name TEXT PRIMARY KEY, dimension INTEGER NOT NULL CHECK(dimension > 0));
-             CREATE TABLE mastra_memory_vectors (index_name TEXT NOT NULL, id TEXT NOT NULL, vector BLOB NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}', message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE, PRIMARY KEY(index_name,id));
-             CREATE TABLE nir1_generation_message_versions (message_id TEXT);
-             CREATE TABLE nir1_chat_input_captures (
-                 message_id TEXT, chat_session_id TEXT, state TEXT
-             );
-             CREATE TABLE nir1_generation_attempts (session_id TEXT, terminal_json TEXT);
-             INSERT INTO projects VALUES ('p1'), ('p2');
-             INSERT INTO mastra_resources(id,project_id) VALUES ('r1','p1'), ('r2','p2');
-             INSERT INTO chat_sessions (id,project_id,created_at,updated_at) VALUES
-                 ('s1','p1', '2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z'),
-                 ('s2','p1', '2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z'),
-                 ('s3','p2', '2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z'),
-                 ('nir1-local-private','p1', '2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z');",
-        )
+        let db = Database::new(Path::new(":memory:")).unwrap();
+        db.migrate().unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO projects(id) VALUES ('p1'), ('p2');
+                 INSERT INTO mastra_resources(id,project_id) VALUES ('r1','p1'), ('r2','p2');
+                 INSERT INTO chat_sessions (id,project_id,created_at,updated_at) VALUES
+                    ('s1','p1','2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z'),
+                    ('s2','p1','2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z'),
+                    ('s3','p2','2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z'),
+                    ('nir1-local-private','p1','2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z');",
+            )?;
+            Ok(())
+        })
         .unwrap();
-        Database::from_connection(conn)
+        db
     }
 
     #[test]
@@ -1982,6 +1960,21 @@ mod tests {
         assert_eq!(working_memory["name"], "Ada");
         assert_eq!(working_memory["role"], "writer");
         assert_eq!(row["metadata"]["a"], 1);
+        let error = resource_write(
+            &db,
+            ResourceWriteCommand::Save {
+                id: "replacement-id".into(),
+                project_id: "p1".into(),
+                working_memory: None,
+                metadata: None,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<MemoryRefusal>(),
+            Some(MemoryRefusal::ScopeMismatch)
+        ));
+        assert_eq!(resource_read(&db, ResourceReadCommand::Get { project_id: "p1".into() }).unwrap()["id"], "r1");
         let error = resource_write(
             &db,
             ResourceWriteCommand::Save {
@@ -2259,7 +2252,7 @@ mod tests {
         .unwrap();
         db.with_conn(|conn| {
             conn.execute(
-                "INSERT INTO nir1_generation_message_versions VALUES ('captured')",
+                "INSERT INTO nir1_generation_message_versions(id,project_id,session_id,message_id,origin,body_digest,created_at_ms) VALUES ('version-captured','p1','s1','captured','human','sha256:test',1)",
                 [],
             )?;
             Ok(())
@@ -2363,7 +2356,7 @@ mod tests {
         .unwrap();
         db.with_conn(|conn| {
             conn.execute(
-                "INSERT INTO nir1_generation_attempts VALUES ('s2', NULL)",
+                "INSERT INTO nir1_generation_attempts(id,project_id,session_id,binding_json,payload_digest,input_digest,created_at_ms,expires_at_ms) VALUES ('attempt-s2','p1','s2','{}','payload','input',1,2)",
                 [],
             )?;
             Ok(())
@@ -2386,7 +2379,7 @@ mod tests {
             .unwrap();
         assert_eq!(remaining, 2);
         db.with_conn(|conn| {
-            conn.execute("UPDATE nir1_generation_attempts SET terminal_json='{}'", [])?;
+            conn.execute("UPDATE nir1_generation_attempts SET terminal_json='{}',terminal_digest='terminal',completed_at_ms=2", [])?;
             Ok(())
         })
         .unwrap();
@@ -2452,5 +2445,77 @@ mod tests {
         vector_delete_many(&db, "memory", &["v2".into()]).unwrap();
         assert_eq!(vector_describe_index(&db, "memory").unwrap()["count"], 0);
         assert_eq!(vector_list_indexes(&db).unwrap(), vec!["memory"]);
+    }
+
+    #[test]
+    fn vector_upsert_refuses_local_messages_and_query_hides_existing_vectors() {
+        let db = db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO chat_messages(id,session_id,role,content,created_at) VALUES ('local-message','nir1-local-private','assistant','private',?1)",
+                [CREATED],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        vector_create_index(&db, "memory", 2).unwrap();
+        let error = vector_upsert(
+            &db,
+            "memory",
+            &[MemoryVectorInput {
+                id: "local-vector".into(),
+                vector: vec![1.0, 0.0],
+                metadata: None,
+                message_id: "local-message".into(),
+            }],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<MemoryRefusal>(),
+            Some(MemoryRefusal::ScopeMismatch)
+        ));
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO mastra_memory_vectors(index_name,id,vector,metadata_json,message_id) VALUES ('memory','legacy-local',?1,'{}','local-message')",
+                [vector_blob(&[1.0, 0.0])],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(vector_query(&db, "memory", &[1.0, 0.0], 10)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn vector_query_breaks_score_ties_by_id_and_handles_zero_vectors() {
+        let db = db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO chat_messages(id,session_id,role,content,created_at) VALUES ('vector-message','s1','assistant','body',?1)",
+                [CREATED],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        vector_create_index(&db, "memory", 2).unwrap();
+        vector_upsert(
+            &db,
+            "memory",
+            &[
+                MemoryVectorInput { id: "v-b".into(), vector: vec![1.0, 0.0], metadata: None, message_id: "vector-message".into() },
+                MemoryVectorInput { id: "v-a".into(), vector: vec![1.0, 0.0], metadata: None, message_id: "vector-message".into() },
+                MemoryVectorInput { id: "v-zero".into(), vector: vec![0.0, 0.0], metadata: None, message_id: "vector-message".into() },
+            ],
+        )
+        .unwrap();
+
+        let tied = vector_query(&db, "memory", &[1.0, 0.0], 3).unwrap();
+        assert_eq!(tied.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["v-a", "v-b", "v-zero"]);
+        assert_eq!(tied[2].score, 0.0);
+        let zero_query = vector_query(&db, "memory", &[0.0, 0.0], 3).unwrap();
+        assert!(zero_query.iter().all(|row| row.score == 0.0));
+        assert_eq!(zero_query[0].id, "v-a");
     }
 }
