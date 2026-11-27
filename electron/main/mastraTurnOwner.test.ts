@@ -266,7 +266,7 @@ function harness(
       >
     >;
     nativeWriterMethods?: Partial<
-      Pick<NapiBackendLike, "agentForeshadowCreate">
+      Pick<NapiBackendLike, "agentForeshadowCreate" | "agentEventCreate">
     >;
   } = {},
 ): Harness {
@@ -5539,6 +5539,92 @@ describe("MP-5 main-owned question holds", () => {
       name: "create_foreshadow",
       undoId: "undo-1",
       content: { entityId: "foreshadow-1", undoJournalId: "undo-1" },
+    });
+  });
+
+  it("executes create_event through the typed writer and records its undo id", async () => {
+    const writeReceipt = vi.fn(() => true);
+    const writeResponse: AgentWireResponse = {
+      blocks: [
+        {
+          type: "tool_use",
+          id: "event-call-1",
+          name: "create_event",
+          input: {
+            title: "Arrival",
+            startTime: 4,
+            precision: "exact",
+            secret: false,
+          },
+        },
+      ],
+      stopReason: "tool_use",
+    };
+    const eventWriter = vi.fn(async (_payload: unknown) =>
+      JSON.stringify({
+        entityId: "event-1",
+        undoJournalId: "undo-event-1",
+      }),
+    );
+    const h = harness({
+      responses: [writeResponse],
+      nativeWriterMethods: { agentEventCreate: eventWriter },
+      policyDbExecute: async () =>
+        JSON.stringify({
+          __grimodexDbResultKind: "read",
+          rows: [{ ai_policy: null }],
+        }),
+      issueWriteCapabilities: (senderId, args, response, backend, identity) =>
+        issueAgentAuthorityCapabilitiesForSender(
+          senderId,
+          args as never,
+          response,
+          backend,
+          identity as never,
+        ),
+      agentAuthorityRequestId,
+      bindWriteCapability: consumeAndBindAgentAuthorityCapability,
+      sendWriteCompleted: writeReceipt,
+      runTurn: async (input) => {
+        const first = await sendPreparedRequest(
+          input,
+          auditRequestFor(input),
+          0,
+        );
+        const tool = first.response.blocks[0];
+        if (tool?.type !== "tool_use") throw new Error("write tool missing");
+        const binding = input.bindings?.find((item) => item.name === tool.name);
+        if (!binding) throw new Error("write binding missing");
+        const result = await binding.execute(tool.input, {
+          toolCallId: tool.id,
+          signal: input.signal,
+        });
+        input.onToolResult?.({
+          toolCallId: tool.id,
+          toolName: tool.name,
+          tokens: result.tokensUsed,
+          summary: result.summary,
+        });
+      },
+    });
+    const { context } = h.newContext();
+    const result = completed(
+      await h.owner.start(
+        context,
+        startRequest(TURN_A, { tools: ["create_event"] as never }),
+      ),
+    );
+
+    expect(eventWriter).toHaveBeenCalledOnce();
+    expect(eventWriter.mock.calls[0]?.[0]).not.toHaveProperty("secret");
+    expect(writeReceipt).toHaveBeenCalledExactlyOnceWith(context.sender.id, {
+      targetId: "event-1",
+      undoId: "undo-event-1",
+    });
+    expect(result.loopResult?.toolCallRecords[0]).toMatchObject({
+      name: "create_event",
+      undoId: "undo-event-1",
+      content: { entityId: "event-1", undoJournalId: "undo-event-1" },
     });
   });
 });

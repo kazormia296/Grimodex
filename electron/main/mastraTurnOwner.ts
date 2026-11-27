@@ -160,6 +160,14 @@ const MASTRA_WRITE_COMMANDS: Readonly<
   create_foreshadow: "agent_foreshadow_create",
   update_foreshadow: "agent_foreshadow_update",
   create_snippet: "agent_snippet_create",
+  create_event: "agent_event_create",
+  update_event: "agent_event_update",
+  delete_event: "agent_event_delete",
+  stamp_scene_event: "agent_scene_event_link",
+  unstamp_scene_event: "agent_scene_event_unlink",
+  set_event_participants: "agent_event_set_participants",
+  add_event_relation: "agent_event_relation_add",
+  remove_event_relation: "agent_event_relation_remove",
 };
 
 // ---------------------------------------------------------------------------

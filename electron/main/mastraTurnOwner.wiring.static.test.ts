@@ -164,13 +164,21 @@ describe("the owner module", () => {
     expect(OWNER).toMatch(/JSON\.stringify\(result\.content\)/);
   });
 
-  it("binds only the approved five main-owned write tools through one-shot Native writes", () => {
+  it("binds only the approved main-owned write tools through one-shot Native writes", () => {
     expect([...MASTRA_AGENT_WRITE_TOOL_NAMES]).toEqual([
       "create_codex_entry",
       "update_codex_entry",
       "create_foreshadow",
       "update_foreshadow",
       "create_snippet",
+      "create_event",
+      "update_event",
+      "delete_event",
+      "stamp_scene_event",
+      "unstamp_scene_event",
+      "set_event_participants",
+      "add_event_relation",
+      "remove_event_relation",
     ]);
     for (const command of [
       "agent_codex_create",
@@ -178,6 +186,14 @@ describe("the owner module", () => {
       "agent_foreshadow_create",
       "agent_foreshadow_update",
       "agent_snippet_create",
+      "agent_event_create",
+      "agent_event_update",
+      "agent_event_delete",
+      "agent_scene_event_link",
+      "agent_scene_event_unlink",
+      "agent_event_set_participants",
+      "agent_event_relation_add",
+      "agent_event_relation_remove",
     ]) {
       expect(IPC).toContain(command);
     }

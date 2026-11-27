@@ -26,6 +26,14 @@ export const MASTRA_AGENT_WRITE_TOOL_NAMES = [
   "create_foreshadow",
   "update_foreshadow",
   "create_snippet",
+  "create_event",
+  "update_event",
+  "delete_event",
+  "stamp_scene_event",
+  "unstamp_scene_event",
+  "set_event_participants",
+  "add_event_relation",
+  "remove_event_relation",
 ] as const;
 export type MastraAgentWriteToolName =
   (typeof MASTRA_AGENT_WRITE_TOOL_NAMES)[number];

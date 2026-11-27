@@ -890,6 +890,29 @@ describe("registerIpcRouter fail-soft logging", () => {
     ).toMatchObject({ authorityRoute: "" });
   });
 
+  it("rejects missing and replayed delete_event capabilities", async () => {
+    const grant = await issueAgentCapability(
+      "delete_event",
+      { eventId: "event-1" },
+      712,
+    );
+    const payload = agentCapabilityPayload(grant, { eventId: "event-1" });
+    const bind = (candidate: Record<string, unknown>) =>
+      bindRendererAuthorityForIpc(
+        "agent_event_delete",
+        { payload: candidate },
+        712,
+      ).payload as Record<string, unknown>;
+    const { agentAuthorityCapability: _missing, ...withoutCapability } =
+      payload;
+
+    expect(bind(withoutCapability)).toMatchObject({ authorityRoute: "" });
+    expect(bind(payload)).toMatchObject({
+      authorityRoute: "interactive-agent-command",
+    });
+    expect(bind(payload)).toMatchObject({ authorityRoute: "" });
+  });
+
   describe("agent capability issuance reads the project ai_policy row", () => {
     async function capabilitiesFor(
       dbResult: string,
@@ -1188,6 +1211,34 @@ describe("registerIpcRouter fail-soft logging", () => {
       authorityRoute: "interactive-agent-command",
       eventId: grant.expectedEntityId,
     });
+  });
+
+  it("rejects missing and replayed create_event capabilities", async () => {
+    const grant = await issueAgentCapability(
+      "create_event",
+      { title: "Arrival", startTime: 4, precision: "approx" },
+      715,
+    );
+    const payload = agentCapabilityPayload(grant, {
+      title: "Arrival",
+      startTime: 4,
+      precision: "approx",
+      eventId: grant.expectedEntityId,
+    });
+    const bind = (candidate: Record<string, unknown>) =>
+      bindRendererAuthorityForIpc(
+        "agent_event_create",
+        { payload: candidate },
+        715,
+      ).payload as Record<string, unknown>;
+    const { agentAuthorityCapability: _missing, ...withoutCapability } =
+      payload;
+
+    expect(bind(withoutCapability)).toMatchObject({ authorityRoute: "" });
+    expect(bind(payload)).toMatchObject({
+      authorityRoute: "interactive-agent-command",
+    });
+    expect(bind(payload)).toMatchObject({ authorityRoute: "" });
   });
 
   it("matches legacy create_event secret=false when the payload omits the retired field", async () => {
