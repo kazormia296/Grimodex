@@ -1,6 +1,6 @@
 # Write-Safety Gate A（A1・A2）の判断記録（起案）
 
-- 状態：**起案（draft）**。第 7 節の回答まで確定しない。
+- 状態：**確認済み（2026-11-27、第 7 節の 4 問）**。**起案（draft）**。第 7 節の回答まで確定しない。
 - 基点：`b991907b9`。変更対象は本書のみ。実装・脅威モデル本文は変更しない。
 - 前提：Write-Safety Roadmap Gate A、ADR 008、SessionTasks DR-ST-4・6、Mastra MP-6、AWA/1、A3 durable AgentRun。
 - 合意（2026-11-27）：Gate A は Release B（SessionTasks）の前提。Mastra の担当は MP-6 の後に続けて持つ。A3 は「中断した瞬間の状態から、読み直しなしで続く」までを担う。Gate A の承認要求は A3 の durable `waiting_approval` Interaction を参照し、Gate A は承認と Capability の交換 authority を持つ。
@@ -57,6 +57,9 @@ Gate A は A3（stage の分離）・A4（AI policy parse の fail-closed 化）
 - Gate A は MCP（AWA/1-2）へ広げない。新しい保存先・送信先は提案しない。
 
 ## 7. 利用者に確認する点
+
+回答（2026-11-27、利用者）：問1＝1 件ずつ承認（Release B まで。削除は毎回）。問2＝画面の操作（UI 系の 3 本）は承認なしのまま。問3＝作者の出来事の承認（AWA/1）と同じ仕組み（W12 は変えない）。問4＝30 分で取り消す。
+
 
 以下の推奨は草稿であり、回答までは確定しない。
 
