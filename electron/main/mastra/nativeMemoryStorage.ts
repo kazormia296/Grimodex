@@ -1,5 +1,5 @@
 import { MemoryStorage } from "@mastra/core/storage";
-import type { NapiMemoryBackendLike } from "../../shared/ipcContract.js";
+import type { NapiMemoryBackendLike } from "./napiMemoryBackend.js";
 
 function decode<T>(wire: string): T {
   const fromWire = (value: unknown): unknown => {

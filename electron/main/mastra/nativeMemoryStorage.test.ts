@@ -1,6 +1,6 @@
 import { InMemoryMemory } from "@mastra/core/storage";
 import { describe, expect, it, vi } from "vitest";
-import type { NapiMemoryBackendLike } from "../../shared/ipcContract.js";
+import type { NapiMemoryBackendLike } from "./napiMemoryBackend.js";
 import { NativeMemoryStorage } from "./nativeMemoryStorage.js";
 
 const json = (value: unknown) => JSON.stringify(value);
