@@ -9,4 +9,24 @@ export interface NapiMemoryBackendLike {
   memoryMessageDelete(payload: unknown): Promise<string>;
   memoryResourceRead(payload: unknown): Promise<string>;
   memoryResourceWrite(payload: unknown): Promise<string>;
+  memoryObservationalMemoryRead(payload: unknown): Promise<string>;
+  memoryObservationalMemoryWrite(payload: unknown): Promise<string>;
+}
+
+/** Main-only typed Mastra vector commands exposed by the Native backend. */
+export interface NapiMemoryVectorBackendLike {
+  memoryVectorCreateIndex(indexName: string, dimension: number): Promise<string>;
+  memoryVectorUpsert(indexName: string, vectors: unknown): Promise<string>;
+  memoryVectorQuery(indexName: string, query: number[], topK: number): Promise<string>;
+  memoryVectorListIndexes(): Promise<string>;
+  memoryVectorDescribeIndex(indexName: string): Promise<string>;
+  memoryVectorDeleteIndex(indexName: string): Promise<string>;
+  memoryVectorUpdate(
+    indexName: string,
+    id: string,
+    vector?: number[] | null,
+    metadata?: unknown,
+  ): Promise<string>;
+  memoryVectorDelete(indexName: string, id: string): Promise<string>;
+  memoryVectorDeleteMany(indexName: string, ids: unknown): Promise<string>;
 }
