@@ -57,6 +57,13 @@
     "enforcement": "active"
   },
   {
+    "aggregate": "identity-correction",
+    "table": "identity_correction_rule_revisions",
+    "protection": "table",
+    "writer": "identity-correction.rule-revision",
+    "enforcement": "active"
+  },
+  {
     "aggregate": "foreshadow",
     "table": "foreshadow_setups",
     "protection": "table",

@@ -50,9 +50,10 @@ use crate::nir1_local_attempt::{
 use crate::nir1_local_send_policy::{
     check_before_attempt, Nir1LocalSendPolicyOutcome, Nir1LocalSendPolicyRefusal,
 };
+#[cfg(test)]
+use crate::nir1_local_transport::Nir1LocalTransportConfig;
 use crate::nir1_local_transport::{
     start_local_generation, Nir1LocalGenerationInput, Nir1LocalRun, Nir1LocalRunState,
-    Nir1LocalTransportConfig,
 };
 use crate::nir1_prepared_request::{
     self as prepared, CancelCurrentChatInputRequest, LocalGenerationIntent, MainKeyVerdict,
@@ -892,12 +893,19 @@ fn start_inner(
         .as_ref()
         .and_then(|hooks| hooks.transport_config)
         .unwrap_or(Nir1LocalTransportConfig::DEFAULT);
-    #[cfg(not(test))]
-    let config = Nir1LocalTransportConfig::DEFAULT;
     let starter_entry = Arc::clone(&entry);
     let spawned = thread::Builder::new()
         .name("nir1-local-starter".into())
-        .spawn(move || run_starter(attempt, &starter_entry, purpose, basis, config));
+        .spawn(move || {
+            run_starter(
+                attempt,
+                &starter_entry,
+                purpose,
+                basis,
+                #[cfg(test)]
+                config,
+            )
+        });
     if spawned.is_err() {
         // The closure (and with it the attempt, which has no row yet) is
         // dropped: the owner releases its slot and permit.
@@ -966,18 +974,19 @@ fn run_starter(
     entry: &HandleEntry,
     purpose: Nir1LocalSendPurpose,
     basis: Nir1LocalSendPolicyBasis,
-    config: Nir1LocalTransportConfig,
+    #[cfg(test)] config: Nir1LocalTransportConfig,
 ) {
     let _guard = StarterGuard(entry);
     let phase = match attempt.run_for_dispatch() {
         Ok((Nir1LocalAttemptOutcome::Start(transport), Some(target))) => {
-            let mut input = Nir1LocalGenerationInput::new(
+            let input = Nir1LocalGenerationInput::new(
                 target,
                 purpose,
                 basis,
                 uuid::Uuid::new_v4().to_string(),
             );
-            input.config = config;
+            #[cfg(test)]
+            let input = input.with_config_for_test(config);
             Phase::Running(start_local_generation(transport, input))
         }
         Ok((Nir1LocalAttemptOutcome::Start(transport), None)) => {

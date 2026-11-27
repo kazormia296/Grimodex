@@ -78,6 +78,71 @@ describe("resolveChatTurnRoute", () => {
     });
   });
 
+  it("Anthropic 5 系は、chat と agent の出力上限が thinking を含む 32,000 になる（thinking の切替が off でも）", () => {
+    // claude-fable-5-2 は能力表に無い id（同じ family の定義に解決する）。
+    const models = [
+      "claude-haiku-5-5",
+      "claude-sonnet-5-5",
+      "claude-opus-5-5",
+      "claude-fable-5-2",
+    ];
+    for (const model of models) {
+      for (const surface of ["chat", "agent"] as const) {
+        for (const thinkingEnabled of [true, false]) {
+          const route = resolveChatTurnRoute({
+            surface,
+            activeSettings: {
+              ...DEFAULT_AI_SETTINGS,
+              provider: "anthropic",
+              model,
+            },
+            activeApiVariant: null,
+            taskEffort: surface === "agent" ? "high" : "medium",
+            thinkingEnabled,
+          });
+          const label = `${model} ${surface} thinking=${thinkingEnabled}`;
+          expect(route.outputBudget, label).toMatchObject({
+            requestMaxOutputTokens: 32_000,
+            responseReservationTokens: 32_000,
+          });
+          expect(route.wireOutputTokens, label).toBe(32_000);
+        }
+      }
+    }
+  });
+
+  it("adaptive thinking を送る Claude 4.6〜4.8 は、thinking の切替が on のときだけ 32,000 になる", () => {
+    const models = [
+      "claude-opus-4-8",
+      "claude-opus-4-7",
+      "claude-opus-4-6",
+      "claude-sonnet-4-6",
+    ];
+    for (const model of models) {
+      for (const surface of ["chat", "agent"] as const) {
+        for (const thinkingEnabled of [true, false]) {
+          const route = resolveChatTurnRoute({
+            surface,
+            activeSettings: {
+              ...DEFAULT_AI_SETTINGS,
+              provider: "anthropic",
+              model,
+            },
+            activeApiVariant: null,
+            taskEffort: surface === "agent" ? "high" : "medium",
+            thinkingEnabled,
+          });
+          const expected = thinkingEnabled ? 32_000 : 4_096;
+          const label = `${model} ${surface} thinking=${thinkingEnabled}`;
+          expect(route.outputBudget.requestMaxOutputTokens, label).toBe(
+            expected,
+          );
+          expect(route.wireOutputTokens, label).toBe(expected);
+        }
+      }
+    }
+  });
+
   it("budget_tokens 方式の thinking を送る近似（表に無い Claude 4.5 系の id）は、registry で予算も max_tokens も動かず、max_tokens は予算を上回る（PR-C3）", () => {
     const ids = [
       "claude-opus-4-5-preview",

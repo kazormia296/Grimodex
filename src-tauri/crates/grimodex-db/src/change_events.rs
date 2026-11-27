@@ -71,6 +71,14 @@ pub fn with_renderer_authority_context<T>(context: Value, operation: impl FnOnce
     })
 }
 
+pub(crate) fn without_renderer_authority_context<T>(operation: impl FnOnce() -> T) -> T {
+    RENDERER_AUTHORITY_CONTEXT.with(|slot| {
+        let previous = slot.replace(None);
+        let _guard = RendererAuthorityContextGuard { previous };
+        operation()
+    })
+}
+
 fn authority_evidence(context: &Value) -> Value {
     let route = context
         .get("authorityRoute")

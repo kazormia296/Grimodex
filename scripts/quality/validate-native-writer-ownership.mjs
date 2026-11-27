@@ -208,6 +208,11 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/narrative_extraction/temporal_operations.rs",
     "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
   ],
+  // ERM PR 1 (DR-M3-39): the rule revision writers only; lineage and
+  // application rows have no writer yet.
+  "identity-correction.rule-revision": [
+    "src-tauri/crates/grimodex-db/src/identity_correction.rs",
+  ],
   "foreshadow.aggregate": [
     "src-tauri/crates/grimodex-db/src/foreshadow.rs",
     "src-tauri/crates/grimodex-db/src/agent_writes.rs",

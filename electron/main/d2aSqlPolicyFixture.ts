@@ -1,4 +1,4 @@
-// Test fixture: the Native `sqlPolicy` (version 2) exactly as
+// Test fixture: the Native `sqlPolicy` (version 3) exactly as
 // `grimodex_db::profile_egress_policy::sql_policy_for_status()` publishes it.
 // `d2aOwnDataRead.pipeline.spec.ts` compares this against the real Native
 // status so the fixture cannot drift from the ledger.
@@ -29,7 +29,18 @@ export const NATIVE_CLOSED_TABLES: readonly string[] = [
   "nir1_generation_message_versions",
   "nir1_generation_qualification_refs",
   "idempotency_requests",
+  "identity_correction_applications",
+  "identity_correction_rule_revisions",
+  "identity_lineage_mappings",
+  "identity_lineage_operations",
+  "identity_lineage_reference_assignments",
   "messages",
+  "mastra_memory_vectors",
+  "mastra_memory_vector_indexes",
+  "mastra_message_parts",
+  "mastra_observational_memory",
+  "mastra_resources",
+  "mastra_thread_metadata",
 ];
 
 export const NATIVE_READ_OPEN_TABLES: readonly string[] = [
@@ -101,11 +112,11 @@ export const NATIVE_READ_OPEN_COLUMNS: ReadonlyArray<{
   { table: "state_snapshots", column: "payload" },
 ];
 
-export function nativeSqlPolicyV2(
+export function nativeSqlPolicyV3(
   overrides: Record<string, unknown> = {},
 ): Record<string, unknown> {
   return {
-    version: 2,
+    version: 3,
     closedTables: [...NATIVE_CLOSED_TABLES],
     readOpenTables: [...NATIVE_READ_OPEN_TABLES],
     readOpenColumns: NATIVE_READ_OPEN_COLUMNS.map((column) => ({ ...column })),

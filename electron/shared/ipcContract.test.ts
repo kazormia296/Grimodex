@@ -13,6 +13,8 @@ import {
   EVENT_CHANNEL_ALLOWLIST,
   IPC_BACKEND_UNAVAILABLE_MARKER,
   IPC_UNIMPLEMENTED_MARKER,
+  MASTRA_AGENT_WRITE_COMPLETED_EVENT,
+  parseMastraAgentWriteCompletedEvent,
   isAllowedBackendEventChannel,
   isAllowedEventChannel,
   isAllowedMainEventChannel,
@@ -732,6 +734,10 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "narrativeExtractionListSceneProposals",
       Promise.resolve('{"items":[],"nextCursor":null,"limit":20}'),
     ) as never,
+    narrativeExtractionListRedecidableProposals: record(
+      "narrativeExtractionListRedecidableProposals",
+      Promise.resolve('{"items":[],"total":0,"nextCursor":null,"limit":20}'),
+    ) as never,
     narrativeExtractionCancelRun: record(
       "narrativeExtractionCancelRun",
       Promise.resolve('{"runId":"r1","status":"cancelled"}'),
@@ -968,6 +974,8 @@ describe("EVENT_CHANNEL_ALLOWLIST", () => {
     "backend:ready",
     "workspace:opened",
     "mastra:agent-turn-progress",
+    "mastra:agent-turn-question",
+    MASTRA_AGENT_WRITE_COMPLETED_EVENT,
     // CP-3a: Graph owner の通知（backend 発のみ）
     "related-scenes:graph-ready",
   ])("allows %s", (channel) => {
@@ -985,6 +993,76 @@ describe("EVENT_CHANNEL_ALLOWLIST", () => {
     expect(isAllowedRendererEventChannel("mastra:agent-turn-progress")).toBe(
       false,
     );
+  });
+
+  it("registers the Mastra UI question as a main-only event", () => {
+    expect(MAIN_EVENT_CHANNEL_ALLOWLIST).toContain(
+      "mastra:agent-turn-question",
+    );
+    expect(isAllowedMainEventChannel("mastra:agent-turn-question")).toBe(true);
+    expect(isAllowedBackendEventChannel("mastra:agent-turn-question")).toBe(
+      false,
+    );
+    expect(isAllowedRendererEventChannel("mastra:agent-turn-question")).toBe(
+      false,
+    );
+  });
+
+  it("registers Mastra write completion as a main-only event", () => {
+    expect(MAIN_EVENT_CHANNEL_ALLOWLIST).toContain(
+      MASTRA_AGENT_WRITE_COMPLETED_EVENT,
+    );
+    expect(isAllowedMainEventChannel(MASTRA_AGENT_WRITE_COMPLETED_EVENT)).toBe(
+      true,
+    );
+    expect(
+      isAllowedBackendEventChannel(MASTRA_AGENT_WRITE_COMPLETED_EVENT),
+    ).toBe(false);
+    expect(
+      isAllowedRendererEventChannel(MASTRA_AGENT_WRITE_COMPLETED_EVENT),
+    ).toBe(false);
+  });
+
+  it("parses only targetId and undoId for Mastra write completion", () => {
+    expect(
+      parseMastraAgentWriteCompletedEvent({
+        targetId: "scene-1",
+        undoId: "undo-1",
+      }),
+    ).toEqual({ targetId: "scene-1", undoId: "undo-1" });
+    expect(
+      parseMastraAgentWriteCompletedEvent({
+        targetId: "scene-1",
+        undoId: "undo-1",
+        content: "private manuscript body",
+      }),
+    ).toBeNull();
+    expect(
+      parseMastraAgentWriteCompletedEvent({
+        targetId: "scene-1",
+        undoId: "undo-1",
+        extra: true,
+      }),
+    ).toBeNull();
+
+    const invalidEvents: unknown[] = [
+      { targetId: "", undoId: "undo-1" },
+      { targetId: "x".repeat(201), undoId: "undo-1" },
+      { targetId: " scene-1", undoId: "undo-1" },
+      { targetId: "scene-1 ", undoId: "undo-1" },
+      { targetId: "scene\n1", undoId: "undo-1" },
+      { targetId: "scene-1" },
+      ["scene-1", "undo-1"],
+      new (class {
+        targetId = "scene-1";
+        undoId = "undo-1";
+      })(),
+      { targetId: ["scene-1"], undoId: "undo-1" },
+      { targetId: "scene-1", undoId: new String("undo-1") },
+    ];
+    for (const event of invalidEvents) {
+      expect(parseMastraAgentWriteCompletedEvent(event)).toBeNull();
+    }
   });
 
   it.each([
@@ -1579,6 +1657,80 @@ describe("dispatchInvoke", () => {
     expect(missingMethod).toMatchObject({
       ok: false,
       error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionListSceneProposals`,
+    });
+  });
+
+  it("forwards only the project-wide redecidable page query to Native", async () => {
+    const { backend, calls } = fakeBackend();
+    const command = "narrative_extraction_list_redecidable_proposals";
+    const projectId = "界".repeat(85) + "x"; // Exactly 256 UTF-8 bytes.
+    const first = { projectId };
+    const paged = { projectId, cursor: projectId, limit: 1000 };
+    for (const payload of [first, paged]) {
+      const result = await dispatchInvoke(
+        command,
+        { payload },
+        { backend, shell: noShell },
+      );
+      expect(result).toEqual({
+        ok: true,
+        value: { items: [], total: 0, nextCursor: null, limit: 20 },
+      });
+    }
+    expect(calls).toEqual(
+      [first, paged].map((payload) => ({
+        method: "narrativeExtractionListRedecidableProposals",
+        args: [payload],
+      })),
+    );
+  });
+
+  it("rejects invalid redecidable queries before Native and reports an old binding", async () => {
+    const { backend, calls } = fakeBackend();
+    const command = "narrative_extraction_list_redecidable_proposals";
+    const base = { projectId: "project-1" };
+    for (const payload of [
+      null,
+      [],
+      "payload",
+      {},
+      { projectId: "" },
+      { projectId: " project-1" },
+      { projectId: "場".repeat(86) },
+      { ...base, cursor: null },
+      { ...base, cursor: "" },
+      { ...base, cursor: "p1 " },
+      { ...base, cursor: "場".repeat(86) },
+      { ...base, limit: 0 },
+      { ...base, limit: -1 },
+      { ...base, limit: 1.5 },
+      { ...base, limit: "1" },
+      { ...base, limit: 0x1_0000_0000 },
+      { ...base, sceneId: "scene-1" },
+      { ...base, unknown: true },
+    ]) {
+      const result = await dispatchInvoke(
+        command,
+        { payload },
+        { backend, shell: noShell },
+      );
+      expect(result.ok, JSON.stringify(payload)).toBe(false);
+    }
+    expect(calls).toHaveLength(0);
+    const missing = await dispatchInvoke(
+      command,
+      { payload: base },
+      {
+        backend: {
+          ...backend,
+          narrativeExtractionListRedecidableProposals: undefined,
+        },
+        shell: noShell,
+      },
+    );
+    expect(missing).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionListRedecidableProposals`,
     });
   });
 
@@ -7287,6 +7439,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_extraction_get_run_review_bundle",
       "narrative_extraction_is_run_resumable_for_review",
       "narrative_extraction_list_chronicle_task_resume_candidates",
+      "narrative_extraction_list_redecidable_proposals",
       "narrative_extraction_list_resumable_runs",
       "narrative_extraction_list_scene_proposals",
       "narrative_extraction_prepare_commit",
@@ -13298,12 +13451,13 @@ describe("PUB-G #36 unsaved-edits guard contract (DR-PUBG-36-1)", () => {
   });
 });
 
-describe("Mastra agent turn contract (MP-3b, DR-MP3-4)", () => {
-  it("the two commands are Main-processed, never Native ones, and no Main-only N-API was added", () => {
+describe("Mastra agent turn contract (MP-3b and MP-5a)", () => {
+  it("the three commands are Main-processed, never Native ones, and no Main-only N-API was added", () => {
     expect(SHELL_COMMAND_NAMES).toEqual(
       expect.arrayContaining([
         "mastra_agent_turn_start",
         "mastra_agent_turn_cancel",
+        "mastra_agent_turn_answer",
       ]),
     );
     expect(
@@ -13316,13 +13470,14 @@ describe("Mastra agent turn contract (MP-3b, DR-MP3-4)", () => {
     );
     expect(source).not.toMatch(/mainMastra|mastraAgentTurn\w*\?\(/u);
     // They are added at the end of the shell list and nowhere else.
-    expect(SHELL_COMMAND_NAMES.slice(-2)).toEqual([
+    expect(SHELL_COMMAND_NAMES.slice(-3)).toEqual([
       "mastra_agent_turn_start",
       "mastra_agent_turn_cancel",
+      "mastra_agent_turn_answer",
     ]);
     expect(
       SHELL_COMMAND_NAMES.filter((name) => name.startsWith("mastra_")),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
   });
 
   it("dispatches to the Main handler and wraps its value; without a handler it is unimplemented", async () => {
@@ -13349,6 +13504,25 @@ describe("Mastra agent turn contract (MP-3b, DR-MP3-4)", () => {
       value: { status: "refused", command: "start", reason: "gate-closed" },
     });
     expect(seen).toEqual([{ turnId: "t" }]);
+    const answerSeen: unknown[] = [];
+    const answer = await dispatchInvoke(
+      "mastra_agent_turn_answer",
+      { requestId: "not-yet-validated" },
+      {
+        backend: null,
+        shell: {
+          mastra_agent_turn_answer: async (args) => {
+            answerSeen.push(args);
+            return { status: "refused", reason: "invalid" };
+          },
+        },
+      },
+    );
+    expect(answer).toEqual({
+      ok: true,
+      value: { status: "refused", reason: "invalid" },
+    });
+    expect(answerSeen).toEqual([{ requestId: "not-yet-validated" }]);
     const missing = await dispatchInvoke(
       "mastra_agent_turn_cancel",
       {},

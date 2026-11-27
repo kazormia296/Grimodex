@@ -18,7 +18,7 @@ import {
   D2A_EGRESS_DENIED_MARKER,
 } from "./profileEgress.js";
 import { activateGateForTest } from "./profileActivation.test.support.js";
-import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
+import { nativeSqlPolicyV3 } from "./d2aSqlPolicyFixture.js";
 
 const mocks = vi.hoisted(() => ({
   handlers: new Map<
@@ -256,6 +256,37 @@ describe("registerIpcRouter fail-soft logging", () => {
     expect((forged.payload as { authorityRoute?: string }).authorityRoute).toBe(
       "",
     );
+  });
+
+  it("binds entity_tags_set to human-direct or import-apply only", () => {
+    const tagsPayload = (origin: string) => ({
+      payload: {
+        projectId: "p1",
+        requestId: `tags-${origin}`,
+        sessionId: "renderer-session",
+        eventUid: `tags-${origin}:event`,
+        origin,
+        originalTransactionId: null,
+        undoJournalId: null,
+        entityKind: "codex",
+        entityId: "entry-1",
+        tagIds: [],
+        updatedAt: null,
+      },
+    });
+    const routeOf = (origin: string) =>
+      (
+        bindRendererAuthorityForIpc("entity_tags_set", tagsPayload(origin))
+          .payload as { authorityRoute?: string }
+      ).authorityRoute;
+
+    expect(routeOf("human")).toBe("human-direct");
+    // The Codex import sets the imported entry's tags in its import session.
+    expect(routeOf("import")).toBe("import-apply");
+    // No other route is opened for the tag writer.
+    expect(routeOf("ai-apply")).toBe("");
+    expect(routeOf("restore")).toBe("");
+    expect(routeOf("migration")).toBe("");
   });
 
   it("binds strict renderer authority from the main-owned command policy", () => {
@@ -788,6 +819,75 @@ describe("registerIpcRouter fail-soft logging", () => {
         "agentAuthorityCapabilities",
       );
     }
+  });
+
+  it("rejects missing, replayed, cross-project and changed-input write capabilities", async () => {
+    const bind = (payload: Record<string, unknown>) =>
+      bindRendererAuthorityForIpc("agent_foreshadow_create", { payload }, 711)
+        .payload as Record<string, unknown>;
+
+    const missingGrant = await issueAgentCapability(
+      "create_foreshadow",
+      { title: "from the model" },
+      711,
+    );
+    const { agentAuthorityCapability: _missing, ...withoutCapability } =
+      agentCapabilityPayload(missingGrant, { title: "from the model" });
+    expect(bind(withoutCapability)).toMatchObject({ authorityRoute: "" });
+
+    const replayGrant = await issueAgentCapability(
+      "create_foreshadow",
+      { title: "from the model" },
+      711,
+    );
+    const replayPayload = agentCapabilityPayload(replayGrant, {
+      title: "from the model",
+    });
+    expect(bind(replayPayload)).toMatchObject({
+      authorityRoute: "interactive-agent-command",
+    });
+    expect(bind(replayPayload)).toMatchObject({ authorityRoute: "" });
+
+    const projectGrant = await issueAgentCapability(
+      "create_foreshadow",
+      { title: "from the model" },
+      711,
+    );
+    const wrongProject = agentCapabilityPayload(projectGrant, {
+      title: "from the model",
+      projectId: "p2",
+    });
+    expect(bind(wrongProject)).toMatchObject({ authorityRoute: "" });
+
+    const digestGrant = await issueAgentCapability(
+      "create_foreshadow",
+      { title: "from the model" },
+      711,
+    );
+    expect(
+      bind(
+        agentCapabilityPayload(digestGrant, {
+          title: "changed after issue",
+        }),
+      ),
+    ).toMatchObject({ authorityRoute: "" });
+
+    const crossSenderGrant = await issueAgentCapability(
+      "create_foreshadow",
+      { title: "from the model" },
+      711,
+    );
+    expect(
+      bindRendererAuthorityForIpc(
+        "agent_foreshadow_create",
+        {
+          payload: agentCapabilityPayload(crossSenderGrant, {
+            title: "from the model",
+          }),
+        },
+        712,
+      ).payload,
+    ).toMatchObject({ authorityRoute: "" });
   });
 
   describe("agent capability issuance reads the project ai_policy row", () => {
@@ -3425,7 +3525,7 @@ describe("NIR-1 router sender binding", () => {
       restricted: false,
       handlesInvalidated: false,
       inFlightStopped: true,
-      sqlPolicy: nativeSqlPolicyV2(),
+      sqlPolicy: nativeSqlPolicyV3(),
     };
     const activatedStatus = {
       ...initialStatus,
@@ -3735,7 +3835,7 @@ describe("NIR-1 router sender binding", () => {
           restricted: true,
           handlesInvalidated: true,
           inFlightStopped: true,
-          sqlPolicy: nativeSqlPolicyV2(),
+          sqlPolicy: nativeSqlPolicyV3(),
         }),
       registerProfileEgressCaller: vi.fn(),
       invalidateProfileEgressCallers: vi.fn(),
@@ -3903,7 +4003,7 @@ describe("NIR-1 router sender binding", () => {
       restricted: true,
       handlesInvalidated: true,
       inFlightStopped: true,
-      sqlPolicy: nativeSqlPolicyV2(),
+      sqlPolicy: nativeSqlPolicyV3(),
     };
     const responses: string[] = [];
     const captureCurrentChatInput = vi.fn(async () => responses.shift()!);
@@ -4837,7 +4937,7 @@ describe("DA-2 profile activation commands and stream terminals (DR-DA2-9, -16, 
       restricted: false,
       handlesInvalidated: false,
       inFlightStopped: true,
-      sqlPolicy: nativeSqlPolicyV2(),
+      sqlPolicy: nativeSqlPolicyV3(),
     };
     let resolveReply!: (value: unknown) => void;
     // A legacy AI route served by Main (old-external-ai): its result settles
@@ -4916,7 +5016,7 @@ describe("get_model_capability_snapshot（PR-C2、読み取り専用の typed IP
       restricted: false,
       handlesInvalidated: false,
       inFlightStopped: true,
-      sqlPolicy: nativeSqlPolicyV2(),
+      sqlPolicy: nativeSqlPolicyV3(),
     };
     let releaseCommit!: (value: string) => void;
     const backend = {

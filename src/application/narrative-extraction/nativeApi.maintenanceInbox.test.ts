@@ -74,6 +74,7 @@ describe("narrativeMaintenanceInboxList", () => {
         finding_key: "proposal-revision:rev-1",
         latest_observation: null,
         attention: null,
+        attention_applies: true,
         is_snoozed_and_active: false,
       },
       {
@@ -85,6 +86,7 @@ describe("narrativeMaintenanceInboxList", () => {
         finding_key: "narrative-maintenance-failure:work-1",
         latest_observation: null,
         attention: null,
+        attention_applies: false,
         is_snoozed_and_active: false,
       },
     ]);
@@ -95,11 +97,13 @@ describe("narrativeMaintenanceInboxList", () => {
         entryKind: "consumer-freshness",
         consumerKind: "proposal-revision",
         evidenceFreshness: "source-missing",
+        attentionApplies: true,
       },
       {
         entryKind: "terminal-failure",
         consumerKind: "narrative-maintenance-failure",
         evidenceFreshness: null,
+        attentionApplies: false,
       },
     ]);
   });
@@ -131,6 +135,7 @@ describe("parseMaintenanceInbox", () => {
       },
     ]);
     expect(Object.keys(entry ?? {}).sort()).toEqual([
+      "attentionApplies",
       "consumerKind",
       "entryKind",
       "evidenceFreshness",
@@ -170,33 +175,50 @@ describe("parseMaintenanceInbox", () => {
         entryKind: "unrecognized",
         consumerKind: "proposal-revision",
         evidenceFreshness: "stale",
+        attentionApplies: false,
       },
       {
         entryKind: "consumer-freshness",
         consumerKind: "unrecognized",
         evidenceFreshness: "unrecognized",
-      },
-      {
-        entryKind: "consumer-freshness",
-        consumerKind: "proposal-revision",
-        evidenceFreshness: "unrecognized",
+        attentionApplies: false,
       },
       {
         entryKind: "consumer-freshness",
         consumerKind: "proposal-revision",
         evidenceFreshness: "unrecognized",
+        attentionApplies: false,
+      },
+      {
+        entryKind: "consumer-freshness",
+        consumerKind: "proposal-revision",
+        evidenceFreshness: "unrecognized",
+        attentionApplies: false,
       },
       {
         entryKind: "unrecognized",
         consumerKind: "unrecognized",
         evidenceFreshness: "unrecognized",
+        attentionApplies: false,
       },
       {
         entryKind: "unrecognized",
         consumerKind: "unrecognized",
         evidenceFreshness: "unrecognized",
+        attentionApplies: false,
       },
     ]);
+  });
+
+  it("accepts attention applicability only as an explicit boolean true", () => {
+    const [entry] = parseMaintenanceInbox([
+      {
+        entry_kind: "consumer-freshness",
+        consumer_kind: "proposal-revision",
+        attention_applies: "true",
+      },
+    ]);
+    expect(entry?.attentionApplies).toBe(false);
   });
 
   it("ignores any freshness a terminal-failure row carries", () => {
@@ -213,6 +235,7 @@ describe("parseMaintenanceInbox", () => {
         entryKind: "terminal-failure",
         consumerKind: "narrative-maintenance-failure",
         evidenceFreshness: null,
+        attentionApplies: false,
       },
     ]);
   });

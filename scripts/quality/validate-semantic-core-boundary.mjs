@@ -61,13 +61,19 @@ const REPO_ROOT = path.resolve(
 // reservation of a Freshness Run dead-lettered by a publication guard race
 // (DR-JF-9 M1), a data repair of rebuildable Freshness state only, so the
 // concern matrix is unchanged.
-// SCHEMA_VERSION 46 only adds the Native-owned commit sequence and lineage
-// tables (grimodex_write_clock, grimodex_db_lineage, DR-DBC-3) and the
-// grimodex_clock_* AFTER triggers that advance the sequence. They store no
-// semantic interpretation, never write the rows they observe, and the
-// renderer authorizer rejects direct writes, so the concern matrix is
-// unchanged.
-export const EXPECTED_SCHEMA_VERSION = 46;
+// SCHEMA_VERSION 46 adds the Native-owned commit sequence and lineage tables
+// (DR-DBC-3). SCHEMA_VERSION 47 adds closed Mastra memory storage only; neither
+// adds a narrative semantic interpreter, so the concern matrix is unchanged.
+// SCHEMA_VERSION 48 adds the five ERM tables (identity_correction_rule_revisions,
+// identity_lineage_operations, identity_lineage_mappings,
+// identity_lineage_reference_assignments, identity_correction_applications;
+// DR-M3-39). They hold author-declared identity rules and their history, not
+// AI interpretation; only the registered human-direct native writer
+// (identity-correction.rule-revision) writes them, the renderer authorizer
+// rejects generic reads and writes (closed), and nothing applies the rules
+// yet, so the concern matrix is unchanged. Applying them (ERM PR 3-5)
+// revisits this.
+export const EXPECTED_SCHEMA_VERSION = 48;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,
@@ -8014,6 +8020,25 @@ function validateSchemaVersion(repoRoot, errors) {
   if (version !== EXPECTED_SCHEMA_VERSION) {
     errors.push(
       `workspace schema drifted from the version this semantic contract was last ratified against; expected SCHEMA_VERSION ${EXPECTED_SCHEMA_VERSION}, got ${version ?? "unknown"}`,
+    );
+  }
+  const contractPath = path.join(
+    repoRoot,
+    "src/db/generated/schema-contract.json",
+  );
+  if (!existsSync(contractPath)) {
+    return version;
+  }
+  try {
+    const contract = JSON.parse(readFileSync(contractPath, "utf8"));
+    if (version === null || contract.schemaVersion !== version) {
+      errors.push(
+        `generated schema contract version ${contract.schemaVersion ?? "unknown"} does not match SCHEMA_VERSION ${version ?? "unknown"}`,
+      );
+    }
+  } catch (error) {
+    errors.push(
+      `generated workspace schema contract could not be read: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
   return version;

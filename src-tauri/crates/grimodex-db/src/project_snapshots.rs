@@ -22,10 +22,10 @@ use crate::narrative_extraction::change_feed::{
     AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeEventInput,
     NarrativeChangeOrigin,
 };
+use crate::narrative_extraction::rotate_epoch_for_restore_in_tx;
 use crate::narrative_extraction::{
     append_event_existence_decisions_in_tx, EventExistenceChange, RemovedVia,
 };
-use crate::narrative_extraction::rotate_epoch_for_restore_in_tx;
 
 mod restore_links;
 mod restore_missing_parents;
@@ -1216,10 +1216,11 @@ fn filter_missing_parent_rows(
     rows.into_iter()
         .filter(|row| {
             let id = row.get(field).and_then(Value::as_str);
-            let keep = owner_selected || match id {
-                Some(id) => live_ids.contains(id),
-                None => keep_null,
-            };
+            let keep = owner_selected
+                || match id {
+                    Some(id) => live_ids.contains(id),
+                    None => keep_null,
+                };
             if !keep && id.is_some() {
                 record_restore_loss(dropped, kind);
             }
@@ -1327,13 +1328,11 @@ fn canonical_core_rows(
             let content = snapshot_content(conn, &row)?;
             let pov_id = nullable_row_id(&row, "pov_character_id", "tree_nodes")?;
             let location_id = nullable_row_id(&row, "location_id", "tree_nodes")?;
-            if pov_id
-                .as_ref()
-                .is_some_and(|value| !scopes.contains(&RestoreScope::Codex) && !live_codex_ids.contains(value))
-                || location_id
-                    .as_ref()
-                    .is_some_and(|value| !scopes.contains(&RestoreScope::Codex) && !live_codex_ids.contains(value))
-            {
+            if pov_id.as_ref().is_some_and(|value| {
+                !scopes.contains(&RestoreScope::Codex) && !live_codex_ids.contains(value)
+            }) || location_id.as_ref().is_some_and(|value| {
+                !scopes.contains(&RestoreScope::Codex) && !live_codex_ids.contains(value)
+            }) {
                 record_restore_loss(dropped, "scene_pov_or_location");
             }
             let safe_pov = if scopes.contains(&RestoreScope::Codex)
@@ -1421,10 +1420,9 @@ fn canonical_core_rows(
         .map(|row| {
             let content = snapshot_content(conn, &row)?;
             let scene_id = nullable_row_id(&row, "scene_id", "snippets")?;
-            if scene_id
-                .as_ref()
-                .is_some_and(|value| !scopes.contains(&RestoreScope::Body) && !live_tree_node_ids.contains(value))
-            {
+            if scene_id.as_ref().is_some_and(|value| {
+                !scopes.contains(&RestoreScope::Body) && !live_tree_node_ids.contains(value)
+            }) {
                 record_restore_loss(dropped, "snippet_scene_link");
             }
             let safe_scene = if scopes.contains(&RestoreScope::Body)
@@ -3636,6 +3634,101 @@ mod tests {
             Ok(())
         })
         .expect("verify rejected Codex-only restores are atomic");
+    }
+
+    #[test]
+    fn codex_only_snapshot_restore_preserves_erm_ledgers() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO identity_correction_rule_revisions
+                    (id, project_id, rule_id, revision_no, state, kind, scope_kind,
+                     surface_text, entry_id, provenance_kind, provenance_ref, actor_id,
+                     created_at, request_id)
+                 VALUES ('rule-r1', 'p1', 'rule-1', 1, 'active', 'must-link-surface', 'any',
+                         'Name', 'entry-1', 'manual', 'manual', 'author', 'now', 'rule-request');
+                 INSERT INTO codex_entries (id, project_id, type, name)
+                 VALUES ('entry-live', 'p1', 'character', 'Live');
+                 INSERT INTO identity_lineage_operations
+                    (id, project_id, op_kind, reason, actor_id, created_at, request_id,
+                     applied_change_sequence)
+                 VALUES ('op-1', 'p1', 'merge', 'reason', 'author', 'now', 'op-request', 1);
+                 INSERT INTO identity_lineage_mappings
+                    (operation_id, ordinal, source_entry_id, target_entry_id, source_disposition)
+                 VALUES ('op-1', 0, 'entry-1', 'entry-2', 'retired');
+                 INSERT INTO identity_lineage_reference_assignments
+                    (operation_id, ordinal, reference_kind, reference_id, from_entry_id, to_entry_id)
+                 VALUES ('op-1', 0, 'codex-entry', 'entry-1', 'entry-1', 'entry-2');
+                 INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest, status, created_at)
+                 VALUES ('run-erm', 'p1', 'surface', '{}', '{}', 'digest', 'completed', 'now');
+                 INSERT INTO narrative_proposal_sets
+                    (id, run_id, project_id, set_kind, status, summary_json, created_at, updated_at)
+                 VALUES ('set-erm', 'run-erm', 'p1', 'test', 'draft', '{}', 'now', 'now');
+                 INSERT INTO narrative_proposals
+                    (id, proposal_set_id, proposal_key, kind, payload_json, created_at, updated_at)
+                 VALUES ('proposal-erm', 'set-erm', 'key', 'test', '{}', 'now', 'now');
+                 INSERT INTO narrative_proposal_revisions
+                    (id, proposal_id, revision_number, payload_json, origin_kind, created_at, created_by)
+                 VALUES ('proposal-r1', 'proposal-erm', 1, '{}', 'legacy-unbound', 'now', 'author');
+                 INSERT INTO identity_correction_applications
+                    (id, project_id, origin_proposal_revision_id, input_proposal_revision_id,
+                     rule_revision_id, route, outcome, reason_code, reapply_batch_id, created_at)
+                 VALUES ('application-1', 'p1', 'proposal-r1', 'proposal-r1', 'rule-r1',
+                         'extraction', 'conflict', 'test', 'extraction-run-1', 'now');",
+            )?;
+            Ok(())
+        })
+        .expect("seed immutable ERM history");
+
+        create_project_snapshot(&db, empty_snapshot("s-erm-partial"))
+            .expect("create Codex partial-restore snapshot");
+        apply_project_snapshot_restore(
+            &db,
+            canonical_restore_payload(
+                &db,
+                "restore-erm-codex",
+                "s-erm-partial",
+                vec![RestoreScope::Codex],
+            ),
+        )
+        .expect("Codex restore must not be blocked by ERM history");
+
+        db.with_conn(|conn| {
+            for (table, id_column, id) in [
+                ("identity_correction_rule_revisions", "id", "rule-r1"),
+                ("identity_lineage_operations", "id", "op-1"),
+                ("identity_lineage_mappings", "operation_id", "op-1"),
+                (
+                    "identity_lineage_reference_assignments",
+                    "operation_id",
+                    "op-1",
+                ),
+                ("identity_correction_applications", "id", "application-1"),
+            ] {
+                let count: i64 = conn.query_row(
+                    &format!("SELECT count(*) FROM {table} WHERE {id_column} = ?1"),
+                    [id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 1, "Codex restore changed {table}");
+            }
+            Ok(())
+        })
+        .expect("verify ERM history survived partial restore");
+        db.with_conn(|conn| {
+            let codex_count: i64 = conn.query_row(
+                "SELECT count(*) FROM codex_entries WHERE id = 'entry-live'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(
+                codex_count, 0,
+                "Codex restore must replace its selected scope"
+            );
+            Ok(())
+        })
+        .expect("verify Codex scope was actually restored");
     }
 
     fn character_snapshot(snapshot_id: &str) -> CreateProjectSnapshotPayload {

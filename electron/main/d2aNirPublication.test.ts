@@ -20,7 +20,7 @@ import {
   d2aRouteLedgersForTest,
 } from "./profileEgress.js";
 import { activateGateForTest } from "./profileActivation.test.support.js";
-import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
+import { nativeSqlPolicyV3 } from "./d2aSqlPolicyFixture.js";
 
 const mocks = vi.hoisted(() => ({
   handlers: new Map<
@@ -80,7 +80,7 @@ function status(restricted: boolean, overrides: Record<string, unknown> = {}) {
     restricted,
     handlesInvalidated: restricted,
     inFlightStopped: true,
-    sqlPolicy: nativeSqlPolicyV2(),
+    sqlPolicy: nativeSqlPolicyV3(),
     ...overrides,
   };
 }

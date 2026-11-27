@@ -8,6 +8,8 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const progressDeliveries = vi.hoisted(() => [] as unknown[][]);
+const questionDeliveries = vi.hoisted(() => [] as unknown[][]);
+const knownSenderIds = vi.hoisted(() => new Set<number>());
 vi.mock("../../src/features/chat/contextBuilder", () => ({
   ensureTokenizer: async () => undefined,
   countTokens: (text: string) => text.length,
@@ -22,14 +24,19 @@ vi.mock("./events.js", async (importOriginal) => {
     sendMainEventToWindow: (
       ...args: Parameters<typeof actual.sendMainEventToWindow>
     ) => {
-      progressDeliveries.push(args);
+      if (args[1] === "mastra:agent-turn-question") {
+        questionDeliveries.push(args);
+      } else {
+        progressDeliveries.push(args);
+      }
+      return knownSenderIds.has(args[0] as number);
     },
   };
 });
 
 import type { AiAuditEventInput } from "../shared/aiAuditEvents.js";
 import { MAIN_READ_CALLER_TIMEOUT_MS } from "../shared/ipcCallerTimeouts.js";
-import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
+import { nativeSqlPolicyV3 } from "./d2aSqlPolicyFixture.js";
 import {
   consumeProfileActivation,
   createProfileEgressGate,
@@ -38,8 +45,16 @@ import type { NapiBackendLike } from "../shared/ipcContract.js";
 import type { CoreReadContext } from "../shared/mastraRead/ports.js";
 import { createReadExecutors } from "../shared/readDomain/core/readExecutors.js";
 import type {
+  MastraAgentTurnAnswerRequest,
   MastraAgentTurnStartRequest,
   MastraAgentTurnStartResult,
+  MastraAgentTurnQuestionPayload,
+  MastraAgentTurnQuestionToolName,
+  MastraAgentTurnUiToolResult,
+} from "../shared/mastraAgentTurnWire.js";
+import {
+  MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS,
+  MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT_MS,
 } from "../shared/mastraAgentTurnWire.js";
 import {
   ALREADY_INJECTED_CODEX_ENTRY_SUMMARY,
@@ -427,6 +442,7 @@ function harness(
     appendBehavior,
     hooks,
     newContext(senderId = senderSeq++) {
+      knownSenderIds.add(senderId);
       const sender = new FakeSender(senderId);
       const win = new FakeWindow(senderId + 1000);
       const identity = { senderId, workspaceId: WORKSPACE };
@@ -472,6 +488,155 @@ const refusalReason = (value: unknown): string => {
   expect(result.status).toBe("refused");
   return result.reason ?? "";
 };
+
+const UI_TOOL_CALL_ID = "ui-tool-call-1";
+const ASK_USER_ARGS = {
+  questions: [{ question: "Which way?", kind: "single", options: ["A", "B"] }],
+};
+
+function answerForQuestion(
+  question: MastraAgentTurnQuestionPayload,
+): Extract<
+  MastraAgentTurnAnswerRequest,
+  { readonly result: MastraAgentTurnUiToolResult }
+> {
+  return {
+    requestId: question.requestId,
+    result: {
+      toolCallId: question.toolCallId,
+      name: question.toolName,
+      content: { answer: "A" },
+      summary: "answered",
+      tokensUsed: 1,
+    },
+  };
+}
+
+async function startPendingUiQuestion(
+  toolName: MastraAgentTurnQuestionToolName = "get_ui_state",
+  args: Readonly<Record<string, unknown>> = {},
+  ownerOverrides: Partial<Omit<MastraTurnOwnerOptions, "loadReadBindings">> & {
+    policyDbExecute?: NapiBackendLike["dbExecute"];
+  } = {},
+): Promise<{
+  readonly h: Harness;
+  readonly context: MastraTurnInvokeContext;
+  readonly sender: FakeSender;
+  readonly win: FakeWindow;
+  readonly pending: Promise<MastraAgentTurnUiToolResult>;
+  readonly start: Promise<MastraAgentTurnStartResult>;
+  readonly question: MastraAgentTurnQuestionPayload;
+}> {
+  const ownerRef: { owner?: MastraTurnOwner } = {};
+  const pendingReady = deferred<{
+    readonly pending: Promise<MastraAgentTurnUiToolResult>;
+  }>();
+  const h = harness({
+    ...ownerOverrides,
+    runTurn: async (input) => {
+      await sendPreparedRequest(input, auditRequestFor(input), 0);
+      const pending = ownerRef.owner!.requestUiTool(
+        TURN_A,
+        UI_TOOL_CALL_ID,
+        toolName,
+        args,
+      );
+      pendingReady.resolve({ pending });
+      try {
+        await pending;
+      } catch {
+        await sendPreparedRequest(input, auditRequestFor(input), 1);
+      }
+    },
+  });
+  ownerRef.owner = h.owner;
+  const { context, sender, win } = h.newContext();
+  const start = h.owner.start(context, startRequest(TURN_A));
+  void start.catch(() => undefined);
+  const { pending } = await pendingReady.promise;
+  await flush();
+  const delivery = questionDeliveries[questionDeliveries.length - 1];
+  if (!delivery) throw new Error("MP5_QUESTION_NOT_SENT");
+  return {
+    h,
+    context,
+    sender,
+    win,
+    pending,
+    start,
+    question: delivery[2] as MastraAgentTurnQuestionPayload,
+  };
+}
+
+async function startAdapterPendingUiTool(
+  toolName: MastraAgentTurnQuestionToolName,
+  args: Readonly<Record<string, unknown>>,
+  loop: Partial<MastraAgentTurnStartRequest["loop"]> = {},
+  toolContext: Record<string, unknown> = {},
+): Promise<{
+  readonly h: Harness;
+  readonly context: MastraTurnInvokeContext;
+  readonly sender: FakeSender;
+  readonly win: FakeWindow;
+  readonly pending: Promise<string>;
+  readonly start: Promise<MastraAgentTurnStartResult>;
+  readonly question: MastraAgentTurnQuestionPayload;
+}> {
+  const response: AgentWireResponse = {
+    blocks: [
+      {
+        type: "tool_use",
+        id: UI_TOOL_CALL_ID,
+        name: toolName,
+        input: args,
+      },
+    ],
+    stopReason: "tool_use",
+  };
+  const pendingReady = deferred<{ readonly pending: Promise<string> }>();
+  const h = harness({
+    responses: [
+      response,
+      { blocks: [{ type: "text", content: "Done." }], stopReason: "end_turn" },
+    ],
+    runTurn: async (input) =>
+      driveCoreReadOwnerLoop(
+        input,
+        true,
+        (execution) => {
+          const pending = Promise.resolve(execution).then((result) =>
+            String(result),
+          );
+          void pending.catch(() => undefined);
+          pendingReady.resolve({
+            pending,
+          });
+        },
+        toolContext,
+      ),
+  });
+  const { context, sender, win } = h.newContext();
+  const request = startRequest(TURN_A);
+  const start = h.owner.start(context, {
+    ...request,
+    tools: [toolName],
+    loop: { ...request.loop, ...loop },
+  });
+  void start.catch(() => undefined);
+  const { pending } = await pendingReady.promise;
+  await flush();
+  const delivery = questionDeliveries[questionDeliveries.length - 1];
+  if (!delivery) throw new Error("MP5_ADAPTER_QUESTION_NOT_SENT");
+  return {
+    h,
+    context,
+    sender,
+    win,
+    pending,
+    start,
+    question: delivery[2] as MastraAgentTurnQuestionPayload,
+  };
+}
 
 function auditRequestFor(
   input: MastraAgentTurnInput,
@@ -719,6 +884,8 @@ function mainReadFixture(title: string): NapiBackendLike["dbExecute"] {
 async function driveCoreReadOwnerLoop(
   input: MastraAgentTurnInput,
   continueAfterControl = false,
+  onToolExecute?: (execution: Promise<unknown>) => void,
+  toolContext: Record<string, unknown> = {},
 ): Promise<void> {
   const tools = createMastraAgentTools({
     names: (input.toolDefinitions ?? []).map(({ name }) => name),
@@ -765,12 +932,15 @@ async function driveCoreReadOwnerLoop(
       let content: string;
       let isError = false;
       try {
-        content = String(
-          await adapter.execute(tool.input, {
+        const execution = Promise.resolve(
+          adapter.execute(tool.input, {
             agent: { toolCallId: tool.id },
             abortSignal: input.signal,
+            ...toolContext,
           } as never),
         );
+        onToolExecute?.(execution);
+        content = String(await execution);
       } catch (error) {
         if (input.signal.aborted) throw error;
         content = `Error: ${error instanceof Error ? error.message : String(error)}`;
@@ -791,6 +961,8 @@ beforeEach(() => {
   nextTurn = 0;
   nextToolUseId = 0;
   progressDeliveries.length = 0;
+  questionDeliveries.length = 0;
+  knownSenderIds.clear();
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -1836,6 +2008,18 @@ describe("M4 read bindings (T-b)", () => {
     ).toEqual(legacy.sentMessages);
   });
 
+  it("keeps selected binding order when UI and read tools are interleaved", async () => {
+    const tools = ["run_app_command", "get_scene"] as const;
+    const h = harness({
+      runTurn: async (input) => {
+        expect(input.bindings?.map(({ name }) => name)).toEqual(tools);
+        await sendPreparedRequest(input, auditRequestFor(input), 0);
+      },
+    });
+    const { context } = h.newContext();
+    await h.owner.start(context, startRequest(TURN_A, { tools }));
+  });
+
   it("passes null, array, string, and number tool inputs through like the legacy executor", async () => {
     // The renderer's legacy dispatcher invokes this shared executor without input normalization.
     const legacyGetScene = createReadExecutors({
@@ -1858,7 +2042,10 @@ describe("M4 read bindings (T-b)", () => {
       } as unknown as NapiBackendLike,
       identity: { senderId: 7, workspaceId: WORKSPACE } as never,
       hooks: {},
-      request: startRequest(TURN_A, { tools: ["get_scene"] }),
+      request: {
+        ...startRequest(TURN_A, { tools: ["get_scene"] }),
+        tools: ["get_scene"],
+      },
       projectId: PROJECT_ID,
       currentSceneId: "scene-1",
       tokenizer: createPerCodePointTokenizer(),
@@ -3509,7 +3696,7 @@ describe("restricted: the real activation (stage 3 of the egress gate)", () => {
     restricted: false,
     handlesInvalidated: false,
     inFlightStopped: true,
-    sqlPolicy: nativeSqlPolicyV2(),
+    sqlPolicy: nativeSqlPolicyV3(),
   };
   const RESTRICTED = {
     ...UNRESTRICTED,
@@ -4503,5 +4690,715 @@ describe("the per-send chat policy check (DR-MP4-26)", () => {
     expect(h.sends).toEqual([]);
     expect(h.owner.readsInFlight()).toBe(0);
     expect(h.owner.slotsInUse()).toBe(0);
+  });
+});
+
+describe("MP-5 main-owned question holds", () => {
+  it("binds the question to its turn, tool call and window, then completes the start once", async () => {
+    const { h, context, pending, start, question } =
+      await startPendingUiQuestion();
+    const [windowId, channel, payload] =
+      questionDeliveries[questionDeliveries.length - 1]!;
+    expect(windowId).toBe(context.sender.id);
+    expect(channel).toBe("mastra:agent-turn-question");
+    expect(payload).toEqual(question);
+    expect(question).toMatchObject({
+      turnId: TURN_A,
+      toolCallId: UI_TOOL_CALL_ID,
+      toolName: "get_ui_state",
+    });
+    expect(question.deadlineAt - Date.now()).toBeLessThanOrEqual(
+      MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT_MS,
+    );
+
+    const answer = answerForQuestion(question);
+    await expect(h.owner.answer(context, answer)).resolves.toEqual({
+      status: "accepted",
+      requestId: question.requestId,
+    });
+    await expect(pending).resolves.toEqual(answer.result);
+    expect(questionDeliveries).toHaveLength(1);
+    expect(questionDeliveries[0]?.[0]).toBe(context.sender.id);
+    expect(await start).toMatchObject({ status: "completed", turnId: TURN_A });
+    expect(h.owner.activeTurnCount()).toBe(0);
+    expect(h.types()).toContain("execution.succeeded");
+  });
+
+  it("rejects answers from another sender or window, unknown IDs, mismatched IDs and late duplicates", async () => {
+    const { h, context, pending, start, question } =
+      await startPendingUiQuestion();
+    await expect(
+      h.owner.requestUiTool(TURN_A, "second-tool-call", "get_ui_state", {}),
+    ).rejects.toThrow("MASTRA_AGENT_TURN_QUESTION_ALREADY_PENDING");
+
+    const strangerSender = h.newContext();
+    await expect(
+      h.owner.answer(
+        { ...context, sender: strangerSender.sender },
+        answerForQuestion(question),
+      ),
+    ).resolves.toEqual({ status: "refused", reason: "no-pending" });
+    const strangerWindow = h.newContext();
+    await expect(
+      h.owner.answer(
+        { ...context, win: strangerWindow.win },
+        answerForQuestion(question),
+      ),
+    ).resolves.toEqual({ status: "refused", reason: "no-pending" });
+    await expect(
+      h.owner.answer(context, {
+        requestId: "00000000-0000-4000-8000-000000000099",
+        refusal: "authority-revoked",
+      }),
+    ).resolves.toEqual({ status: "refused", reason: "no-pending" });
+
+    const answer = answerForQuestion(question);
+    if (!("result" in answer)) throw new Error("test answer missing result");
+    await expect(
+      h.owner.answer(context, {
+        ...answer,
+        result: { ...answer.result, toolCallId: "different-tool-call" },
+      }),
+    ).resolves.toEqual({ status: "refused", reason: "invalid" });
+    await expect(
+      h.owner.answer(context, {
+        ...answer,
+        result: { ...answer.result, name: "ask_user" },
+      }),
+    ).resolves.toEqual({ status: "refused", reason: "invalid" });
+
+    const raced = await Promise.all([
+      h.owner.answer(context, answer),
+      h.owner.answer(context, answer),
+    ]);
+    expect(raced.filter((result) => result.status === "accepted")).toHaveLength(
+      1,
+    );
+    expect(raced.filter((result) => result.status === "refused")).toHaveLength(
+      1,
+    );
+    await expect(pending).resolves.toEqual(answer.result);
+    await expect(h.owner.answer(context, answer)).resolves.toMatchObject({
+      status: "refused",
+      reason: "no-pending",
+    });
+    expect(await start).toMatchObject({ status: "completed", turnId: TURN_A });
+  });
+
+  it("closes immediately when Main cannot send the question event", async () => {
+    const h = harness({
+      sendQuestion: () => false,
+      runTurn: async (input) => {
+        await sendPreparedRequest(input, auditRequestFor(input), 0);
+        await h.owner.requestUiTool(
+          TURN_A,
+          UI_TOOL_CALL_ID,
+          "get_ui_state",
+          {},
+        );
+      },
+    });
+    const { context } = h.newContext();
+    await expect(h.owner.start(context, startRequest(TURN_A))).rejects.toThrow(
+      "MASTRA_AGENT_TURN_QUESTION_DELIVERY_FAILED",
+    );
+    expect(questionDeliveries).toHaveLength(0);
+    expect(h.owner.activeTurnCount()).toBe(0);
+    await expect(
+      h.owner.answer(context, {
+        requestId: "00000000-0000-4000-8000-000000000099",
+        refusal: "authority-revoked",
+      }),
+    ).resolves.toEqual({ status: "refused", reason: "no-pending" });
+  });
+
+  it("allows only one same-window question when concurrent requests resume after authority checks", async () => {
+    const authorityGate = deferred<void>();
+    const requests: Promise<MastraAgentTurnUiToolResult>[] = [];
+    const questionsReady = deferred<void>();
+    const ownerRef: { owner?: MastraTurnOwner } = {};
+    let policyChecks = 0;
+    const h = harness({
+      policyDbExecute: async () => {
+        policyChecks += 1;
+        if (policyChecks > 1) await authorityGate.promise;
+        return readAnswer([{ ai_policy: null }]);
+      },
+      runTurn: async (input) => {
+        await sendPreparedRequest(input, auditRequestFor(input), 0);
+        requests.push(
+          ownerRef.owner!.requestUiTool(
+            TURN_A,
+            "first-tool-call",
+            "get_ui_state",
+            {},
+          ),
+          ownerRef.owner!.requestUiTool(
+            TURN_A,
+            "second-tool-call",
+            "get_ui_state",
+            {},
+          ),
+        );
+        void requests[1]!.catch(() => undefined);
+        questionsReady.resolve();
+        await requests[0];
+      },
+    });
+    ownerRef.owner = h.owner;
+    const { context } = h.newContext();
+    const start = h.owner.start(context, startRequest(TURN_A));
+    void start.catch(() => undefined);
+    await questionsReady.promise;
+    await flush();
+    expect(policyChecks).toBe(3);
+
+    authorityGate.resolve();
+    await flush();
+    expect(questionDeliveries).toHaveLength(1);
+    await expect(requests[1]).rejects.toThrow(
+      "MASTRA_AGENT_TURN_QUESTION_ALREADY_PENDING",
+    );
+    const question =
+      questionDeliveries[0]?.[2] as MastraAgentTurnQuestionPayload;
+    await expect(
+      h.owner.answer(context, answerForQuestion(question)),
+    ).resolves.toEqual({ status: "accepted", requestId: question.requestId });
+    await expect(requests[0]).resolves.toMatchObject({ name: "get_ui_state" });
+    await expect(start).resolves.toMatchObject({
+      status: "completed",
+      turnId: TURN_A,
+    });
+  });
+
+  it.each([
+    ["run_app_command", { command: "openSettings" }],
+    ["apply_layout_preset", { preset: "compact" }],
+    ["propose_setting_change", { key: "editor.fontSize", value: "16" }],
+    ["get_ui_state", {}],
+    ["get_app_help_index", {}],
+    ["get_app_help", { id: "topic:layout.presets" }],
+  ] as const)(
+    "DR-MP5-5: %s timeout is a tool failure and the turn continues",
+    async (toolName, args) => {
+      vi.useFakeTimers();
+      const { h, context, pending, start, question } =
+        await startPendingUiQuestion(toolName, args);
+      await vi.advanceTimersByTimeAsync(MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT_MS);
+      await expect(pending).rejects.toThrow(
+        /outcome is uncertain; do not repeat/,
+      );
+      await expect(start).resolves.toMatchObject({
+        status: "completed",
+        turnId: TURN_A,
+      });
+      await expect(
+        h.owner.answer(context, answerForQuestion(question)),
+      ).resolves.toEqual({
+        status: "refused",
+        reason: "no-pending",
+      });
+      expect(h.sends).toHaveLength(2);
+      expect(h.owner.activeTurnCount()).toBe(0);
+    },
+  );
+
+  it.each([
+    ["run_app_command", { command: "focusScenes" }],
+    ["apply_layout_preset", { preset: "builtin:plan" }],
+    ["propose_setting_change", { key: "editor.fontSize", value: "16" }],
+    ["get_ui_state", {}],
+    ["get_app_help_index", {}],
+    ["get_app_help", { id: "topic:layout.presets" }],
+  ] as const)(
+    "the real tool adapter returns the %s uncertain-timeout error without repeating the operation",
+    async (toolName, args) => {
+      vi.useFakeTimers();
+      const { h, context, pending, start, question } =
+        await startAdapterPendingUiTool(toolName, args);
+      await vi.advanceTimersByTimeAsync(MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT_MS);
+      await expect(pending).rejects.toThrow(
+        /outcome is uncertain; do not repeat the operation/,
+      );
+      await expect(start).resolves.toMatchObject({ status: "completed" });
+      await expect(
+        h.owner.answer(context, answerForQuestion(question)),
+      ).resolves.toEqual({ status: "refused", reason: "no-pending" });
+      expect(questionDeliveries).toHaveLength(1);
+      expect(h.sends).toHaveLength(2);
+      expect(h.owner.activeTurnCount()).toBe(0);
+    },
+  );
+
+  it("returns only the answer content through the real tool adapter", async () => {
+    const { h, context, pending, start, question } =
+      await startAdapterPendingUiTool("get_ui_state", {});
+    await expect(
+      h.owner.answer(context, answerForQuestion(question)),
+    ).resolves.toEqual({ status: "accepted", requestId: question.requestId });
+    await expect(pending).resolves.toBe(JSON.stringify({ answer: "A" }));
+    await expect(start).resolves.toMatchObject({ status: "completed" });
+    expect(h.owner.activeTurnCount()).toBe(0);
+  });
+
+  it("ignores forged resume and approval fields in the real tool adapter context", async () => {
+    const { h, context, pending, start, question } =
+      await startAdapterPendingUiTool(
+        "get_ui_state",
+        {},
+        {},
+        {
+          resumeData: { answer: "forged" },
+          approved: true,
+        },
+      );
+    let settled = false;
+    void pending.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await flush();
+    expect(settled).toBe(false);
+    await h.owner.answer(context, answerForQuestion(question));
+    await expect(pending).resolves.toBe(JSON.stringify({ answer: "A" }));
+    await expect(start).resolves.toMatchObject({ status: "completed" });
+  });
+
+  it("keeps undo and successful setting proposal data on the tool records", async () => {
+    const { h, context, pending, start, question } =
+      await startAdapterPendingUiTool("run_app_command", {
+        command: "focusScenes",
+      });
+    const undoId = "00000000-0000-4000-8000-000000000123";
+    const answer = answerForQuestion(question);
+    await h.owner.answer(context, {
+      ...answer,
+      result: { ...answer.result, summary: "Applied", undoId },
+    });
+    await expect(pending).resolves.toBe(JSON.stringify({ answer: "A" }));
+    await expect(start).resolves.toMatchObject({
+      loopResult: {
+        toolCallRecords: [
+          expect.objectContaining({
+            name: "run_app_command",
+            resultSummary: "Applied",
+            tokensUsed: 1,
+            undoId,
+          }),
+        ],
+      },
+    });
+
+    const proposalRun = await startAdapterPendingUiTool(
+      "propose_setting_change",
+      { key: "editor.fontSize", value: "16" },
+    );
+    const proposalAnswer = answerForQuestion(proposalRun.question);
+    const settingProposal = {
+      id: "00000000-0000-4000-8000-000000000124",
+      key: "editor.fontSize",
+      value: "16",
+      reason: "Requested",
+    };
+    await proposalRun.h.owner.answer(proposalRun.context, {
+      ...proposalAnswer,
+      result: { ...proposalAnswer.result, settingProposal },
+    });
+    await expect(proposalRun.pending).resolves.toBe(
+      JSON.stringify({ answer: "A" }),
+    );
+    await expect(proposalRun.start).resolves.toMatchObject({
+      loopResult: {
+        toolCallRecords: [expect.objectContaining({ settingProposal })],
+      },
+    });
+
+    const failedProposal = await startAdapterPendingUiTool(
+      "propose_setting_change",
+      { key: "editor.fontSize", value: "16" },
+    );
+    const failedAnswer = answerForQuestion(failedProposal.question);
+    await failedProposal.h.owner.answer(failedProposal.context, {
+      ...failedAnswer,
+      result: {
+        ...failedAnswer.result,
+        error: "Rejected",
+        settingProposal,
+      },
+    });
+    await expect(failedProposal.pending).rejects.toThrow("Rejected");
+    await expect(failedProposal.start).resolves.toMatchObject({
+      loopResult: {
+        toolCallRecords: [expect.not.objectContaining({ settingProposal })],
+      },
+    });
+    expect(failedProposal.h.sends[1]?.args.messages.at(-1)).toMatchObject({
+      role: "tool_result",
+      isError: true,
+    });
+  });
+
+  it("uses the legacy not-found text when a UI result has no content or summary", async () => {
+    const { h, context, pending, start, question } =
+      await startAdapterPendingUiTool("get_ui_state", {});
+    const answer = answerForQuestion(question);
+    await h.owner.answer(context, {
+      ...answer,
+      result: { ...answer.result, content: null, summary: "" },
+    });
+    await expect(pending).resolves.toBe("No result (not found).");
+    await expect(start).resolves.toMatchObject({ status: "completed" });
+  });
+
+  it("the real tool adapter ends ask_user at its deadline without another send", async () => {
+    vi.useFakeTimers();
+    const { h, context, pending, start, question } =
+      await startAdapterPendingUiTool("ask_user", ASK_USER_ARGS);
+    expect(question.deadlineAt - Date.now()).toBe(
+      MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS,
+    );
+    await vi.advanceTimersByTimeAsync(MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS);
+    await expect(pending).resolves.toBe(
+      "Tool execution skipped because the turn stopped.",
+    );
+    await expect(start).resolves.toMatchObject({
+      status: "completed",
+      loopResult: { stoppedReason: "aborted" },
+    });
+    await expect(
+      h.owner.answer(context, answerForQuestion(question)),
+    ).resolves.toEqual({ status: "refused", reason: "no-pending" });
+    expect(h.sends).toHaveLength(1);
+    expect(h.owner.activeTurnCount()).toBe(0);
+  });
+
+  it("ask_user still uses the separate legacy question limit", async () => {
+    const { h, context, pending, start, question } =
+      await startAdapterPendingUiTool("ask_user", ASK_USER_ARGS, {
+        maxUserQuestions: 1,
+      });
+    await h.owner.answer(context, answerForQuestion(question));
+    await expect(pending).resolves.toBe(JSON.stringify({ answer: "A" }));
+    await expect(start).resolves.toMatchObject({
+      status: "completed",
+      loopResult: { stoppedReason: "limit_questions" },
+    });
+    expect(h.sends).toHaveLength(2);
+    expect(
+      h.sends[1]?.args.messages.some((message) =>
+        message.content.includes("questions"),
+      ),
+    ).toBe(true);
+  });
+
+  it("a renderer authority refusal ends the real tool adapter turn", async () => {
+    const { h, context, pending, start, question } =
+      await startAdapterPendingUiTool("ask_user", ASK_USER_ARGS);
+    await h.owner.answer(context, {
+      requestId: question.requestId,
+      refusal: "authority-revoked",
+    });
+    await expect(pending).resolves.toBe(
+      "Tool execution skipped because the turn stopped.",
+    );
+    await expect(start).resolves.toMatchObject({
+      status: "completed",
+      loopResult: { stoppedReason: "aborted" },
+    });
+    expect(h.sends).toHaveLength(1);
+    expect(h.owner.activeTurnCount()).toBe(0);
+  });
+
+  it("limits UI operation attempts to the legacy ten per turn", async () => {
+    let owner: MastraTurnOwner | null = null;
+    let context: MastraTurnInvokeContext | null = null;
+    let answered = 0;
+    const toolUses: AgentWireResponse["blocks"] = Array.from(
+      { length: 11 },
+      (_, index) => {
+        const name =
+          index % 2 === 0 ? "run_app_command" : "apply_layout_preset";
+        return {
+          type: "tool_use" as const,
+          id: `ui-op-${index}`,
+          name,
+          input:
+            name === "run_app_command"
+              ? { command: "focusScenes" }
+              : { preset: "builtin:plan" },
+        };
+      },
+    );
+    const h = harness({
+      responses: [
+        { blocks: toolUses, stopReason: "tool_use" },
+        {
+          blocks: [{ type: "text", content: "Done." }],
+          stopReason: "end_turn",
+        },
+      ],
+      runTurn: async (input) => driveCoreReadOwnerLoop(input, true),
+      sendQuestion: (_senderId, question) => {
+        if (!owner || !context) return false;
+        answered += 1;
+        queueMicrotask(() => {
+          void owner!.answer(context!, {
+            requestId: question.requestId,
+            result: {
+              toolCallId: question.toolCallId,
+              name: question.toolName,
+              content: { ok: true },
+              summary: "ok",
+              tokensUsed: 1,
+            },
+          });
+        });
+        return true;
+      },
+    });
+    owner = h.owner;
+    const caller = h.newContext();
+    context = caller.context;
+    const request = startRequest(TURN_A);
+    const result = completed(
+      await h.owner.start(caller.context, {
+        ...request,
+        tools: ["run_app_command", "apply_layout_preset"],
+        loop: {
+          ...request.loop,
+          tokenBudget: 20_000,
+          contextWindow: 50_000,
+          maxToolCalls: 25,
+        },
+      }),
+    );
+    expect(answered).toBe(10);
+    expect(h.readBindingLoads.count).toBe(0);
+    expect(result.loopResult?.toolCallRecords).toHaveLength(11);
+    expect(result.loopResult?.toolCallRecords.at(-1)?.resultSummary).toContain(
+      "UI operation limit reached (10 per response)",
+    );
+    expect(
+      h.sends[1]?.args.messages.some((message) =>
+        message.content.includes("UI operation limit reached"),
+      ),
+    ).toBe(true);
+    expect(h.sends[1]?.args.messages.at(-1)).toMatchObject({
+      role: "tool_result",
+      toolUseId: "ui-op-10",
+      isError: true,
+    });
+  });
+
+  it("closing the window ends a pending ask_user through the real tool adapter", async () => {
+    const { h, win, pending, start } = await startAdapterPendingUiTool(
+      "ask_user",
+      ASK_USER_ARGS,
+    );
+    win.emit("closed");
+    await expect(pending).resolves.toBe(
+      "Tool execution skipped because the turn stopped.",
+    );
+    await expect(start).rejects.toThrow(
+      /MASTRA_AGENT_TURN_ABORTED: sender-gone/,
+    );
+    expect(h.owner.activeTurnCount()).toBe(0);
+  });
+
+  it("rejects an answer at its absolute deadline even before the timer callback runs", async () => {
+    vi.useFakeTimers();
+    const { h, context, pending, start, question } =
+      await startPendingUiQuestion();
+    vi.setSystemTime(question.deadlineAt);
+    await expect(
+      h.owner.answer(context, answerForQuestion(question)),
+    ).resolves.toEqual({ status: "refused", reason: "no-pending" });
+    await expect(pending).rejects.toThrow(/outcome is uncertain/);
+    await expect(start).resolves.toMatchObject({
+      status: "completed",
+      turnId: TURN_A,
+    });
+    expect(h.owner.activeTurnCount()).toBe(0);
+  });
+
+  it("ends the start at the ask_user deadline with no follow-up send", async () => {
+    vi.useFakeTimers();
+    const { h, context, pending, start, question } =
+      await startPendingUiQuestion("ask_user", ASK_USER_ARGS);
+    expect(question.deadlineAt - Date.now()).toBe(
+      MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS,
+    );
+    await vi.advanceTimersByTimeAsync(MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS);
+    await expect(pending).rejects.toThrow("MASTRA_AGENT_LOOP_STOPPED");
+    expect(await start).toMatchObject({
+      status: "completed",
+      turnId: TURN_A,
+      loopResult: { stoppedReason: "aborted" },
+    });
+    await expect(
+      h.owner.answer(context, answerForQuestion(question)),
+    ).resolves.toEqual({
+      status: "refused",
+      reason: "no-pending",
+    });
+    expect(h.sends).toHaveLength(1);
+    expect(h.owner.activeTurnCount()).toBe(0);
+  });
+
+  it("Stop consumes the hold before a late answer", async () => {
+    const { h, context, pending, start, question } =
+      await startPendingUiQuestion();
+    expect(h.owner.cancel(context, { turnId: TURN_A })).toMatchObject({
+      status: "ok",
+      found: true,
+    });
+    await expect(pending).rejects.toThrow("MASTRA_AGENT_LOOP_STOPPED");
+    expect(await start).toMatchObject({ status: "completed", turnId: TURN_A });
+    await expect(
+      h.owner.answer(context, answerForQuestion(question)),
+    ).resolves.toEqual({
+      status: "refused",
+      reason: "no-pending",
+    });
+  });
+
+  it("a renderer authority refusal consumes the hold and ends the start", async () => {
+    const { h, context, pending, start, question } =
+      await startPendingUiQuestion();
+    await expect(
+      h.owner.answer(context, {
+        requestId: question.requestId,
+        refusal: "authority-revoked",
+      }),
+    ).resolves.toEqual({ status: "accepted", requestId: question.requestId });
+    await expect(pending).rejects.toThrow("MASTRA_AGENT_LOOP_STOPPED");
+    expect(await start).toMatchObject({
+      status: "completed",
+      turnId: TURN_A,
+      loopResult: { stoppedReason: "aborted" },
+    });
+    expect(h.sends).toHaveLength(1);
+    expect(h.owner.activeTurnCount()).toBe(0);
+  });
+
+  it("authority loss while accepting an answer stops before another send", async () => {
+    let policyChecks = 0;
+    const { h, context, pending, start, question } =
+      await startPendingUiQuestion(
+        "get_ui_state",
+        {},
+        {
+          policyDbExecute: async () => {
+            policyChecks += 1;
+            if (policyChecks === 3) throw new Error("authority revoked");
+            return readAnswer([{ ai_policy: null }]);
+          },
+        },
+      );
+    await expect(
+      h.owner.answer(context, answerForQuestion(question)),
+    ).resolves.toEqual({ status: "accepted", requestId: question.requestId });
+    await expect(pending).rejects.toThrow("MASTRA_AGENT_LOOP_STOPPED");
+    expect(await start).toMatchObject({
+      status: "completed",
+      loopResult: { stoppedReason: "aborted" },
+    });
+    expect(policyChecks).toBe(3);
+    expect(h.sends).toHaveLength(1);
+  });
+
+  it("rechecks chat policy after the answer and does not pass a revoked result to the tool", async () => {
+    let policyChecks = 0;
+    const { h, context, pending, start, question } =
+      await startPendingUiQuestion(
+        "get_ui_state",
+        {},
+        {
+          policyDbExecute: async () => {
+            policyChecks += 1;
+            return readAnswer([
+              { ai_policy: policyChecks === 3 ? "off" : null },
+            ]);
+          },
+        },
+      );
+    expect(questionDeliveries).toHaveLength(1);
+    await expect(
+      h.owner.answer(context, answerForQuestion(question)),
+    ).resolves.toEqual({ status: "accepted", requestId: question.requestId });
+    await expect(pending).rejects.toThrow("MASTRA_AGENT_LOOP_STOPPED");
+    expect(await start).toMatchObject({
+      status: "completed",
+      loopResult: { stoppedReason: "aborted" },
+    });
+    expect(policyChecks).toBe(3);
+    expect(h.sends).toHaveLength(1);
+  });
+
+  it.each(["profile", "workspace", "quit"] as const)(
+    "forced %s interruption consumes the hold and ends start",
+    async (cause) => {
+      const { h, context, pending, start, question } =
+        await startPendingUiQuestion();
+      if (cause === "profile") await h.owner.quiesceForProfileEgress();
+      if (cause === "workspace") {
+        const lease = await h.owner.quiesceForWorkspaceSwitch();
+        await lease.resume(false);
+      }
+      if (cause === "quit") await h.owner.shutdown();
+      await expect(pending).rejects.toThrow("MASTRA_AGENT_TURN_ABORTED");
+      await expect(start).rejects.toThrow("MASTRA_AGENT_TURN_ABORTED");
+      await expect(
+        h.owner.answer(context, answerForQuestion(question)),
+      ).resolves.toEqual({
+        status: "refused",
+        reason: "no-pending",
+      });
+      expect(h.owner.activeTurnCount()).toBe(0);
+      expect(h.terminalsOf()).toHaveLength(1);
+    },
+  );
+
+  it.each([
+    "destroyed",
+    "render-process-gone",
+    "navigation",
+    "closed",
+  ] as const)(
+    "screen loss (%s) consumes the hold and ends start",
+    async (event) => {
+      const { h, context, sender, win, pending, start, question } =
+        await startPendingUiQuestion();
+      if (event === "destroyed") sender.emit("destroyed");
+      if (event === "render-process-gone") sender.emit("render-process-gone");
+      if (event === "navigation") {
+        sender.emit("did-start-navigation", {
+          isMainFrame: true,
+          isSameDocument: false,
+        });
+      }
+      if (event === "closed") win.emit("closed");
+      await expect(pending).rejects.toThrow("MASTRA_AGENT_TURN_ABORTED");
+      await expect(start).rejects.toThrow("MASTRA_AGENT_TURN_ABORTED");
+      await expect(
+        h.owner.answer(context, answerForQuestion(question)),
+      ).resolves.toEqual({
+        status: "refused",
+        reason: "no-pending",
+      });
+      expect(h.owner.activeTurnCount()).toBe(0);
+    },
+  );
+
+  it("does not read resumeData or approved from tool context or answers", () => {
+    const source = readFileSync(
+      new URL("./mastraTurnOwner.ts", import.meta.url),
+      "utf8",
+    );
+    expect(source).not.toMatch(/\b(?:resumeData|approved)\b/u);
   });
 });
