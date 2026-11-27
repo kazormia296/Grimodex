@@ -197,6 +197,8 @@ const OWN_DATA_READ_COMMANDS = [
   "foreshadow_get_setup",
   "foreshadow_get",
   "foreshadow_list_linked_codex",
+  // Identity correction rules (1)
+  "identity_correction_rules_list",
   // Plot (2)
   "plot_thread_list",
   "plot_thread_list_links",
@@ -441,6 +443,9 @@ const INTERNAL_COMMANDS = new Set([
   "foreshadow_unlink_codex",
   "foreshadow_update",
   "foreshadow_update_setup",
+  "identity_correction_rule_create",
+  "identity_correction_rule_supersede",
+  "identity_correction_rule_retire",
   "fts_optimize",
   "fts_rebuild",
   "fts_rebuild_en",

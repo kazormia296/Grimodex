@@ -291,6 +291,27 @@ describe("registerIpcRouter fail-soft logging", () => {
     expect(routeOf("migration")).toBe("");
   });
 
+  it.each([
+    "identity_correction_rule_create",
+    "identity_correction_rule_supersede",
+    "identity_correction_rule_retire",
+  ] as const)("binds %s to human-direct and rejects agent origin", (command) => {
+    const bind = (origin: string) =>
+      bindRendererAuthorityForIpc(command, {
+        payload: {
+          origin,
+          authorityRoute: "interactive-agent-command",
+        },
+      });
+
+    expect(
+      (bind("human").payload as { authorityRoute?: string }).authorityRoute,
+    ).toBe("human-direct");
+    expect(
+      (bind("ai-apply").payload as { authorityRoute?: string }).authorityRoute,
+    ).toBe("");
+  });
+
   it("binds strict renderer authority from the main-owned command policy", () => {
     const bound = bindRendererAuthorityForIpc("tree_node_create", {
       payload: {
