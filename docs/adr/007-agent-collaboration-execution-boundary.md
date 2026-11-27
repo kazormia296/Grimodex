@@ -311,4 +311,4 @@ idempotency、race test、startup reconciliationを必要とする。
 4. **2026-11-23 の追補 2（承認の要求はメモリだけ）は変えない。** A3 の v1 は承認を Interaction として記録しない。
 5. **変えないもの。**
    - 不変条件 7〜9（終端は 1 つ、pending は一度だけ resolve、renderer loss を成功として扱わない）。
-   - §3 の cancel の理由。ただし、workspace や profile の切替、quit による強制中断は、再開できる中断として記録する。
+   - §3 の cancel の理由。ただし、legacy の API の agent loop では、workspace や profile の切替、quit による強制中断を、再開できる中断として記録する。Mastra の経路は、再開の実証まで「続けられない」中断として記録する。CLI と Codex App Server は、今どおり cancel として記録する。

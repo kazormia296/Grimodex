@@ -148,9 +148,13 @@
   - 起点：`origin_user_message_id`。画面が turn の開始時に発番する user の行の ID で、FK にしない（中断の間は行が無いので）。
   - model の snapshot：provider の ID、model の ID、endpoint の識別子（URL の hash）。API の key は保存しない。
   - 実行の権限：`execution_owner`（DR-A3-5）。
-  - 状態：`status`、`terminal_reason`、`interrupt_reason`、`resumable`（真偽）、`version`（OCC）。
+  - 状態：`status`、`terminal_reason`、`interrupt_reason`、`resumable`（真偽）、`not_resumable_reason`、`version`（OCC）。
+  - 再開の門：`resume_block_detail`、`resume_blocked_at`。門で止まったことは、ここにだけ書く（status と `interrupt_reason` は変えない）。
+  - 保存中：`finalizing_target_status`、`finalizing_target_reason`、`origin_assistant_message_id`（DR-A3-11）。
   - 時刻：`activity_at`、`created_at`、`updated_at`。
-  - AI Audit とのつなぎ：Audit の側の `operation_id` に `run_id` を入れる形で、1 対多をたどる。Audit の payload の宣言の範囲で入れられるかは、PR 4 の前に確かめる。
+  - AI Audit とのつなぎ：`audit_execution_ids`（JSON の配列）。
+    - Run から AI Audit の `execution_id` を 1 対多で持つ。
+    - `ai_audit_events` は変えない。`operation_id` は NOT NULL で、意味も別なので使わない（Fable の K2）。
   - Release B 用に今は空で置く：`continuation_of`、`task_id`。
 - **status は 9 つ**：
   - 非終端の 5 つ：`running`、`waiting_user`、`finalizing`、`interrupted`、`waiting_approval`。
@@ -158,12 +162,15 @@
   - 終端の 4 つ：`completed`、`failed`、`cancelled`、`discarded`。
   - `interrupted` は非終端で、`resumable` が真なら途中再開の候補になる。
 - **`resumable` と `interrupt_reason` は、別の列にする**：
-  - `resumable` が偽のとき：途中再開できない。
-    - checkpoint を書けなかったとき、hidden になった source を読んでいたとき（DR-A3-6）、backup から戻したとき（DR-A3-7）。
+  - `resumable` が偽のとき：途中再開できない。理由は `not_resumable_reason` に書き、画面に出す。
+    - `checkpoint_write_failed`、`ledger_write_failed`：途中の状態や台帳を書けなかった。
+    - `hidden_source_read`：hidden になった source を読んでいた（DR-A3-6）。
+    - `restored_from_copy`：backup などの写しから戻した（DR-A3-7）。
+    - `route_unsupported`：Mastra の経路の当面の扱い（DR-A3-8）。
     - 回収では真に戻さない。
-  - `interrupt_reason`：なぜ止まったか。
+  - `interrupt_reason`：なぜ止まったか。再開の門の結果では変えない。
     - `app_shutdown`、`renderer_lost`、`workspace_switched`、`profile_switched`、`question_timeout`（Mastra の 30 分）。
-    - `resume_gate_failed`：再開の門で止まった。再試行できる。理由は `resume_block_detail` に書く。
+    - `copied_snapshot`：写しの中で、非終端の行を中断に倒した（DR-A3-7）。
 - **terminal_reason と status の対応**は、CHECK で固定する：
   - `completed`：`completed`、`limit_tokens`、`output_truncated`、`context_window_exceeded`。
   - `failed`：`provider_error`、`record_failed`、`timeout`。
@@ -171,9 +178,13 @@
   - `discarded`：`discarded_by_author`、`superseded_by_new_turn`。
 - **一回性**：
   - 状態の変更は、「今の status が期待どおり」と version の両方を条件にする。
-  - `activity_at` の更新は version を上げない。
+  - version を上げるのは、状態の変更だけ（Fable の K1）。
+    - `activity_at`、台帳、checkpoint の書込みは version を上げない。
+    - 台帳と checkpoint の書込みの条件は、`execution_owner` が自分、非終端、`checkpoint_step` が今の値より大きいこと（台帳は `tool_call_id` の重複を拒む）。
+    - main の台帳と画面の checkpoint が同じ version を競って、`resumable` が不必要に偽になることを避けるため。
 - **会話ごとの active の制約**：
-  - `chat_session_id` ごとに、active（`running`・`waiting_user`・`finalizing`）の Run は 1 つまで（部分 unique index）。
+  - `chat_session_id` ごとに、active（`running`・`waiting_user`・`waiting_approval`・`finalizing`）の Run は 1 つまで（部分 unique index）。
+    - `waiting_approval` は v1 で使わないが、Gate A で index を作り直さないように、今から入れる（Fable の K3）。
   - 新しい turn の開始と途中再開の claim が競っても、勝つのは 1 つ。
 
 ### DR-A3-3 Interaction
@@ -256,10 +267,13 @@
 
 - **execution_owner**：main の起動ごとの ID（owner ID）。
 - **owner の lock**：
-  - main は、workspace を開いたら、owner ごとの lock file を握る。置き場所は workspace の `.grimodex/agent-run-owners/<owner ID>.lock`（`flock` の排他）。
+  - main は、workspace を開いたら、owner ごとの lock file を握る。置き場所は workspace の `.grimodex/agent-run-owners/<owner ID>.lock`。
+  - lock を握るのは Native。既存の `workspace_lease`（`workspace_lease.rs:63・110`）と同じ Rust の std の `File::try_lock` を使い、main の process の中で file を閉じずに持ち続ける。
   - 順序：lock を握る → owner ID を行に書く。手放すのは、自分の Run を interrupted にした後。
-  - fcntl の lock は close で外れる。そのため、lock の fd は main が閉じずに持ち続ける。
-  - 同期フォルダの上の workspace では、lock が効かないことがある。そのときは回収を行わず、画面に「中断の検出ができない」と出す。
+  - 同期フォルダの上の workspace で、lock が効かないことがある。
+    - 回収は、行の `activity_at` が十分に古い（既定は 24 時間）owner だけに行う。
+    - 画面に「中断の検出が遅れることがある」と出す。
+    - 孤児の行が active の index を塞いで、その会話で新しい turn を始められなくなることを避けるため。
 - **すべての書込みの CAS に `execution_owner` を入れる**（B2）。
 - **束縛**：
   - Run の開始と claim のたびに、main が sender（webContents）と navigation の世代に束縛し直す。束縛は memory に持つ。
@@ -292,10 +306,11 @@
 - **門**（claim の前に、状態を変えずに検査する）：
   - license、AI policy、profile の egress、route と provider が有効なこと、model が使えること。
   - endpoint の識別子が snapshot と同じこと。違えば再開しない（送信先を変えないため）。
-  - 通らないときは、`interrupt_reason` を `resume_gate_failed` にし、理由を画面に出す。回答は消費しない。
+  - 通らないときは、`resume_block_detail` と `resume_blocked_at` だけを書き、理由を画面に出す。status、`interrupt_reason`、回答は変えない。
 - **claim**（門の後に、1 つの tx で行う）：
   - `interrupted` を `running` に変え、`execution_owner` を今の自分にし、sender に束縛し直す。
-  - 回答があるときは、pending の消費と回答の記録も同じ tx で行う。冪等の key をつける。
+  - 回答があるときは、pending の消費と回答の記録も同じ tx で行う。
+  - 冪等の key は、既存の `idempotency_requests` に置く（domain は `agent_run_claim`、Fable の K4）。
   - 勝つのは 1 つ。2 つの窓や 2 つの起動が、同じ Run を取らない。
 - **組み直し**：
   - system prompt と Codex の注入は、今の状態で組み直す。
@@ -321,8 +336,10 @@
   - 冪等の台帳が無い tool（`run_app_command`、`apply_layout_preset`）も再実行しない。AI には「中断で結果が分からない」と返す。
 - **capability の発行**：
   - 再開の後の新しい tool_use は、今どおり、main が受けた provider の応答から発行する。
-  - 台帳の tool_use から発行し直すのは、読む tool の再実行だけ。
-    - 条件は、台帳にあること、引数が台帳の digest と合うこと、policy を確かめ直すこと。
+  - 台帳の tool_use から capability を発行し直す経路は置かない。
+    - capability を使うのは、変更系（14 本）と stage（`propose_scene_body`）の tool だけ（`ipc.ts:237-`、`:1663-1670`）。
+    - 読む tool は capability を使わないので、台帳の `tool_call_id` でそのまま再実行できる。
+  - stage の tool も、変更系と同じく再実行しない。同じ提案を二重に作らないため。台帳で、作られたかだけを照会する。
   - 変更系の承認の後の交換は、Gate A で決める。保存した resolution は、認可の根拠にしない。
 
 ### DR-A3-7 保持と削除（問 15）
@@ -337,10 +354,18 @@
   - 進めたら、新しい turn の開始と同じ tx で、その Run を `discarded`（`superseded_by_new_turn`）にする。preflight で止まったら、破棄も行わない。
   - 再表示した質問に、入力欄から答えた場合：送信でなく回答として扱う（DR-A3-3 の受け口）。
 - 会話と作品の削除では、cascade で消える。
-- **backup**：
-  - 自動の backup の写しでは、slim の段で checkpoint と台帳の列を空にし、`resumable` を偽にする。
-  - 作者が破棄した後も backup に本文が残ることを防ぎ、保持を問 15 の範囲に収めるため。
-  - backup から戻した中断の実行は「続けられない」になる（第 9 節）。
+- **backup とその他の写し**（問 19）：
+  - 対象：アプリが作る DB の写しのすべて。
+    - 自動の backup（slim の段）。
+    - 復元の前の退避（`backup_restore.rs:434-488`）。
+    - migration の前の snapshot（`migration_supervisor.rs:925-944`。今は slim をしない）。
+  - 写しでは、次のものを空にする。
+    - checkpoint と台帳の列、Interaction の `request` と `resolution`。
+    - slim の最後の VACUUM（`lib.rs:277`）の前に置く。そうすれば、本文は物理的にも残らない。
+  - 非終端の行は、`interrupted`（`copied_snapshot`）に倒し、`resumable` を偽（`restored_from_copy`）にする。
+  - 作者が破棄した後も写しに本文が残ることを防ぎ、保持を問 15 の範囲に収めるため。
+  - 写しから戻した中断の実行は「続けられない」になる（第 9 節）。
+  - export（作品の書き出し）に Run の表が入るかは、PR 4 の前に確かめる。入るなら、同じく空にする。
 
 ### DR-A3-8 Mastra の経路
 
@@ -380,11 +405,26 @@
   1. 終端の CAS の代わりに `finalizing` を CAS で取る。勝った側だけが進む。checkpoint は残す。
   2. 勝った画面が、Drizzle で完了の message を保存する。
   3. main が、`completed`（または該当の終端）にして、checkpoint と台帳を消す。
-- 2 の後・3 の前に落ちたとき：
-  - 回収が `finalizing` の Run を見つけ、`origin_user_message_id` の行が保存されているかを見る。
-  - 保存されていれば終端にする。無ければ `interrupted` に戻す。
+- 1 で、予定の終端（`finalizing_target_status`、`finalizing_target_reason`）と、`origin_assistant_message_id` を行に書く（Fable の B1）。
+  - Stop も `finalizing` を通る（`chatTurnStoreActions.ts:1153`）。予定の終端が `cancelled`・`user_stop` になる。
+- 2 の保存は、id で冪等にする（PR 4）。
+  - user の行と assistant の行は、別の step で保存される（`chatTurnPersistence.ts:34-38`）。
+  - 保存を同じ id で何度流しても、結果が同じになるようにする。
+  - assistant の行は、予約の行（`reserved`）が先にあることがある。完了の判定は、id の有無でなく、予約が外れたことで行う。
+- 2 の後・3 の前に落ちたとき、回収が `finalizing` の Run を見つけたら：
+  - 両方の行が完了していれば、予定の終端にする。
+  - そうでなければ、予定の終端が `completed` 系のときは `interrupted`（`resumable` は真のまま）に戻す。再開は、保存の step からやり直す。
+  - 予定の終端が `cancelled` のとき（Stop）は、保存を流し直してから `cancelled` にする。Stop は「再開しない」という作者の意思だから。
+- 同じ起動の中で、`finalizing` の間に画面を失ったとき：main の見張りが、回収と同じ判定を行う。
 - Stop と provider の終端が競っても、`finalizing` を取れるのは 1 つなので、message は一度だけ保存される。
 - 途中再開で完了した turn は、起点の会話の、元の turn の位置に保存する。
+
+### DR-A3-11a PR 4・5 の前に決めること（Fable の第 3 版の懸念）
+
+- 台帳の `mainOwnedProvenanceId`：未発行の行では空にし、発行のときに書き足す。`awaiting_approval` は v1 の予約で、使わない。
+- 台帳の `executionId`・`chatMessageId`：今は画面の auditContext から来る（`ipc.ts:1647-1648`）。main がこれを、Run の行と照合してから台帳に書く。
+- 「owner は生きているが memory に Run が無い」行：interrupted の書込みに失敗した場合や、同じ起動の中で復元した場合に生じる。main が workspace を開くたびに、自分の owner の行を memory と照らす。
+- CLI の Run の回収：`cancelled`（`resume_unsupported`）にする。`interrupted` にはしない。
 
 ### DR-A3-12 受入れの測定
 
@@ -636,6 +676,29 @@ blocker（実装の前に文書を直す）：
   - (2) 台帳の時点への異論を受けて、capability の発行の時点でなく、tool の呼出しを受け取った時点に直した（DR-A3-4、ADR 008 の追補 1）。
 - 第 8 節の「Mastra の担当」の (4) にある「再起動の後の回答は、新しい Run の中で受ける」は、範囲の拡張で置き換わった。今は、同じ Run の再開の中で受ける。
 
+### 第 3 版の Fable の再確認（2026-11-27、888b20e2e を点検）
+
+- 結論：
+  - PR 2 は、列に効く B1・B2 と、K1・K2 を決めれば進めてよい。
+  - 台帳の時点の変更（888b20e2e）は、blocker でない。
+- 第 3 版の後の直し（この commit）：
+  - B1：`finalizing` に予定の終端と assistant の行の id を持たせた。保存は id で冪等にし、回収の判定を定めた（DR-A3-11）。
+  - B2：`not_resumable_reason`、`resume_block_detail`、`resume_blocked_at` を足した。門は status と `interrupt_reason` を変えない。写しの中の非終端の行を倒す値を足した。
+  - K1：version を上げるのは状態の変更だけにした。
+  - K2：AI Audit とのつなぎは `audit_execution_ids` の列にした。
+  - K3：`waiting_approval` を active の index に入れた。
+  - K4：冪等の key は `idempotency_requests` に置く。
+  - PR 4・5 の前の懸念は、DR-A3-11a に書いた。
+  - 写しの 2 経路（復元の前の退避、migration の前の snapshot）も、途中の状態を空にする（DR-A3-7）。
+  - 同期フォルダの上の回収は、古い行に限った。
+  - lock は、Native が Rust の `File::try_lock` で握る。
+- ADR の直し：
+  - ADR 007 の追補 5 を、経路ごとに書き分けた。
+  - ADR 008 の追補は、次のように直した。
+    - 台帳から capability を発行し直す経路を置かない（読む tool は capability を使わない）。
+    - stage の tool を、変更系と同じ扱いにした。
+    - token は保存せず、状態だけを保存する。
+
 ## 9. 画面で見える挙動（ユーザーに見せる）
 
 PR 5 の画面を作る前に、次をユーザーに見せる。
@@ -644,7 +707,7 @@ PR 5 の画面を作る前に、次をユーザーに見せる。
 2. **新しく送るとき**：中断した実行がある会話で、送信・再生成・message の削除・会話の消去をすると、確認が出る。「中断した実行を破棄して進めますか」。
 3. **続けられない場合**（「続けられない」とその理由を出す）：
    - 中断の間に hidden にした項目を、その実行が読んでいた。
-   - backup から戻した。
+   - backup、復元の前の退避、migration の前の snapshot から戻した。
    - 途中の状態を書けなかった。
    - CLI、Codex App Server の実行。
    - 当面の Mastra の経路。
@@ -654,6 +717,7 @@ PR 5 の画面を作る前に、次をユーザーに見せる。
 5. **落ちる直前の生成**：途中まで出ていた出力は消え、最後の切れ目からやり直す。provider への送信と費用は、もう一度かかる。
 6. **実行中だった変更系の tool**：再実行しない。AI には、commit 済みか未実行かを伝える。`run_app_command` などは「結果が分からない」と伝える。
 7. **中断の間に変わった場面や項目**：その結果だけを外して、AI に知らせる。
+8. **同期フォルダの上の workspace**：中断の検出が遅れることがある（最長で既定 24 時間）。
 
 ### 回答（2026-11-27、AskUserQuestion）
 
