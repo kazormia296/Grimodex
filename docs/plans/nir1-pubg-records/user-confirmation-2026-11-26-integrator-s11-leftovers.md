@@ -67,3 +67,19 @@
   - Quick の失敗が observation-prep.test.mjs の祖先の試験（4232 行の assert.ok(isAncestor(master, head))）の 1 件だけで、quick の他の part と ci.yml がすべて success なら、merge してよい。
   - 条件：PR の head が Quick の candidate_base を含むこと（git merge-base --is-ancestor <candidate_base> <head>）。run の ID とこの理由を、PR 本文に書く。
   - それ以外の失敗は、今までどおり merge しない。
+
+## 問 8〜10（2026-11-27 18:56、統合者の AskUserQuestion。SessionTasks〔Release B〕の前提）
+- 経緯：ユーザーの問い（原文）「Session Tasksのblockerは完了しましたか？」→ 統合者の答え：まだ。Release B の前提 4 つ（session-tasks-decisions-2026-11.md の 85 行）のうち、Gate A（A1・A2）は Planned、A3 は Blocked（R1・F0-lite も Planned）、MP-6 は途中、MP-9 は未着手。ユーザーの「聞いてください」で、SessionTasks の担当（grimodex-46）と Mastra の担当（grimodex-57）に聞いた。その答えを添えて伺った。
+- 問 8（原文）：「「SessionTasks の試験」はどれを指しますか？担当 2 人の話では、中身で要る前提が大きく変わります。」
+  - 選択肢：「記憶の保持の測定 (Recommended)」（MP-9 と MP-10 の残りだけ）／「手順と進み具合の試験」（旗 L の read の 21 本に手順を書く tool と保存を足す。Task の保存は schema の版上げ）／「Release B の機能まるごと」（書き換えの承認、連続実行、再起動をまたぐ確認待ち、続行の引き継ぎまで。Gate A、A3、MP-6、MP-9 の 4 つが全部要る。Gate A と A3 は担当がいないので、lane を立てるところから）
+  - 回答：「Release B の機能まるごと」（推奨ではない）
+- 問 9（原文）：「Write-Safety の Gate A（A1・A2：書き込みの承認の境界と、Capability を出す時点）を、SessionTasks（Release B）の前提にしますか？判断記録は「前提」と書いていますが、これは担当が照合レビューの指摘を受けて足したものです。あなたが選んだ文（「Gate だけ飛ばす」）には入っていません。」
+  - 選択肢：「前提にする、担当は Mastra (Recommended)」（触る code が MP-6 とほぼ同じなので、Mastra の lane が MP-6 の後に続けて持つ。authority の変更なので、設計ができたら改めて伺う）／「前提にする、新しい lane で」／「前提から外す」
+  - 回答：「前提にする、担当は Mastra (Recommended)」
+- 問 10（原文）：「Release A の A3（確認待ちを会話の外に保存する durable AgentRun。前提の R1・F0-lite を含む）を、どうしますか？担当がいません。今の「回答待ちを保存しない」という決め事（DR-MP5-11）を変えることになり、保存の範囲も広がります。」
+  - 選択肢：「今は立てない (Recommended)」／「新しい lane で起案だけ」／「新しい lane で実装まで」（起案から実装まで進める。保存の範囲の拡大と DR-MP5-11 の変更は、起案の段で伺う）
+  - 回答：「新しい lane で実装まで」（推奨ではない）
+- 効力：
+  - SessionTasks は Release B の機能まるごとを目指す。前提は 4 つとも要る。
+  - Gate A（A1・A2）は Release B の前提として確定した（判断記録の (a) が解けた）。担当は Mastra の lane で、MP-6 の後に続けて持つ。authority の変更なので、設計ができたらユーザーに伺う。
+  - A3（R1・F0-lite を含む）は、新しい lane が実装まで持つ。保存の範囲の拡大と DR-MP5-11 の変更は、起案の段でユーザーに伺う（委任の外）。引き継ぎは fusion-eval-data/handoff/a3-durable-agentrun-handoff-20261127.md。
