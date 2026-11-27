@@ -160,24 +160,26 @@
 | 2   | `LanguageModelV4` adapter（B′。3 provider）と parity 試験                     | main                  | -    | revert                  |
 | 3   | loop の骨格（tool 0・memory 0）、gate L、lifecycle、audit owner、typed IPC    | renderer、IPC、main   | L 閉 | revert                  |
 | 4   | tool 基盤、loop 規則の同値移植、read tool の main 化                          | main、（N-API）       | L 閉 | revert                  |
-| 5   | main→renderer の RPC と UI tool（7 本。help 2 本を含む）                      | renderer、IPC、main   | L 閉 | revert                  |
-| 6   | write tool、capability、write 後処理                                          | main、renderer        | L 閉 | revert                  |
-| 7   | **schema の migration**、Rust の memory 書込み、N-API `memory_*`、D2a 台帳    | Rust、N-API、main     | M 閉 | **schema は戻らない**   |
-| 8   | TS の storage／vector adapter、`MemoryRuntimeOwner`、実 Mastra の呼び順の観測 | main                  | M 閉 | revert（schema は残る） |
-| 9   | 履歴の持ち主と保存の main への移動                                            | renderer、main        | M 閉 | revert                  |
-| 10  | 背景 LLM の route 4 本、embedding、OM 構成                                    | main、N-API、registry | M 閉 | revert                  |
+| 5   | main→renderer の RPC と UI tool（7 本。help 2 本を含む）— 完了（#1157・#1160・#1161・#1164・#1168） | renderer、IPC、main   | L 閉 | revert                  |
+| 6   | write tool、capability、write 後処理 — 実装中（PR①〜③：#1170・#1189・#1190。残り 2 tool と renderer の完了処理） | main、renderer        | L 閉 | revert                  |
+| 7   | **schema の migration**、Rust の memory 書込み、N-API `memory_*`、D2a 台帳 — 完了（schema 47、#1173・#1175・#1178） | Rust、N-API、main     | M 閉 | **schema は戻らない**   |
+| 8   | TS の storage／vector adapter、`MemoryRuntimeOwner`、実 Mastra の呼び順の観測 — 完了（#1184・#1194） | main                  | M 閉 | revert（schema は残る） |
+| 9   | 履歴の持ち主と保存の main への移動 — 着手（判断 #1182、実装中）              | renderer、main        | M 閉 | revert                  |
+| 10  | 背景 LLM の route 4 本、embedding、OM 構成 — 実装中（route #1180・#1183、N-API #1187。OM 構成） | main、N-API、registry | M 閉 | revert                  |
 | 11  | lifecycle（closure、quit、削除時の purge）、`T_quit`                          | main、Rust            | M 閉 | revert                  |
 | 12  | 設定・WM の UI・開示・consent                                                 | renderer、IPC、main   | M 閉 | revert                  |
 | 13  | **旗を開ける**（13a：L、13b：M）、P11 の確定、公開前の検査                    | 全層                  | 開   | engine 設定             |
 | 14  | legacy 経路の撤去                                                             | -                     | -    | この計画の外            |
 
 依存の骨格：1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11 → 12 → 13。
+状態・順序の更新（master、2026-11-27）：2026-11-26 の決定で MP-7〜MP-10 は MP-5 と並行し、U-10・U-11・U-12 は回答済み。目的欄は取り下げ済み（MP-9 範囲参照）。Gate A（A1・A2）は Mastra lane が MP-6 の後に持ち、A3 は別 lane（2026-11-27 決定）。MP-5 は #1157・#1160・#1161・#1164・#1168 で完了。MP-6 は PR①〜③（#1170・#1189・#1190）まで実装中で、`propose_scene_body`・`apply_ai_tree_plan` と renderer の完了処理が残る。4c-2 は #1185 で準備、PR①は実装中。
+
 ただし 13a（旗 L）は、MP-6 の後に前倒しできる（schema の変更を伴わない）。
 
 - MP-7 を MP-6 の後に置く理由：
   - L だけで出荷できる地点（MP-6 の後）が持てる。schema の変更を伴わない。
   - 一方向の変更の前に、移行をやめる判断が安く下せる（第 10 節）。
-- MP-7 以降は、L の journey が緑になってから着手する。
+- MP-7 以降は、2026-11-26 の決定により MP-5 と並行して着手する（状態更新。下記の設計条件は維持）。
 
 ## 6. 各 PR
 
