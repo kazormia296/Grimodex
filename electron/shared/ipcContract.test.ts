@@ -7393,6 +7393,10 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "get_global_settings",
       "get_license_state",
       "get_narrative_backfill_status",
+      "identity_correction_rule_create",
+      "identity_correction_rule_retire",
+      "identity_correction_rule_supersede",
+      "identity_correction_rules_list",
       "ime_export_clear_all",
       "ime_export_get_status",
       "ime_export_refresh",
@@ -9543,6 +9547,187 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       if (!env.ok) expect(env.error).toContain("baseVersion");
     },
   );
+
+  it("identity correction rules map strict writes and current-list reads", async () => {
+    const row = { id: "rule-revision-1", project_id: "p1", reason: "spelling" };
+    const create = vi.fn(async () => JSON.stringify(row));
+    const supersede = vi.fn(async () => JSON.stringify(row));
+    const retire = vi.fn(async () => JSON.stringify(row));
+    const list = vi.fn(async () => JSON.stringify([row]));
+    const { backend } = fakeBackend({
+      identityCorrectionRuleCreate: create,
+      identityCorrectionRuleSupersede: supersede,
+      identityCorrectionRuleRetire: retire,
+      identityCorrectionRulesList: list,
+    });
+    const fields = {
+      kind: "must-link-surface",
+      scopeKind: "any",
+      surfaceText: "Mika",
+      entryId: "entry-1",
+    };
+    const createPayload = {
+      ...mutationIdentity("rule-create"),
+      sessionId: "writer-session",
+      writerSessionId: "writer-session",
+      fields,
+      context: { sessionId: "writer-session" },
+    };
+
+    expect(
+      await dispatchInvoke(
+        "identity_correction_rule_create",
+        { payload: createPayload },
+        { backend, shell: noShell },
+      ),
+    ).toEqual({ ok: true, value: row });
+    expect(
+      await dispatchInvoke(
+        "identity_correction_rule_supersede",
+        {
+          previousRevisionId: "rule-revision-1",
+          payload: {
+            ...createPayload,
+            ...mutationIdentity("rule-supersede"),
+            sessionId: "writer-session",
+          },
+        },
+        { backend, shell: noShell },
+      ),
+    ).toEqual({ ok: true, value: row });
+    const retirePayload = {
+      ...mutationIdentity("rule-retire"),
+      sessionId: "writer-session",
+      writerSessionId: "writer-session",
+      previousRevisionId: "rule-revision-2",
+      context: { sessionId: "writer-session" },
+    };
+    expect(
+      await dispatchInvoke(
+        "identity_correction_rule_retire",
+        { payload: retirePayload },
+        { backend, shell: noShell },
+      ),
+    ).toEqual({ ok: true, value: row });
+    expect(
+      await dispatchInvoke(
+        "identity_correction_rules_list",
+        { projectId: "p1" },
+        { backend, shell: noShell },
+      ),
+    ).toEqual({ ok: true, value: [row] });
+
+    expect(create).toHaveBeenCalledWith(createPayload);
+    expect(supersede).toHaveBeenCalledWith(
+      "rule-revision-1",
+      expect.objectContaining({ fields }),
+    );
+    expect(retire).toHaveBeenCalledWith(retirePayload);
+    expect(list).toHaveBeenCalledWith("p1");
+  });
+
+  it.each([
+    "identity_correction_rule_create",
+    "identity_correction_rule_supersede",
+    "identity_correction_rule_retire",
+  ] as const)("%s rejects a mismatched context sessionId", async (command) => {
+    const create = vi.fn(async () => "{}");
+    const supersede = vi.fn(async () => "{}");
+    const retire = vi.fn(async () => "{}");
+    const { backend } = fakeBackend({
+      identityCorrectionRuleCreate: create,
+      identityCorrectionRuleSupersede: supersede,
+      identityCorrectionRuleRetire: retire,
+    });
+    const payload = {
+      ...mutationIdentity(command),
+      sessionId: "writer-session",
+      writerSessionId: "writer-session",
+      context: { sessionId: "different-session" },
+      ...(command === "identity_correction_rule_retire"
+        ? { previousRevisionId: "rule-revision-1" }
+        : { fields: { kind: "must-link-surface", scopeKind: "any" } }),
+    };
+    const args =
+      command === "identity_correction_rule_supersede"
+        ? { previousRevisionId: "rule-revision-1", payload }
+        : { payload };
+    const result = await dispatchInvoke(command, args, {
+      backend,
+      shell: noShell,
+    });
+
+    expect(result).toMatchObject({ ok: false });
+    if (!result.ok) expect(result.error).toContain("context.sessionId");
+    expect(create).not.toHaveBeenCalled();
+    expect(supersede).not.toHaveBeenCalled();
+    expect(retire).not.toHaveBeenCalled();
+  });
+
+  it("identity correction rules reject invalid and unknown nested arguments", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = {
+      ...mutationIdentity("rule-invalid"),
+      fields: {
+        kind: "must-link-surface",
+        scopeKind: false,
+      },
+      context: { sessionId: "writer-session" },
+    };
+    const invalid = await dispatchInvoke(
+      "identity_correction_rule_create",
+      { payload },
+      { backend, shell: noShell },
+    );
+    const unknownPayload = await dispatchInvoke(
+      "identity_correction_rule_create",
+      { payload: { ...payload, unexpected: "no" } },
+      { backend, shell: noShell },
+    );
+    const unknownField = await dispatchInvoke(
+      "identity_correction_rule_create",
+      {
+        payload: {
+          ...payload,
+          fields: { kind: "must-link-surface", scopeKind: "any", extra: true },
+        },
+      },
+      { backend, shell: noShell },
+    );
+    const unknownContext = await dispatchInvoke(
+      "identity_correction_rule_create",
+      {
+        payload: {
+          ...payload,
+          fields: { kind: "must-link-surface", scopeKind: "any" },
+          context: { sessionId: "writer-session", extra: true },
+        },
+      },
+      { backend, shell: noShell },
+    );
+    const unknownListArg = await dispatchInvoke(
+      "identity_correction_rules_list",
+      { projectId: "p1", unexpected: true },
+      { backend, shell: noShell },
+    );
+    expect(invalid).toMatchObject({ ok: false });
+    expect(unknownPayload).toMatchObject({ ok: false });
+    expect(unknownField).toMatchObject({ ok: false });
+    expect(unknownContext).toMatchObject({ ok: false });
+    expect(unknownListArg).toMatchObject({ ok: false });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("identity correction rules report backend unavailable for an older binding", async () => {
+    const { backend } = fakeBackend();
+    const result = await dispatchInvoke(
+      "identity_correction_rules_list",
+      { projectId: "p1" },
+      { backend, shell: noShell },
+    );
+    expect(result).toMatchObject({ ok: false });
+    if (!result.ok) expect(result.error).toContain("IPC_BACKEND_UNAVAILABLE");
+  });
 
   // ── foreshadow 20 コマンド（Phase 3 バッチ1） ──────────────────────────
   it("foreshadow_create / update / delete: payload・id+patch 写像、unit→null", async () => {

@@ -809,6 +809,39 @@ describe("externalWriteFeed pollTick resilience", () => {
     expect(getExternalWriteCursorForTest()).toBe(0);
   });
 
+  it("skips an identity-correction row without blocking later feed updates", async () => {
+    registerExternalWriteProjectors({
+      reloadForeshadows: (projectId) => h.loadForeshadows(projectId),
+      bumpChronicleRevision: () => h.bumpChronicle(),
+      reloadPlotThreads: (projectId) => h.loadPlot(projectId),
+      reloadLabels: (projectId) => h.loadLabels(projectId),
+    });
+    await processExternalEventsForTest([], "p1");
+    h.loadCodex.mockClear();
+    h.dbResponses.push([
+      ev({
+        sequence: 1,
+        domain: "identity-correction",
+        opType: "rule.revise",
+        sceneId: null,
+        payload: JSON.stringify({
+          ruleRevisionId: "r1",
+          kind: "must-link-surface",
+        }),
+      }),
+      ev({
+        sequence: 2,
+        domain: "codex",
+        entityType: "codex_entry",
+        entityId: "after-identity-correction",
+      }),
+    ]);
+
+    await expect(pollExternalWritesForTest()).resolves.toBeUndefined();
+    expect(h.loadCodex).toHaveBeenCalledTimes(1);
+    expect(getExternalWriteCursorForTest()).toBe(2);
+  });
+
   // DA-2b (Negative (11); DR-DA2-29 P3-5, DR-DA2B-R5): the change_events read
   // is an own-data-read; its D2a refusal is temporary from activation stage 2
   // to 7. The poll keeps its cursor and retries a bounded number of times,

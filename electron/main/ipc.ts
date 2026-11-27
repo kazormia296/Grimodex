@@ -177,6 +177,13 @@ const HUMAN_ONLY_CANONICAL_WRITER_COMMANDS = new Set([
   "foreshadow_save_anchors_for_scene",
 ]);
 
+// These immutable revisions are human-only but never create undo journals.
+const IDENTITY_CORRECTION_RULE_WRITER_COMMANDS = new Set([
+  "identity_correction_rule_create",
+  "identity_correction_rule_supersede",
+  "identity_correction_rule_retire",
+]);
+
 // `sessionId` remains the renderer recorder/writer correlation identity. The
 // External Write Feed compares change_events.session_id with that value, so
 // replacing it here would make a successful self-write look external and
@@ -1995,6 +2002,10 @@ function authorityRouteForRendererCommand(
     ]);
   }
 
+  if (IDENTITY_CORRECTION_RULE_WRITER_COMMANDS.has(cmd)) {
+    return payload.origin === "human" ? "human-direct" : undefined;
+  }
+
   if (HUMAN_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd)) {
     return payload.origin === "human" ? "human-direct" : undefined;
   }
@@ -2051,6 +2062,7 @@ export function bindRendererAuthorityForIpc(
       CODEX_RENDERER_COMMANDS.has(cmd) ||
       RENDERER_CHRONICLE_COMMANDS.has(cmd) ||
       HUMAN_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd) ||
+      IDENTITY_CORRECTION_RULE_WRITER_COMMANDS.has(cmd) ||
       AGENT_AUTHORITY_COMMANDS.has(cmd) ||
       cmd === "foreshadow_create" ||
       cmd === "foreshadow_update" ||
