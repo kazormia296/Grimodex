@@ -3826,10 +3826,39 @@ pub(crate) mod tests {
             );",
         )
         .unwrap();
+        add_import_record_tables(&conn);
         // Chronicle cascade tests need FK enforcement (ON DELETE CASCADE);
         // production open_db enables it. The other tests are FK-agnostic.
         conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
         conn
+    }
+
+    /// Every event deletion reads the import records (SRD/1 X). Take their
+    /// definitions from the real schema so this fixture cannot drift.
+    fn add_import_record_tables(conn: &Connection) {
+        let current = grimodex_db::Database::new(std::path::Path::new(":memory:")).unwrap();
+        current.migrate().unwrap();
+        current
+            .with_conn(|source| {
+                for table in [
+                    "narrative_extraction_runs",
+                    "narrative_proposal_sets",
+                    "narrative_proposals",
+                    "narrative_proposal_revisions",
+                    "narrative_proposal_decisions",
+                    "narrative_apply_commits",
+                    "narrative_proposal_applications",
+                ] {
+                    let sql: String = source.query_row(
+                        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                        [table],
+                        |row| row.get(0),
+                    )?;
+                    conn.execute_batch(&sql)?;
+                }
+                Ok(())
+            })
+            .unwrap();
     }
 
     fn insert_project(conn: &Connection, id: &str, title: &str) {

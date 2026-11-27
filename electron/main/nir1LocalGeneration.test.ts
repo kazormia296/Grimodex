@@ -16,7 +16,7 @@ import {
   type NapiBackendLike,
   type SecretsResolver,
 } from "../shared/ipcContract.js";
-import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
+import { nativeSqlPolicyV3 } from "./d2aSqlPolicyFixture.js";
 import { createKeyStore, type SafeStorageLike } from "./keyStore.js";
 import {
   createNir1LocalGenerationRoute,
@@ -193,7 +193,7 @@ function status(restricted: boolean) {
     restricted,
     handlesInvalidated: restricted,
     inFlightStopped: true,
-    sqlPolicy: nativeSqlPolicyV2(),
+    sqlPolicy: nativeSqlPolicyV3(),
   };
 }
 

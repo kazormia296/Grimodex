@@ -697,6 +697,22 @@ pub struct NarrativeMaintenanceInboxListPayload {
     pub project_id: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NarrativeMaintenanceHealthSummaryPayload {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NarrativeMaintenanceStaleProposalScenesPayload {
+    pub project_id: String,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u64>,
+}
+
 // ─────────────────────── Gate C2 Run Kind Policy IPC ───────────────────
 // Wire payloads for the five named operations
 // (`policies/narrative/narrative-run-kind-policy.json`'s `apiSplit`)

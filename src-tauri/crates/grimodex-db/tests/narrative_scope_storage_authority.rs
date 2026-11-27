@@ -1007,6 +1007,68 @@ fn assert_restore_runs_inside_the_create_transaction(hit: &Hit, sources: &[Sourc
     );
 }
 
+/// SRD/1 §5 0 (e): the closed set of entries that remove events. Outside X:
+/// `workspace.backup.restore` and `workspace.recovery.restore` (Safe Mode)
+/// replace the whole database file, so decisions revert together with events
+/// and neither appears below.
+#[test]
+fn event_removal_sql_and_cascade_callers_are_accounted_for() {
+    let sources = load_production_sources(&repo_root());
+    let mut actual = scan_table_hits(&sources, &["events"])
+        .into_iter()
+        .filter(|hit| hit.verb_table == "DELETE events")
+        .map(|hit| (hit.file, hit.function))
+        .collect::<Vec<_>>();
+    let mut expected = vec![
+        ("grimodex-db/src/agent_writes.rs", "delete_event_cascade"),
+        ("grimodex-db/src/agent_writes.rs", "delete_event_cascade"),
+        (
+            "grimodex-db/src/agent_writes.rs",
+            "agent_event_delete_with_request_and_authority_impl",
+        ),
+        (
+            "grimodex-db/src/project_snapshots.rs",
+            "apply_project_snapshot_restore",
+        ),
+        // Legacy MCP helper. The standalone tool dispatches to the shared single delete.
+        ("grimodex-mcp/src/db.rs", "chronicle_delete_event"),
+    ]
+    .into_iter()
+    .map(|(path, name)| (format!("src-tauri/crates/{path}"), name.to_owned()))
+    .collect::<Vec<_>>();
+    expected.sort();
+    actual.sort();
+    assert_eq!(actual, expected);
+
+    let mut callers = Vec::new();
+    for source in &sources {
+        for (index, line) in source.lines.iter().enumerate() {
+            assert!(
+                !line.contains("chronicle_delete_event(")
+                    || line.contains("fn chronicle_delete_event("),
+                "legacy MCP deletion bypasses existence sync at {}:{}",
+                source.path,
+                index + 1
+            );
+            if line.contains("delete_event_cascade(") && !line.contains("fn delete_event_cascade(")
+            {
+                callers.push(enclosing_function(&source.lines, index).unwrap().1);
+            }
+        }
+    }
+    callers.sort();
+    assert_eq!(
+        callers,
+        [
+            "agent_chronicle_bulk_mutate_with_authority_impl",
+            "apply_event_redo_in_tx",
+            "replay_chronicle_bulk_in_tx",
+            "revert_event_undo_in_tx",
+            "undo_one_entity",
+        ]
+    );
+}
+
 #[test]
 fn scope_writer_coverage_manifest_is_complete() {
     let root = repo_root();
@@ -1462,6 +1524,35 @@ fn chronicle_event_write_inventory() {
         );
     }
     assert_eq!(actual, expected);
+}
+
+/// SRD/1 X3: Proposal decisions are appended only by these functions. Of them,
+/// only `append_event_existence_decisions_in_tx` may append after an Application.
+#[test]
+fn proposal_decision_writer_inventory() {
+    let sources = load_production_sources(&repo_root());
+    let mut actual = count_hits(&scan_table_hits(
+        &sources,
+        &["narrative_proposal_decisions"],
+    ));
+    actual.retain(|(_, _, verb_table), _| verb_table.starts_with("INSERT "));
+    let expected: BTreeMap<_, _> = [
+        "append_decision_on_conn_with_reuse",
+        "append_event_existence_decisions_in_tx",
+    ]
+    .into_iter()
+    .map(|function| {
+        (
+            (
+                "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs".to_string(),
+                function.to_string(),
+                "INSERT narrative_proposal_decisions".to_string(),
+            ),
+            1,
+        )
+    })
+    .collect();
+    assert_eq!(actual, expected, "{}", describe(&actual));
 }
 
 #[test]

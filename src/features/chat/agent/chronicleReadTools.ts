@@ -4,14 +4,19 @@ import {
   type ChronicleReadToolName,
 } from "@/../electron/shared/readDomain/core/chronicleReadExecutors";
 import { CoreProjectRequiredError } from "@/../electron/shared/mastraRead/ports";
-import { LEGACY_CHRONICLE_READ_CONTEXT } from "./chronicleReadContext";
+import {
+  createLegacyChronicleReadContext,
+  LEGACY_CHRONICLE_READ_CONTEXT,
+} from "./chronicleReadContext";
+import type { ChatToolRunContext } from "./chatTurnToolScope";
+import type { AgentToolAuthorization } from "./agentTypes";
 import type { ToolResult } from "./agentTypes";
 
 /**
  * renderer の年表 read tool 4 本の薄い層（MP-4b PR-7a、DR-MP4-37）。本体は共有 core
  * （`electron/shared/readDomain/core/chronicleTools.ts`）にあり、ここは renderer の ports
- * （`chronicleReadContext.ts`）を渡して、project が無いときの core の throw を従来の
- * `No active project` の結果に戻すだけ。
+ * （`chronicleReadContext.ts`）を渡し、turn context の scene を固定する。project が無いときの core の
+ * throw は従来の `No active project` の結果に戻す。
  */
 type ToolReturn = Omit<ToolResult, "toolCallId">;
 
@@ -36,9 +41,23 @@ export const CHRONICLE_NO_PROJECT_CONTENT: Record<
 
 function chronicleReadExecutor(
   name: ChronicleReadToolName,
-): (params: Record<string, unknown>) => Promise<ToolReturn> {
-  const run = CHRONICLE_EXECUTORS[name];
-  return async (params) => {
+): (
+  params: Record<string, unknown>,
+  requestId?: string,
+  authorization?: AgentToolAuthorization,
+  context?: ChatToolRunContext,
+) => Promise<ToolReturn> {
+  return async (params, _requestId, _authorization, context) => {
+    const currentSceneId =
+      context?.currentSceneId !== undefined
+        ? context.currentSceneId
+        : context?.scope?.currentSceneId;
+    const run =
+      currentSceneId === undefined
+        ? CHRONICLE_EXECUTORS[name]
+        : createChronicleReadExecutors(
+            createLegacyChronicleReadContext(currentSceneId),
+          )[name];
     try {
       return await run(params);
     } catch (e) {

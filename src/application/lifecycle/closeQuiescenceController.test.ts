@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCloseQuiescenceController } from "./closeQuiescenceController";
 import {
+  confirmStopActiveTurn,
+  useChatStopConfirmStore,
+} from "./chatStopConfirm";
+import { registerActiveTurnStopper } from "@/lib/activeTurnStopRegistry";
+import {
   acquireQuiescenceLease,
   _resetQuiescenceLeasesForTests,
   canScheduleQuiescenceMutation,
@@ -25,6 +30,8 @@ import {
 } from "./quiescenceDiagnostics";
 
 afterEach(() => {
+  useChatStopConfirmStore.getState().request?.answer(false);
+  registerActiveTurnStopper({ isActive: () => false, stop: () => {} });
   _resetQuiescenceLeasesForTests();
   _resetTimelapseGenesisBarriersForTests();
   publishCurrentProjectId(null);
@@ -33,6 +40,113 @@ afterEach(() => {
 });
 
 describe("createCloseQuiescenceController", () => {
+  it("asks again after a declined close without flushing or closing", async () => {
+    registerActiveTurnStopper({ isActive: () => true, stop: vi.fn() });
+    const flush = vi.fn(async () => {});
+    const close = vi.fn(async () => {});
+    const confirmClose = vi.fn(() => confirmStopActiveTurn("close"));
+    const controller = createCloseQuiescenceController({
+      hasImmediateVeto: () => false,
+      confirmClose,
+      flush,
+      close,
+      onFailure: vi.fn(),
+    });
+
+    controller.handleCloseRequest({ preventDefault: vi.fn() });
+    const firstRequest = useChatStopConfirmStore.getState().request;
+    expect(firstRequest?.kind).toBe("close");
+    firstRequest?.answer(false);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(flush).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
+    controller.handleCloseRequest({ preventDefault: vi.fn() });
+    expect(confirmClose).toHaveBeenCalledTimes(2);
+    expect(useChatStopConfirmStore.getState().request).not.toBe(firstRequest);
+    useChatStopConfirmStore.getState().request?.answer(false);
+  });
+
+  it("stops before flush and close and ignores a duplicate request while confirming", async () => {
+    const order: string[] = [];
+    let active = true;
+    registerActiveTurnStopper({
+      isActive: () => active,
+      stop: vi.fn(() => {
+        order.push("stop");
+        active = false;
+      }),
+    });
+    const flush = vi.fn(async () => {
+      order.push("flush");
+    });
+    const close = vi.fn(async () => {
+      order.push("close");
+    });
+    const confirmClose = vi.fn(() => confirmStopActiveTurn("close"));
+    const controller = createCloseQuiescenceController({
+      hasImmediateVeto: () => false,
+      confirmClose,
+      flush,
+      close,
+      onFailure: vi.fn(),
+    });
+
+    controller.handleCloseRequest({ preventDefault: vi.fn() });
+    const request = useChatStopConfirmStore.getState().request;
+    controller.handleCloseRequest({ preventDefault: vi.fn() });
+    expect(confirmClose).toHaveBeenCalledOnce();
+    expect(useChatStopConfirmStore.getState().request).toBe(request);
+
+    request?.answer(true);
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(order).toEqual(["stop", "flush", "close"]);
+  });
+
+  it("does not close when a pending confirmation is accepted after cancel", async () => {
+    registerActiveTurnStopper({ isActive: () => true, stop: vi.fn() });
+    const flush = vi.fn(async () => {});
+    const close = vi.fn(async () => {});
+    const confirmClose = vi.fn(() => confirmStopActiveTurn("close"));
+    const controller = createCloseQuiescenceController({
+      hasImmediateVeto: () => false,
+      confirmClose,
+      flush,
+      close,
+      onFailure: vi.fn(),
+    });
+
+    controller.handleCloseRequest({ preventDefault: vi.fn() });
+    const request = useChatStopConfirmStore.getState().request;
+    controller.cancel();
+    request?.answer(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(flush).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it("starts immediately without a confirmation when no turn is active", async () => {
+    registerActiveTurnStopper({ isActive: () => false, stop: vi.fn() });
+    const confirmClose = vi.fn(() => confirmStopActiveTurn("close"));
+    const close = vi.fn(async () => {});
+    const controller = createCloseQuiescenceController({
+      hasImmediateVeto: () => false,
+      confirmClose,
+      flush: vi.fn(async () => {}),
+      close,
+      onFailure: vi.fn(),
+    });
+
+    controller.handleCloseRequest({ preventDefault: vi.fn() });
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+
+    expect(confirmClose).toHaveBeenCalledOnce();
+    expect(useChatStopConfirmStore.getState().request).toBeNull();
+  });
+
   it("cancels a slow-genesis prelude without leaking mutation admission or a late lease", async () => {
     publishCurrentProjectId("project-slow");
     const genesis = beginTimelapseGenesisBarrier("project-slow");

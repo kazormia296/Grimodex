@@ -98,7 +98,8 @@
         "narrative_extraction_list_chronicle_task_resume_candidates",
         "narrative_extraction_get_run_review_bundle",
         "narrative_extraction_get_commit_status",
-        "narrative_extraction_list_scene_proposals"
+        "narrative_extraction_list_scene_proposals",
+        "narrative_extraction_list_redecidable_proposals"
       ]
     }
   },
@@ -1226,6 +1227,35 @@
       "canonical": null
     },
     {
+      "id": "narrative.proposal.reapprove-applied-proposals",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "The author's reapproval records a human decision for an applied proposal whose prior approval was invalidated after its Chronicle event disappeared; this is authority metadata and does not emit a domain Feed transaction.",
+      "exclusionReason": "authority-metadata",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/reapproval.rs",
+        "symbol": "narrative_extraction_reapprove_applied_proposals"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_extraction_reapprove_applied_proposals",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_extraction_reapprove_applied_proposals",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.authority"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
       "id": "narrative.proposal.revise-and-decide",
       "authorityRoute": "interpreter-projection",
       "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
@@ -1673,6 +1703,18 @@
       "id": "codex.tags.set.renderer",
       "authorityRoute": "human-direct",
       "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        },
+        {
+          "authorityRoute": "import-apply",
+          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["import-session","import-review"]
+        }
+      ],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Codex or Snippet tag changes affect context selection and derived artifact dependencies.",
@@ -2108,7 +2150,8 @@
         "codex.entry",
         "codex.relation",
         "codex.phase",
-        "codex.detail"
+        "codex.detail",
+        "narrative.authority"
       ],
       "scope": "project",
       "requiredIdentities": [
@@ -2649,6 +2692,23 @@
         "transactionId"
       ],
       "canonical": { "origin": "renderer", "opType": "foreshadow.create" }
+    },
+    {
+      "id": "identity-correction.rule.revise.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Rule revisions keep sensitive correction data out of Change Feed rows while invalidating by rule id.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/identity_correction.rs",
+        "symbol": "create_rule_revision"
+      },
+      "routes": [],
+      "writerIds": ["identity-correction.rule-revision"],
+      "scope": "project",
+      "requiredIdentities": ["projectId", "requestId", "sessionId", "eventUid", "transactionId"],
+      "canonical": { "origin": "renderer", "opType": "rule.revise" }
     },
     {
       "id": "foreshadow.update.renderer",
@@ -3349,7 +3409,7 @@
       "reason":"Human/import/history/restore Chronicle event deletion uses an explicit renderer command and the shared cascade writer.",
       "implementation":{"module":"src-tauri/crates/grimodex-db/src/agent_writes.rs","symbol":"agent_event_delete_impl"},
       "routes":[{"surface":"electron-ipc","name":"event_delete","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"event_delete","module":"electron/native/grimodex-node/src/lib.rs"}],
-      "writerIds":["chronicle.event"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"event.delete"}
+      "writerIds":["chronicle.event","narrative.authority"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"event.delete"}
     },
     {
       "id": "chronicle.bulk.renderer",
@@ -3365,7 +3425,7 @@
       "reason":"Human/import/history/restore Chronicle bulk mutations use an explicit renderer command and one shared transaction writer.",
       "implementation":{"module":"src-tauri/crates/grimodex-db/src/chronicle_bulk.rs","symbol":"agent_chronicle_bulk_mutate_impl"},
       "routes":[{"surface":"electron-ipc","name":"chronicle_bulk_mutate","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"chronicle_bulk_mutate","module":"electron/native/grimodex-node/src/lib.rs"}],
-      "writerIds":["chronicle.event","tree.node"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"chronicle.bulk"}
+      "writerIds":["chronicle.event","tree.node","narrative.authority"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"chronicle.bulk"}
     },
     {
       "id": "chronicle.event.participants.renderer",
@@ -3730,7 +3790,8 @@
         "codex.entry",
         "codex.relation",
         "codex.phase",
-        "codex.detail"
+        "codex.detail",
+        "narrative.authority"
       ],
       "scope": "project",
       "requiredIdentities": [
@@ -3917,7 +3978,7 @@
           "module": "electron/native/grimodex-node/src/lib.rs"
         }
       ],
-      "writerIds": ["chronicle.event"],
+      "writerIds": ["chronicle.event", "narrative.authority"],
       "scope": "project",
       "requiredIdentities": [
         "projectId",
@@ -3957,7 +4018,7 @@
           "module": "electron/native/grimodex-node/src/lib.rs"
         }
       ],
-      "writerIds": ["chronicle.event", "tree.node"],
+      "writerIds": ["chronicle.event", "tree.node", "narrative.authority"],
       "scope": "project",
       "requiredIdentities": [
         "projectId",
@@ -4527,7 +4588,7 @@
           "module": "src-tauri/crates/grimodex-mcp/src/server.rs"
         }
       ],
-      "writerIds": ["chronicle.event"],
+      "writerIds": ["chronicle.event", "narrative.authority"],
       "scope": "project",
       "requiredIdentities": [
         "projectId",

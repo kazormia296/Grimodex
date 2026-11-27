@@ -315,3 +315,11 @@ NIR統合、並列root Run、WorkPlanとのschema対応、複数window／device�
 画像はこの議論で提供された15枚の旧プロトタイプであり、実装済み機能、正しいstate遷移、
 現行のセキュリティ／Scope／Freshness契約の証拠ではない。
 特に旧Lensの重ね表示、外周フレーム、SAFE判定、古い結果のfallback説明はそのまま採用しない。
+
+## 追補（2026-11-26）：SessionTask の完了の方針、目的・制約の欄、Decision Gate A（DR-ST-3・6・9）
+
+判断の経緯は [SessionTasks の判断記録](../plans/session-tasks-decisions-2026-11.md)。DR-ST-3・6 は利用者の構造化質問への回答、DR-ST-9 は利用者の直接の回答（2026-11-26）による。本文は変えず、次の点だけを置き換える。
+
+1. **「初期のplain-text criterion、manual／agent_proposes、Evidence linkという割り切りを維持する。」**（§1）SessionTask の手順の完了は、本文などの書き換え（ADR 008 の `mutate`・`destructive`）を伴わないものは、Agent が `done` にできる。作者は後から戻せる。`mutate` は ADR 008 の承認（Task Grant の範囲か個別の承認）、`destructive` は毎回の個別承認を経て `done` になる。plain-text criterion（手順ごとに任意）と Evidence link の割り切りは維持する（DR-ST-3）。
+2. **「SessionTaskは、会話の圧縮、モデル変更、retryによって目的・制約・未完了事項が失われないための基盤である。」**（§1）SessionTask は、未完了事項（手順と進み具合）と確認待ちが失われないための基盤とする。作者が書く会話ごとの目的・制約の欄と、要約から独立して注入する SessionTask の Task Contract は作らない（DR-ST-9）。プロジェクト側 Work の目的・制約・受け入れ条件（§1 の後段、Work 基本情報の行、W08）は変えない。本文の「Task Contractを会話要約だけに依存させない」と Consequences の「Task contract」は Work 側（Work 基本情報）を指し、SessionTask には当てはめない。
+3. **「本ADRはADR 007のGlobal Task ManagerをRelease Aの前提にしない方針と、既存Decision Gateを維持する。」**（Consequences）Release B は Decision Gate A を待たない（DR-ST-6）。他の Decision Gate と、Global Task Manager を Release A の前提にしない方針は維持する。Authority / related decisions の「既存Gateの完了やRelease順の前倒しを意味しない」は、Release B と Decision Gate A については、Roadmap と ADR 007 の同日の追補に従う。

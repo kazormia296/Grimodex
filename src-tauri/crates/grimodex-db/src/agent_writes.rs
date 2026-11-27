@@ -28,6 +28,9 @@ use crate::narrative_extraction::change_feed::{
     AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeEventInput,
     NarrativeChangeOrigin,
 };
+use crate::narrative_extraction::{
+    append_event_existence_decisions_in_tx, EventExistenceChange, RemovedVia,
+};
 use crate::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
 use crate::{BatchStatement, Database};
 
@@ -7519,6 +7522,26 @@ pub(crate) fn delete_event_cascade(
     Ok(())
 }
 
+pub(crate) fn sync_replayed_event_removals(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    event_ids: &[String],
+) -> anyhow::Result<()> {
+    append_event_existence_decisions_in_tx(
+        conn,
+        project_id,
+        EventExistenceChange::Removed {
+            event_ids,
+            via: RemovedVia::UndoRedo,
+        },
+    )
+    .map_err(|error| {
+        tracing::error!("Failed to record replayed event removal: {error:#}");
+        anyhow::anyhow!("NEX_EXISTENCE_SYNC_FAILED: failed to record replayed event removal")
+    })?;
+    Ok(())
+}
+
 /// Undo path (global-history): invert the recorded op.
 fn revert_event_undo_in_tx(
     conn: &rusqlite::Connection,
@@ -7539,7 +7562,8 @@ fn revert_event_undo_in_tx(
             } else {
                 row.result_version
             };
-            delete_event_cascade(conn, project_id, &row.entity_id, Some(expected_version))
+            delete_event_cascade(conn, project_id, &row.entity_id, Some(expected_version))?;
+            sync_replayed_event_removals(conn, project_id, std::slice::from_ref(&row.entity_id))
         }
         "delete" => {
             let before = row
@@ -7651,7 +7675,8 @@ fn apply_event_redo_in_tx(
             } else {
                 row.base_version
             };
-            delete_event_cascade(conn, project_id, &row.entity_id, Some(expected_version))
+            delete_event_cascade(conn, project_id, &row.entity_id, Some(expected_version))?;
+            sync_replayed_event_removals(conn, project_id, std::slice::from_ref(&row.entity_id))
         }
         "update" => {
             let after = row
@@ -8598,7 +8623,9 @@ pub fn agent_event_delete_impl(
     db: &Database,
     payload: AgentEventIdPayload,
 ) -> anyhow::Result<Value> {
-    agent_event_delete_with_request_impl(db, payload, None)
+    agent_event_delete_with_request_and_authority_impl(
+        db, payload, None, None, RemovedVia::ScreenDelete,
+    )
 }
 
 pub fn agent_event_delete_with_request_impl(
@@ -8606,7 +8633,12 @@ pub fn agent_event_delete_with_request_impl(
     payload: AgentEventIdPayload,
     request_id: Option<&str>,
 ) -> anyhow::Result<Value> {
-    agent_event_delete_with_request_and_authority_impl(db, payload, request_id, None)
+    let via = if payload.surface.as_deref() == Some("mcp") {
+        RemovedVia::McpDelete
+    } else {
+        RemovedVia::ScreenDelete
+    };
+    agent_event_delete_with_request_and_authority_impl(db, payload, request_id, None, via)
 }
 
 pub fn agent_event_delete_with_authority_impl(
@@ -8615,11 +8647,17 @@ pub fn agent_event_delete_with_authority_impl(
     context: RendererCanonicalWriteContext,
 ) -> anyhow::Result<Value> {
     let request_id = context.request_id.clone();
+    let via = if context.authority_route == "interactive-agent-command" {
+        RemovedVia::AgentDelete
+    } else {
+        RemovedVia::ScreenDelete
+    };
     agent_event_delete_with_request_and_authority_impl(
         db,
         payload,
         Some(&request_id),
         Some(context),
+        via,
     )
 }
 
@@ -8628,6 +8666,7 @@ fn agent_event_delete_with_request_and_authority_impl(
     payload: AgentEventIdPayload,
     request_id: Option<&str>,
     renderer_context: Option<RendererCanonicalWriteContext>,
+    via: RemovedVia,
 ) -> anyhow::Result<Value> {
     if let Some(context) = renderer_context.as_ref() {
         let request_id = request_id.ok_or_else(|| anyhow::anyhow!("requestId is required"))?;
@@ -8739,6 +8778,15 @@ fn agent_event_delete_with_request_and_authority_impl(
                     base_version
                 );
             }
+
+            append_event_existence_decisions_in_tx(
+                conn,
+                &payload.project_id,
+                EventExistenceChange::Removed {
+                    event_ids: std::slice::from_ref(&payload.event_id),
+                    via,
+                },
+            )?;
 
             let after_feed = feed_event_ids
                 .iter()

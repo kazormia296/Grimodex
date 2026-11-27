@@ -20,3 +20,4 @@ ADRの採択は実装完了、runtimeの有効化、公開Gateの通過を意味
 | 012 | [Work Focus・共通Chat・Work Layer UIとコンテキスト取得境界](012-work-focus-chat-and-context-boundary.md) / [参照プロトタイプ](assets/012-work-chat/README.md) |
 | 013 | [AI への開示方針](013-ai-disclosure-policy.md) |
 | 014 | [場面の情報をエディタに統合する（チップ行と統合ペイン）](014-scene-information-in-editor.md) |
+| 015 | [作者の同定訂正を規則として再利用する](015-author-identity-corrections.md) |

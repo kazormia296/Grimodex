@@ -297,6 +297,8 @@ canonical Freshnessをこのsourceへ重複保存しない。query時にもRevis
 | restore / `backup_restore.rs`、`restore_rebuild.rs`、migration                      | workspace公開前に旧generationを無効化                                | 最古未release schemaからupgrade、cold restart、restore途中失敗                                             |
 | import/replay・その他入口                                                           | `change-feed-writers.json` / `protected-writers.json` と実入口を照合 | 全writerをcoveredまたは根拠付き対象外にする。未調査入口が残ればactivationしない                            |
 
+**追補（2026-11-26、確認 138）**　`nir1-chronicle-scene-review-apply-delta/1#chronicle-event-existence-sync`。Apply 後の撤回の禁止は、作者・AI・MCP が呼べる撤回操作に掛かる。取り込んだ出来事が無くなると、Native は同じ transaction で対象の提案に却下を 1 件追記する。試験も既存の削除操作を通し、撤回専用の入口を設けない。
+
 source resolver / producer registry / protected writer / change feed / D1 / metadata / consumer reader / restore / UI通知を
 一つの影響マトリクスで追跡する。新しい実装場所を見つけても、承認した意味と保存範囲が同じなら継続して表を完成させる。
 

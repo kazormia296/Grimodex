@@ -32,8 +32,8 @@ interface NativeProfileEgressStatus {
   sqlPolicy?: unknown;
 }
 
-/** Native `sqlPolicy` wire version (K3/2 "表の台帳"). Unknown versions are unavailable. */
-const PROFILE_EGRESS_POLICY_VERSION = 2;
+/** Native `sqlPolicy` wire version (K3/2 plus the MP-7 closed tables). */
+const PROFILE_EGRESS_POLICY_VERSION = 3;
 
 /**
  * Whether Electron main routes `own-data-read` (the read-open reading of the
@@ -167,7 +167,7 @@ export type D2aRoute =
 
 /**
  * `own-data-read` (K3/2): typed reads of the author's own data that publish
- * nothing outside the profile.  40 commands, each checked by K3/2 to have no
+ * nothing outside the profile.  44 commands, each checked by K3/2 to have no
  * write in its function body.  A command belongs here, in `DENIED_COMMANDS`,
  * in `INTERNAL_COMMANDS`, in the license ledger or in the typed-result
  * ledger, never two; adding or removing a command here needs a new draftRef.
@@ -214,7 +214,7 @@ const OWN_DATA_READ_COMMANDS = [
   "list_scene_lens_for_project",
   "list_annotations_for_scene",
   "list_annotations_for_project",
-  // Extraction review and maintenance inbox (9)
+  // Extraction review and maintenance inbox (12)
   "narrative_extraction_get_run",
   "narrative_extraction_get_run_review_bundle",
   "narrative_extraction_list_resumable_runs",
@@ -222,8 +222,12 @@ const OWN_DATA_READ_COMMANDS = [
   "narrative_extraction_list_chronicle_task_resume_candidates",
   "narrative_extraction_get_commit_status",
   "narrative_extraction_list_scene_proposals",
+  // confirmedRef=nir1-chronicle-scene-review-apply-delta/1#caller-profile-egress
+  "narrative_extraction_list_redecidable_proposals",
   "narrative_maintenance_inbox_list",
+  "narrative_maintenance_health_summary",
   "narrative_maintenance_stale_proposal_count",
+  "narrative_maintenance_stale_proposal_scenes",
 ] as const satisfies readonly (keyof typeof NAPI_COMMANDS)[];
 
 /**
@@ -476,6 +480,8 @@ const INTERNAL_COMMANDS = new Set([
   // The cancel of a Mastra agent turn (DR-MP3-11): it also stops, see the stop
   // ledger above; both ledgers list it by design (as `abort_chat_stream`).
   "mastra_agent_turn_cancel",
+  // MP-5a answer carries a bounded UI-tool result and has no Native egress.
+  "mastra_agent_turn_answer",
   "map_write_bundle",
   "mozkey_download_and_install",
   "narrative_extraction_append_decision",
@@ -490,6 +496,7 @@ const INTERNAL_COMMANDS = new Set([
   "narrative_extraction_fail_task",
   "narrative_extraction_finish_task",
   "narrative_extraction_prepare_commit",
+  "narrative_extraction_reapprove_applied_proposals",
   "narrative_extraction_redo_commit",
   // DR-CSX-1: returns only the Native sha256 revision token of the author's own
   // Codex catalog (no plaintext, no egress), pinned to the captured extraction

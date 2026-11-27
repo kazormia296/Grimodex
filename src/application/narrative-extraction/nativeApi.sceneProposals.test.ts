@@ -6,6 +6,8 @@ vi.mock("@/lib/tauri", () => ({ invoke: invokeMock }));
 
 import {
   narrativeExtractionListSceneProposals,
+  narrativeExtractionListRedecidableProposals,
+  type RedecidableProposalPage,
   type SceneProposalPage,
 } from "./nativeApi";
 
@@ -25,6 +27,10 @@ describe("narrativeExtractionListSceneProposals", () => {
           evidenceTruncated: false,
           otherSceneIds: [],
           reviewState: "approved",
+          rejectedBy: null,
+          removedVia: null,
+          rejectedAt: null,
+          reapproval: { available: false, reason: "already-approved" },
           sourceState: "fresh",
           chronicleState: "not-applied",
           probableDuplicate: "none",
@@ -47,6 +53,34 @@ describe("narrativeExtractionListSceneProposals", () => {
     );
     expect(invokeMock).toHaveBeenCalledExactlyOnceWith(
       "narrative_extraction_list_scene_proposals",
+      { payload },
+    );
+  });
+
+  it("forwards the project-wide query and its redecidable page", async () => {
+    const page: RedecidableProposalPage = {
+      items: [
+        {
+          proposalId: "p1",
+          revisionId: "r1",
+          title: "門が開いた",
+          evidenceSceneIds: ["scene-1"],
+          evidenceSceneIdsTruncated: false,
+          rejectedAt: "2026-11-25T12:00:00Z",
+          removedVia: "undo-redo",
+        },
+      ],
+      total: 2,
+      nextCursor: "p1",
+      limit: 1,
+    };
+    invokeMock.mockResolvedValue(page);
+    const payload = { projectId: "project-1", cursor: "p0", limit: 1 };
+    await expect(
+      narrativeExtractionListRedecidableProposals(payload),
+    ).resolves.toBe(page);
+    expect(invokeMock).toHaveBeenCalledExactlyOnceWith(
+      "narrative_extraction_list_redecidable_proposals",
       { payload },
     );
   });

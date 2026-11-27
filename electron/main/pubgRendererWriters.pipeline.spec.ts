@@ -77,6 +77,10 @@ vi.mock("@/features/timelapse/captureChat", () => ({
 }));
 vi.mock("@/features/semantic-search/scheduler", () => ({
   scheduleChatIndex: vi.fn(),
+  scheduleSceneIndex: vi.fn(),
+  cancelSceneIndex: vi.fn(),
+  scheduleCodexIndex: vi.fn(),
+  cancelCodexIndex: vi.fn(),
 }));
 
 const ROOT = path.resolve(__dirname, "..", "..");
@@ -333,6 +337,34 @@ const baselineRow = async (w: Seeded): Promise<BaselineRow> =>
     )
   )[0];
 
+const count = async (w: Seeded, table: string, column: string, id: string) =>
+  Number(
+    (
+      await w.rows<{ n: number }>(
+        `SELECT count(*) AS n FROM ${table} WHERE ${column} = ?`,
+        [id],
+      )
+    )[0].n,
+  );
+
+/** Drizzle wraps the Native refusal as `Failed query: …`; read the whole cause chain. */
+const errorChain = (e: unknown): string => {
+  const parts: string[] = [];
+  let cur: unknown = e;
+  for (let i = 0; cur != null && i < 8; i++) {
+    parts.push(cur instanceof Error ? cur.message : String(cur));
+    cur =
+      cur instanceof Error
+        ? (cur as Error & { cause?: unknown }).cause
+        : undefined;
+  }
+  return parts.join(" <- ");
+};
+
+let restoreSnapshotId = "";
+let restoreSceneId = "";
+let restoreSceneSnapshotBody = "";
+
 const importedChapters = (prefix: string) => [
   {
     id: `${prefix}-chapter`,
@@ -365,6 +397,40 @@ describe("PUB-G 34: renderer typed writers through the real router, gate and Nat
     );
     await seedChatSession(w, "cw4-closed");
     await saveBaseline(w.projectId, w.codexId, snapshotFixture);
+
+    const [{ id: sceneId }] = await w.rows<{ id: string }>(
+      "SELECT id FROM tree_nodes WHERE project_id = ? AND node_type = 'scene' AND archived_at IS NULL ORDER BY id LIMIT 1",
+      [w.projectId],
+    );
+    restoreSceneId = sceneId;
+    restoreSceneSnapshotBody = JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "snapshot body" }],
+        },
+      ],
+    });
+    const { updateNode } = await renderer("@/features/tree/api");
+    await updateNode(restoreSceneId, { content: restoreSceneSnapshotBody });
+    const { createProjectSnapshot } = await renderer(
+      "@/features/revision/projectSnapshotApi",
+    );
+    restoreSnapshotId = (
+      await createProjectSnapshot({ name: "restricted-restore-target" })
+    ).id;
+    await updateNode(restoreSceneId, {
+      content: JSON.stringify({
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [{ type: "text", text: "changed after snapshot" }],
+          },
+        ],
+      }),
+    });
   });
 
   // The control runs unrestricted: the same renderer calls, so a restricted
@@ -648,15 +714,6 @@ describe("PUB-G 34: renderer typed writers through the real router, gate and Nat
       "@/application/project/currentProjectAuthority",
     );
     const sentBefore = w.rig.sent.length;
-    const count = async (table: string, column: string, id: string) =>
-      Number(
-        (
-          await w.rows<{ n: number }>(
-            `SELECT count(*) AS n FROM ${table} WHERE ${column} = ?`,
-            [id],
-          )
-        )[0].n,
-      );
     const versions = async () =>
       Number(
         (
@@ -682,12 +739,12 @@ describe("PUB-G 34: renderer typed writers through the real router, gate and Nat
       description: "d",
     });
     expect(created.entryCount).toBeGreaterThan(0);
-    expect(await count("project_snapshots", "id", created.id)).toBe(1);
+    expect(await count(w, "project_snapshots", "id", created.id)).toBe(1);
     expect(
-      await count("project_snapshot_entries", "snapshot_id", created.id),
+      await count(w, "project_snapshot_entries", "snapshot_id", created.id),
     ).toBeGreaterThan(0);
     expect(
-      await count("project_snapshot_aux", "snapshot_id", created.id),
+      await count(w, "project_snapshot_aux", "snapshot_id", created.id),
     ).toBeGreaterThan(0);
     const listed = await listProjectSnapshots();
     expect(
@@ -698,19 +755,19 @@ describe("PUB-G 34: renderer typed writers through the real router, gate and Nat
     publishCurrentProjectId("another-project");
     await deleteProjectSnapshot(created.id);
     publishCurrentProjectId(w.projectId);
-    expect(await count("project_snapshots", "id", created.id)).toBe(1);
+    expect(await count(w, "project_snapshots", "id", created.id)).toBe(1);
 
     const versionsBefore = await versions();
     await deleteProjectSnapshot(created.id);
-    expect(await count("project_snapshots", "id", created.id)).toBe(0);
+    expect(await count(w, "project_snapshots", "id", created.id)).toBe(0);
     expect(
-      await count("project_snapshot_entries", "snapshot_id", created.id),
+      await count(w, "project_snapshot_entries", "snapshot_id", created.id),
     ).toBe(0);
-    expect(await count("project_snapshot_aux", "snapshot_id", created.id)).toBe(
-      0,
-    );
     expect(
-      await count("project_snapshot_tree_nodes", "snapshot_id", created.id),
+      await count(w, "project_snapshot_aux", "snapshot_id", created.id),
+    ).toBe(0);
+    expect(
+      await count(w, "project_snapshot_tree_nodes", "snapshot_id", created.id),
     ).toBe(0);
     // The snapshot's bodies are content_versions rows; deleting it keeps them.
     expect(await versions()).toBe(versionsBefore);
@@ -784,5 +841,280 @@ describe("PUB-G 34: renderer typed writers through the real router, gate and Nat
     // The notice that the flow shows is not empty.
     expect(await chatImportNotice(3)).toEqual(expect.any(String));
     expect((await chatImportNotice(3)).length).toBeGreaterThan(0);
+  });
+
+  it("snapshot restore restricted: applies through the aggregate writer and creates a safety snapshot", async () => {
+    const w = await workspace();
+    await restrict(w);
+    const { restoreProjectSnapshot } = await renderer(
+      "@/features/revision/projectSnapshotApi",
+    );
+    const snapshotsBefore = await count(
+      w,
+      "project_snapshots",
+      "project_id",
+      w.projectId,
+    );
+    expect(
+      (
+        await w.rows<{ content: string }>(
+          "SELECT content FROM tree_nodes WHERE id = ?",
+          [restoreSceneId],
+        )
+      )[0].content,
+    ).not.toBe(restoreSceneSnapshotBody);
+    const sentBefore = w.rig.sent.length;
+
+    const result = await restoreProjectSnapshot(
+      restoreSnapshotId,
+      "restricted-restore-target",
+    );
+
+    expect(result.format).toBe("structural");
+    expect(result.restoredCount).toBeGreaterThan(0);
+    expect(result.noOp).toBe(false);
+    expect(
+      (
+        await w.rows<{ content: string }>(
+          "SELECT content FROM tree_nodes WHERE id = ?",
+          [restoreSceneId],
+        )
+      )[0].content,
+    ).toBe(restoreSceneSnapshotBody);
+    expect(await count(w, "project_snapshots", "project_id", w.projectId)).toBe(
+      snapshotsBefore + 1,
+    );
+    expect(
+      await count(w, "project_snapshots", "id", result.safetySnapshotId),
+    ).toBe(1);
+    expect(
+      (
+        await w.rows<{ name: string }>(
+          "SELECT name FROM project_snapshots WHERE id = ?",
+          [result.safetySnapshotId],
+        )
+      )[0].name,
+    ).toContain("Before restore to 'restricted-restore-target'");
+
+    const sent = w.rig.sent.slice(sentBefore);
+    for (const cmd of [
+      "project_snapshot_restore_context",
+      "project_snapshot_apply_restore",
+      "project_snapshot_create",
+    ]) {
+      expect(sent.some((s) => s.cmd === cmd && s.ok)).toBe(true);
+    }
+    expect(
+      sent
+        .filter((s) =>
+          [
+            "project_snapshot_restore_context",
+            "project_snapshot_apply_restore",
+            "project_snapshot_create",
+          ].includes(s.cmd),
+        )
+        .some((s) => !s.ok),
+    ).toBe(false);
+    expect(
+      sent.filter((s) => s.sql && /\b(insert|update|delete)\b/i.test(s.sql)),
+    ).toEqual([]);
+  });
+
+  // The Codex import sets each imported entry's tags with `entity_tags_set` in
+  // the import session (import-apply), with or without tags. Main used to treat
+  // the tag writer as human-only and blanked the route, so every imported
+  // entry was refused and rolled back ("invalid args `authorityRoute` …
+  // expected a non-empty string") in Electron; the browser mock does not
+  // derive the route, so its tests passed.
+  it("Codex import restricted: entity_tags_set takes the import-apply route, with and without tags", async () => {
+    const w = await workspace();
+    await restrict(w);
+    const { importCodexEntries } = await renderer(
+      "@/features/import/importApi",
+    );
+    const rowCount = async (sql: string, id: string) =>
+      Number((await w.rows<{ n: number }>(sql, [id]))[0].n);
+    const sentBefore = w.rig.sent.length;
+    const entry = (id: string, tagsCache: string) => ({
+      id,
+      ncId: `nc-${id}`,
+      type: "character",
+      name: `Imported ${id}`,
+      aliases: [],
+      summary: "imported codex body",
+      content: "{}",
+      contextMode: "mentioned",
+      tagsCache,
+    });
+    expect(
+      await importCodexEntries([
+        entry("imp-codex-untagged", "[]"),
+        entry(
+          "imp-codex-tagged",
+          JSON.stringify([{ name: "imported-tag", color: null }]),
+        ),
+      ]),
+    ).toEqual({ imported: 2, errors: [] });
+
+    for (const id of ["imp-codex-untagged", "imp-codex-tagged"]) {
+      expect(
+        await rowCount(
+          "SELECT count(*) AS n FROM codex_entries WHERE id = ?",
+          id,
+        ),
+      ).toBe(1);
+    }
+    expect(
+      await rowCount(
+        "SELECT count(*) AS n FROM codex_entry_tags WHERE entry_id = ?",
+        "imp-codex-untagged",
+      ),
+    ).toBe(0);
+    expect(
+      await rowCount(
+        `SELECT count(*) AS n FROM codex_entry_tags et
+           JOIN codex_tags t ON t.id = et.tag_id
+          WHERE et.entry_id = ? AND t.name = 'imported-tag'`,
+        "imp-codex-tagged",
+      ),
+    ).toBe(1);
+    const sent = w.rig.sent.slice(sentBefore);
+    expect(
+      sent.filter((s) => s.cmd === "entity_tags_set").map((s) => s.ok),
+    ).toEqual([true, true]);
+    expect(
+      sent.filter((s) => s.sql && /\b(insert|update|delete)\b/i.test(s.sql)),
+    ).toEqual([]);
+  });
+
+  // The Codex entrance is pinned by the "Codex import restricted" spec above.
+  it("restricted importTree, memo and snippet use typed writers", async () => {
+    const w = await workspace();
+    await restrict(w);
+    const { importMemoNote, importSnippets, importTree } = await renderer(
+      "@/features/import/importApi",
+    );
+    const treeNodesBefore = await count(
+      w,
+      "tree_nodes",
+      "project_id",
+      w.projectId,
+    );
+    const snippetsBefore = await count(
+      w,
+      "snippets",
+      "project_id",
+      w.projectId,
+    );
+    const sentBefore = w.rig.sent.length;
+
+    expect(
+      await importTree([
+        {
+          kind: "folder",
+          id: "imp-restricted-folder",
+          title: "Imported folder",
+          children: [
+            {
+              kind: "scene",
+              id: "imp-restricted-scene",
+              title: "Imported scene",
+              body: "restricted scene body",
+            },
+          ],
+        },
+      ]),
+    ).toEqual({
+      imported: 2,
+      errors: [],
+      sceneIds: ["imp-restricted-scene"],
+    });
+    await importMemoNote("imp-restricted-memo", "restricted memo body");
+    expect(
+      await importSnippets([
+        {
+          id: "imp-restricted-snippet",
+          ncId: "nc-imp-restricted-snippet",
+          title: "Imported snippet",
+          content: "restricted snippet body",
+        },
+      ]),
+    ).toEqual({ imported: 1, errors: [] });
+
+    expect(await count(w, "tree_nodes", "project_id", w.projectId)).toBe(
+      treeNodesBefore + 3,
+    );
+    expect(await count(w, "snippets", "project_id", w.projectId)).toBe(
+      snippetsBefore + 1,
+    );
+    expect(
+      await w.rows(
+        "SELECT id FROM tree_nodes WHERE id IN ('imp-restricted-folder', 'imp-restricted-scene')",
+      ),
+    ).toHaveLength(2);
+    expect(
+      await w.rows(
+        "SELECT id FROM tree_nodes WHERE node_type = 'note' AND title = 'imp-restricted-memo'",
+      ),
+    ).toHaveLength(1);
+    expect(
+      await w.rows(
+        "SELECT id FROM snippets WHERE id = 'imp-restricted-snippet'",
+      ),
+    ).toHaveLength(1);
+
+    const sent = w.rig.sent.slice(sentBefore);
+    const writers = ["tree_node_create", "tree_node_patch", "snippet_create"];
+    for (const cmd of writers) {
+      expect(sent.some((s) => s.cmd === cmd && s.ok)).toBe(true);
+    }
+    expect(sent.filter((s) => writers.includes(s.cmd) && !s.ok)).toEqual([]);
+    expect(
+      sent.filter((s) => s.sql && /\b(insert|update|delete)\b/i.test(s.sql)),
+    ).toEqual([]);
+  });
+
+  it("saveBaseline restricted: generic INSERT upsert and hash UPDATE are denied without changing the row", async () => {
+    const w = await workspace();
+    await restrict(w);
+    const { saveBaseline } = await renderer(
+      "@/features/impact-review/baseline",
+    );
+    const before = await baselineRow(w);
+    // The full-scope restore above runs first; the row must still be there,
+    // or "the row did not change" below would hold vacuously.
+    expect(before).toMatchObject({
+      project_id: w.projectId,
+      content_hash: expect.any(String),
+    });
+    const sentBefore = w.rig.sent.length;
+
+    await expect(
+      saveBaseline(w.projectId, w.codexId, {
+        ...snapshotFixture,
+        name: "blocked upsert",
+      }).catch((e: unknown) => {
+        throw new Error(errorChain(e));
+      }),
+    ).rejects.toThrow(MARKER);
+    expect(await baselineRow(w)).toEqual(before);
+
+    await expect(
+      saveBaseline(
+        w.projectId,
+        w.codexId,
+        { ...snapshotFixture, name: "blocked update" },
+        before.content_hash,
+      ).catch((e: unknown) => {
+        throw new Error(errorChain(e));
+      }),
+    ).rejects.toThrow(MARKER);
+    expect(await baselineRow(w)).toEqual(before);
+
+    const writes = w.rig.sent
+      .slice(sentBefore)
+      .filter((s) => s.sql && /\b(insert|update|delete)\b/i.test(s.sql));
+    expect(writes).toHaveLength(2);
+    expect(writes.every((s) => !s.ok && s.error?.includes(MARKER))).toBe(true);
   });
 });

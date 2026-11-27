@@ -29,6 +29,7 @@ import {
 } from "./agentSettingCatalog.js";
 import { MODEL_CAPABILITY_SNAPSHOT_COMMAND } from "./modelCapabilitySnapshotWire.js";
 import {
+  MASTRA_AGENT_TURN_ANSWER_COMMAND,
   MASTRA_AGENT_TURN_CANCEL_COMMAND,
   MASTRA_AGENT_TURN_START_COMMAND,
 } from "./mastraAgentTurnWire.js";
@@ -353,8 +354,64 @@ export const BACKEND_EVENT_CHANNEL_ALLOWLIST = [
 
 /** Electron main 専用のイベント。renderer / backend callback からは送れない。 */
 export const MASTRA_AGENT_TURN_PROGRESS_EVENT = "mastra:agent-turn-progress";
+/** Main asks the renderer to run one UI tool; the event carries its bounded arguments. */
+export const MASTRA_AGENT_TURN_QUESTION_EVENT = "mastra:agent-turn-question";
+/** Main reports a completed write to the originating renderer without its body. */
+export const MASTRA_AGENT_WRITE_COMPLETED_EVENT =
+  "mastra:agent-write-completed";
+
+export interface MastraAgentWriteCompletedEvent {
+  readonly targetId: string;
+  readonly undoId: string;
+}
+
+const MASTRA_AGENT_WRITE_EVENT_ID_UTF16_MAX = 200;
+
+/** Parse the exact identifier-only completion event payload. */
+export function parseMastraAgentWriteCompletedEvent(
+  value: unknown,
+): MastraAgentWriteCompletedEvent | null {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    (Object.getPrototypeOf(value) !== Object.prototype &&
+      Object.getPrototypeOf(value) !== null)
+  ) {
+    return null;
+  }
+  const payload = value as Record<string, unknown>;
+  const keys = Object.keys(payload);
+  const validId = (id: unknown): id is string => {
+    if (
+      typeof id !== "string" ||
+      id.length === 0 ||
+      id.length > MASTRA_AGENT_WRITE_EVENT_ID_UTF16_MAX ||
+      id.trim() !== id
+    ) {
+      return false;
+    }
+    for (const character of id) {
+      const code = character.charCodeAt(0);
+      if (code < 32 || code === 127) return false;
+    }
+    return true;
+  };
+  if (
+    keys.length !== 2 ||
+    !keys.includes("targetId") ||
+    !keys.includes("undoId") ||
+    !validId(payload.targetId) ||
+    !validId(payload.undoId)
+  ) {
+    return null;
+  }
+  return { targetId: payload.targetId, undoId: payload.undoId };
+}
 
 export const MAIN_EVENT_CHANNEL_ALLOWLIST = [
+  MASTRA_AGENT_TURN_QUESTION_EVENT,
+  MASTRA_AGENT_WRITE_COMPLETED_EVENT,
   // Mastra agent turn progress is a numeric / identifier-only main event.
   MASTRA_AGENT_TURN_PROGRESS_EVENT,
   // electron-updater の byte progress（Phase 4）
@@ -1211,6 +1268,9 @@ export interface NapiBackendLike {
     payload: unknown,
   ): Promise<string>;
   narrativeExtractionListSceneProposals?(payload: unknown): Promise<string>;
+  narrativeExtractionListRedecidableProposals?(
+    payload: unknown,
+  ): Promise<string>;
   narrativeExtractionCancelRun(
     payload: unknown,
     workspaceBinding: unknown,
@@ -1239,6 +1299,9 @@ export interface NapiBackendLike {
   narrativeExtractionAppendDecision(payload: unknown): Promise<string>;
   narrativeExtractionAppendHumanDecision(payload: unknown): Promise<string>;
   narrativeExtractionChronicleBulkApprove(payload: unknown): Promise<string>;
+  narrativeExtractionReapproveAppliedProposals(
+    payload: unknown,
+  ): Promise<string>;
   narrativeExtractionReviseAndDecide(payload: unknown): Promise<string>;
   narrativeExtractionReviseAndDecideAsHuman(payload: unknown): Promise<string>;
   narrativeExtractionSetHumanFieldLock(payload: unknown): Promise<string>;
@@ -1251,7 +1314,9 @@ export interface NapiBackendLike {
   narrativeMaintenanceAttentionSet?(payload: unknown): Promise<string>;
   narrativeMaintenanceAttentionClear?(payload: unknown): Promise<string>;
   narrativeMaintenanceInboxList?(payload: unknown): Promise<string>;
+  narrativeMaintenanceHealthSummary?(payload: unknown): Promise<string>;
   narrativeMaintenanceStaleProposalCount?(payload: unknown): Promise<string>;
+  narrativeMaintenanceStaleProposalScenes?(payload: unknown): Promise<string>;
   // Gate C2 Run Kind Policy: the five named operations replacing the old
   // two-value rebuildNarrativeDependencyIndex(mode: verify|repair)
   verifyNarrativeDependencyGraph?(payload: unknown): Promise<string>;
@@ -1531,10 +1596,16 @@ const SCENE_PROPOSALS_LIMIT_WIRE_MAX = 0xffff_ffff;
  */
 const SCENE_PROPOSALS_ID_MAX_BYTES = 256;
 
-function requireSceneProposalsPayload(args: CommandArgs): CommandArgs {
-  const command = "narrative_extraction_list_scene_proposals";
+function requireProposalPagePayload(
+  args: CommandArgs,
+  command:
+    | "narrative_extraction_list_scene_proposals"
+    | "narrative_extraction_list_redecidable_proposals",
+): CommandArgs {
   const payload = requireRecord(args, "payload", command);
-  const allowedKeys = new Set(["projectId", "sceneId", "cursor", "limit"]);
+  const allowedKeys = new Set(["projectId", "cursor", "limit"]);
+  const sceneScoped = command === "narrative_extraction_list_scene_proposals";
+  if (sceneScoped) allowedKeys.add("sceneId");
   for (const key of Object.keys(payload)) {
     if (!allowedKeys.has(key)) {
       throw new Error(
@@ -1557,8 +1628,8 @@ function requireSceneProposalsPayload(args: CommandArgs): CommandArgs {
   };
   const validated: CommandArgs = {
     projectId: exactString("projectId"),
-    sceneId: exactString("sceneId"),
   };
+  if (sceneScoped) validated.sceneId = exactString("sceneId");
   if (Object.hasOwn(payload, "cursor") && payload.cursor !== undefined) {
     validated.cursor = exactString("cursor");
   }
@@ -1572,6 +1643,67 @@ function requireSceneProposalsPayload(args: CommandArgs): CommandArgs {
     validated.limit = limit;
   }
   return validated;
+}
+
+function requireReapproveAppliedProposalsPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "narrative_extraction_reapprove_applied_proposals";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId", "targets"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  const exactString = (
+    record: CommandArgs,
+    key: string,
+    path: string,
+  ): string => {
+    const value = requireNonEmptyString(record, key, command);
+    if (value.trim() !== value) {
+      throw new Error(
+        `invalid args \`${path}\` for command \`${command}\`: expected a non-empty exact string`,
+      );
+    }
+    return value;
+  };
+  const projectId = exactString(payload, "projectId", "projectId");
+  const rawTargets = requireArray(payload, "targets", command);
+  if (rawTargets.length < 1 || rawTargets.length > 4096) {
+    throw new Error(
+      `invalid args \`targets\` for command \`${command}\`: expected 1..4096 items`,
+    );
+  }
+  const seenProposalIds = new Set<string>();
+  const targets = rawTargets.map((value, index) => {
+    const path = `targets[${index}]`;
+    const target = requireRecord({ value }, "value", command);
+    if (
+      Object.keys(target).length !== 2 ||
+      !Object.hasOwn(target, "proposalId") ||
+      !Object.hasOwn(target, "revisionId")
+    ) {
+      throw new Error(
+        `invalid args \`${path}\` for command \`${command}\`: expected exactly proposalId and revisionId`,
+      );
+    }
+    const proposalId = exactString(target, "proposalId", `${path}.proposalId`);
+    if (seenProposalIds.has(proposalId)) {
+      throw new Error(
+        `invalid args \`${path}.proposalId\` for command \`${command}\`: duplicate proposalId`,
+      );
+    }
+    seenProposalIds.add(proposalId);
+    return {
+      proposalId,
+      revisionId: exactString(target, "revisionId", `${path}.revisionId`),
+    };
+  });
+  return { projectId, targets };
 }
 
 function requireReviewResumabilityPayload(args: CommandArgs): CommandArgs {
@@ -1894,6 +2026,23 @@ function requireNarrativeMaintenanceInboxListPayload(
   return payload;
 }
 
+function requireNarrativeMaintenanceHealthSummaryPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "narrative_maintenance_health_summary";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  requireNonEmptyString(payload, "projectId", command);
+  return payload;
+}
+
 function requireNarrativeMaintenanceStaleProposalCountPayload(
   args: CommandArgs,
 ): CommandArgs {
@@ -1909,6 +2058,47 @@ function requireNarrativeMaintenanceStaleProposalCountPayload(
   }
   requireNonEmptyString(payload, "projectId", command);
   return payload;
+}
+
+function requireNarrativeMaintenanceStaleProposalScenesPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "narrative_maintenance_stale_proposal_scenes";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId", "cursor", "limit"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  const validated: CommandArgs = {
+    projectId: requireNonEmptyString(payload, "projectId", command),
+  };
+  if (payload.cursor !== undefined) {
+    const cursor = requireNonEmptyString(payload, "cursor", command);
+    if (
+      cursor.trim().length === 0 ||
+      cursor.trim() !== cursor ||
+      new TextEncoder().encode(cursor).byteLength > SCENE_PROPOSALS_ID_MAX_BYTES
+    ) {
+      throw new Error(
+        `invalid args \`cursor\` for command \`${command}\`: expected a non-empty exact string of at most ${SCENE_PROPOSALS_ID_MAX_BYTES} bytes`,
+      );
+    }
+    validated.cursor = cursor;
+  }
+  if (payload.limit !== undefined) {
+    const limit = requireSafeInteger(payload, "limit", command);
+    if (limit < 1) {
+      throw new Error(
+        `invalid args \`limit\` for command \`${command}\`: expected a positive integer`,
+      );
+    }
+    validated.limit = limit;
+  }
+  return validated;
 }
 
 // Gate C2 Run Kind Policy: the five named operations replacing the old
@@ -4012,6 +4202,7 @@ function requireEntityTagsSetPayload(args: CommandArgs): CommandArgs {
   const command = "entity_tags_set";
   const payload = requireCanonicalWriterIdentity(args, command, [
     "human-direct",
+    "import-apply",
   ]);
   const kind = requireString(payload, "entityKind", command);
   if (kind !== "codex" && kind !== "snippet") {
@@ -7829,6 +8020,7 @@ function callerIdentityWire(args: CommandArgs): string | undefined {
       `invalid args \`callerIdentity\` for database command: ${
         error instanceof Error ? error.message : String(error)
       }`,
+      { cause: error },
     );
   }
 }
@@ -11588,7 +11780,27 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b,
           b.narrativeExtractionListSceneProposals,
           "narrativeExtractionListSceneProposals",
-        )(requireSceneProposalsPayload(a)),
+        )(
+          requireProposalPagePayload(
+            a,
+            "narrative_extraction_list_scene_proposals",
+          ),
+        ),
+      ),
+  },
+  narrative_extraction_list_redecidable_proposals: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeExtractionListRedecidableProposals,
+          "narrativeExtractionListRedecidableProposals",
+        )(
+          requireProposalPagePayload(
+            a,
+            "narrative_extraction_list_redecidable_proposals",
+          ),
+        ),
       ),
   },
   narrative_extraction_cancel_run: {
@@ -11723,6 +11935,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
+  narrative_extraction_reapprove_applied_proposals: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeExtractionReapproveAppliedProposals,
+          "narrativeExtractionReapproveAppliedProposals",
+        )(requireReapproveAppliedProposalsPayload(a)),
+      ),
+  },
   narrative_extraction_revise_and_decide: {
     run: async (b, a) =>
       parseWire(
@@ -11840,6 +12062,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         )(requireNarrativeMaintenanceInboxListPayload(a)),
       ),
   },
+  narrative_maintenance_health_summary: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeMaintenanceHealthSummary,
+          "narrativeMaintenanceHealthSummary",
+        )(requireNarrativeMaintenanceHealthSummaryPayload(a)),
+      ),
+  },
   narrative_maintenance_stale_proposal_count: {
     run: async (b, a) =>
       parseWire(
@@ -11848,6 +12080,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b.narrativeMaintenanceStaleProposalCount,
           "narrativeMaintenanceStaleProposalCount",
         )(requireNarrativeMaintenanceStaleProposalCountPayload(a)),
+      ),
+  },
+  narrative_maintenance_stale_proposal_scenes: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeMaintenanceStaleProposalScenes,
+          "narrativeMaintenanceStaleProposalScenes",
+        )(requireNarrativeMaintenanceStaleProposalScenesPayload(a)),
       ),
   },
   // Gate C2 Run Kind Policy: the five named operations replacing the old
@@ -12728,6 +12970,8 @@ export const SHELL_COMMAND_NAMES: readonly string[] = [
   // product launch (`mastraAgentTurnGate.ts`) and never reaches Native.
   MASTRA_AGENT_TURN_START_COMMAND,
   MASTRA_AGENT_TURN_CANCEL_COMMAND,
+  // MP-5a: renderer answers one Main-owned UI-tool question.
+  MASTRA_AGENT_TURN_ANSWER_COMMAND,
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────

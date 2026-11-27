@@ -302,7 +302,7 @@ export interface ChronicleBulkApproval {
   readonly reasons: readonly ChronicleBulkApprovalReasonCode[];
 }
 
-export interface ReviewBundleProposal {
+export interface ReviewBundleProposal extends Partial<RedecideStatus> {
   readonly proposalId: string;
   readonly proposalSetId: string;
   readonly proposalKey: string;
@@ -828,6 +828,16 @@ export async function narrativeExtractionChronicleBulkApprove(
   );
 }
 
+/** Reapprove an applied proposal after its Chronicle event was removed. */
+export async function narrativeExtractionReapproveAppliedProposals(
+  payload: ReapproveAppliedProposalsPayload,
+): Promise<ReapproveAppliedProposalsResult> {
+  return invoke<ReapproveAppliedProposalsResult>(
+    "narrative_extraction_reapprove_applied_proposals",
+    { payload },
+  );
+}
+
 export async function narrativeExtractionReviseAndDecide(
   payload: ReviseAndDecidePayload,
 ): Promise<ReviseAndDecideResult> {
@@ -881,6 +891,39 @@ export interface ChronicleBulkApproveResult {
     readonly code: string;
   }[];
   /** Shutdown or a workspace switch stopped the run between proposals. */
+  readonly stopped: boolean;
+}
+
+export type ReapproveAppliedProposalSkipReasonCode =
+  | "proposal-not-found"
+  | "no-application"
+  | "revision-changed"
+  | "already-approved"
+  | "not-removal-rejection"
+  | "event-missing";
+
+export interface ReapproveAppliedProposalsPayload {
+  readonly projectId: string;
+  readonly targets: readonly {
+    readonly proposalId: string;
+    readonly revisionId: string;
+  }[];
+}
+
+export interface ReapproveAppliedProposalsResult {
+  readonly approved: readonly {
+    readonly proposalId: string;
+    readonly revisionId: string;
+    readonly decisionId: string;
+  }[];
+  readonly skipped: readonly {
+    readonly proposalId: string;
+    readonly reasons: readonly ReapproveAppliedProposalSkipReasonCode[];
+  }[];
+  readonly failed: readonly {
+    readonly proposalId: string;
+    readonly code: string;
+  }[];
   readonly stopped: boolean;
 }
 
@@ -1027,7 +1070,24 @@ export interface SceneProposalRelatedUse {
   readonly reasons: readonly SceneProposalReasonCode[];
 }
 
-export interface SceneProposalItem {
+export interface RedecideStatus {
+  readonly rejectedBy: "event-removed" | null;
+  readonly removedVia:
+    | "screen-delete"
+    | "undo-redo"
+    | "snapshot-restore"
+    | "commit-undo"
+    | "mcp-delete"
+    | "agent-delete"
+    | null;
+  readonly rejectedAt: string | null;
+  readonly reapproval: {
+    readonly available: boolean;
+    readonly reason: ReapproveAppliedProposalSkipReasonCode | null;
+  };
+}
+
+export interface SceneProposalItem extends RedecideStatus {
   readonly proposalId: string;
   /** The proposal's current revision. */
   readonly revisionId: string;
@@ -1060,6 +1120,37 @@ export async function narrativeExtractionListSceneProposals(
     {
       payload,
     },
+  );
+}
+
+export type ListRedecidableProposalsPayload = Omit<
+  ListSceneProposalsPayload,
+  "sceneId"
+>;
+
+export interface RedecidableProposalItem {
+  readonly proposalId: string;
+  readonly revisionId: string;
+  readonly title: string | null;
+  readonly evidenceSceneIds: readonly string[];
+  readonly evidenceSceneIdsTruncated: boolean;
+  readonly rejectedAt: string;
+  readonly removedVia: RedecideStatus["removedVia"];
+}
+
+export interface RedecidableProposalPage {
+  readonly items: readonly RedecidableProposalItem[];
+  readonly total: number;
+  readonly nextCursor: string | null;
+  readonly limit: number;
+}
+
+export async function narrativeExtractionListRedecidableProposals(
+  payload: ListRedecidableProposalsPayload,
+): Promise<RedecidableProposalPage> {
+  return invoke<RedecidableProposalPage>(
+    "narrative_extraction_list_redecidable_proposals",
+    { payload },
   );
 }
 
@@ -1127,7 +1218,7 @@ export type MaintenanceInboxEvidenceFreshness =
   | null;
 
 /**
- * The only fields of an Inbox row that the structure-health counts need.
+ * Allow-listed Inbox fields exposed to renderer callers.
  * Free text (`attention.reason`), actor / request identities, payload digests
  * and observation rows ride on the wire but are deliberately never read here.
  */
@@ -1135,6 +1226,7 @@ export interface MaintenanceInboxEntry {
   readonly entryKind: MaintenanceInboxEntryKind;
   readonly consumerKind: MaintenanceInboxConsumerKind;
   readonly evidenceFreshness: MaintenanceInboxEvidenceFreshness;
+  readonly attentionApplies: boolean;
 }
 
 function pickKnown<const T extends readonly string[]>(
@@ -1150,7 +1242,7 @@ function pickKnown<const T extends readonly string[]>(
 /**
  * Validate the snake_case Inbox wire and project it onto the allow-listed
  * camelCase shape. Throws when the wire is not an array; an element that is
- * not an object, or a field that is missing or unknown, becomes
+ * not an object, or a vocabulary field that is missing or unknown, becomes
  * `"unrecognized"` rather than an error.
  */
 export function parseMaintenanceInbox(
@@ -1183,6 +1275,7 @@ export function parseMaintenanceInbox(
               record["evidence_freshness"],
               MAINTENANCE_INBOX_EVIDENCE_FRESHNESS,
             ),
+      attentionApplies: record["attention_applies"] === true,
     };
   });
 }
@@ -1219,4 +1312,133 @@ export async function narrativeMaintenanceStaleProposalCount(payload: {
     );
   }
   return (raw as { count: number }).count;
+}
+
+export type MaintenanceHealthFreshness =
+  | "stale"
+  | "source-missing"
+  | "anchor-mismatch"
+  | "read-set-drift"
+  | "unknown";
+
+export interface MaintenanceHealthSummary {
+  readonly proposalsChecked: number;
+  readonly proposalsStale: number;
+  readonly staleBreakdown: Record<MaintenanceHealthFreshness, number>;
+  readonly maintenanceStopped: number;
+  readonly unrecognized: number;
+}
+
+/** Read aggregate maintenance health counts without loading Inbox rows. */
+export async function narrativeMaintenanceHealthSummary(payload: {
+  readonly projectId: string;
+}): Promise<MaintenanceHealthSummary> {
+  const command = "narrative_maintenance_health_summary";
+  const raw = await invoke<unknown>(command, {
+    payload: { projectId: payload.projectId },
+  });
+  const isRecord = (
+    value: unknown,
+  ): value is Readonly<Record<string, unknown>> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+  const freshnessKinds: readonly MaintenanceHealthFreshness[] = [
+    "stale",
+    "source-missing",
+    "anchor-mismatch",
+    "read-set-drift",
+    "unknown",
+  ];
+  if (!isRecord(raw) || !isRecord(raw.staleBreakdown)) {
+    throw new Error(`${command}: expected non-negative safe-integer counts`);
+  }
+  const staleBreakdown = raw.staleBreakdown;
+  if (
+    !Number.isSafeInteger(raw.proposalsChecked) ||
+    (raw.proposalsChecked as number) < 0 ||
+    !Number.isSafeInteger(raw.proposalsStale) ||
+    (raw.proposalsStale as number) < 0 ||
+    !Number.isSafeInteger(raw.maintenanceStopped) ||
+    (raw.maintenanceStopped as number) < 0 ||
+    !Number.isSafeInteger(raw.unrecognized) ||
+    (raw.unrecognized as number) < 0 ||
+    freshnessKinds.some(
+      (kind) =>
+        !Number.isSafeInteger(staleBreakdown[kind]) ||
+        (staleBreakdown[kind] as number) < 0,
+    )
+  ) {
+    throw new Error(`${command}: expected non-negative safe-integer counts`);
+  }
+  return {
+    proposalsChecked: raw.proposalsChecked as number,
+    proposalsStale: raw.proposalsStale as number,
+    staleBreakdown: Object.fromEntries(
+      freshnessKinds.map((kind) => [kind, staleBreakdown[kind] as number]),
+    ) as Record<MaintenanceHealthFreshness, number>,
+    maintenanceStopped: raw.maintenanceStopped as number,
+    unrecognized: raw.unrecognized as number,
+  };
+}
+
+export interface StaleProposalSceneCount {
+  readonly sceneId: string;
+  readonly proposalCount: number;
+}
+
+export interface StaleProposalScenesPage {
+  readonly scenes: readonly StaleProposalSceneCount[];
+  readonly withoutSceneCount: number;
+  readonly nextCursor?: string;
+}
+
+/** Read-only scene counts for stale proposals in one project. */
+export async function narrativeMaintenanceStaleProposalScenes(payload: {
+  readonly projectId: string;
+  readonly cursor?: string;
+  readonly limit?: number;
+}): Promise<StaleProposalScenesPage> {
+  const raw = await invoke<unknown>(
+    "narrative_maintenance_stale_proposal_scenes",
+    { payload },
+  );
+  const isRecord = (
+    value: unknown,
+  ): value is Readonly<Record<string, unknown>> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+  if (
+    !isRecord(raw) ||
+    !Array.isArray(raw.scenes) ||
+    !Number.isSafeInteger(raw.withoutSceneCount) ||
+    (raw.withoutSceneCount as number) < 0 ||
+    (raw.nextCursor !== undefined &&
+      (typeof raw.nextCursor !== "string" || raw.nextCursor.length === 0))
+  ) {
+    throw new Error(
+      "narrative_maintenance_stale_proposal_scenes: expected a scene-count page",
+    );
+  }
+
+  const scenes = raw.scenes.map((scene): StaleProposalSceneCount => {
+    if (
+      !isRecord(scene) ||
+      typeof scene.sceneId !== "string" ||
+      scene.sceneId.length === 0 ||
+      !Number.isSafeInteger(scene.proposalCount) ||
+      (scene.proposalCount as number) < 1
+    ) {
+      throw new Error(
+        "narrative_maintenance_stale_proposal_scenes: expected scene counts",
+      );
+    }
+    return {
+      sceneId: scene.sceneId,
+      proposalCount: scene.proposalCount as number,
+    };
+  });
+  const nextCursor = raw.nextCursor as string | undefined;
+  return {
+    scenes,
+    withoutSceneCount: raw.withoutSceneCount as number,
+    ...(nextCursor === undefined ? {} : { nextCursor }),
+  };
 }

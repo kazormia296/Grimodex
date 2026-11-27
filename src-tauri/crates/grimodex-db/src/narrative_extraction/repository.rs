@@ -4974,6 +4974,7 @@ pub fn get_run_review_bundle(
                         .map(|(task_id, attempt_id)| (task_id.as_str(), attempt_id.as_str())),
                     &mut proposals,
                 );
+                super::redecidable_proposals::attach_redecide_status(conn, &project_id, &mut proposals)?;
             }
         }
 
@@ -6075,6 +6076,161 @@ fn append_decision_on_conn_with_reuse(
     }))
 }
 
+#[derive(Clone, Copy, serde::Serialize)]
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum RemovedVia {
+    ScreenDelete,
+    UndoRedo,
+    SnapshotRestore,
+    CommitUndo,
+    McpDelete,
+    AgentDelete,
+}
+
+// Keep Applications outermost so SQLite visits them once for the entire removal set.
+const REMOVED_EVENT_PROPOSALS_SQL: &str = "
+    SELECT p.id, r.id, MIN(a.applied_entity_id), d.id
+      FROM narrative_proposal_applications a
+      CROSS JOIN narrative_apply_commits c ON c.id = a.commit_id
+      CROSS JOIN narrative_proposal_sets s ON s.id = c.proposal_set_id
+                                    AND s.run_id = c.run_id AND s.project_id = c.project_id
+      CROSS JOIN narrative_extraction_runs run ON run.id = s.run_id AND run.project_id = s.project_id
+      CROSS JOIN narrative_proposals p ON p.id = a.proposal_id AND p.proposal_set_id = s.id
+      CROSS JOIN narrative_proposal_revisions r ON r.proposal_id = p.id AND r.id = p.current_revision_id
+      CROSS JOIN narrative_proposal_decisions d ON d.id = (
+           SELECT latest.id FROM narrative_proposal_decisions latest
+            WHERE latest.proposal_id = p.id ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1)
+     WHERE c.project_id = ?1 AND a.applied_entity_id IN (SELECT value FROM json_each(?2))
+       AND a.application_kind = 'normal' AND a.applied_entity_kind = 'event'
+       AND NOT EXISTS (SELECT 1 FROM narrative_proposal_applications compensation
+                        WHERE compensation.application_kind = 'compensation'
+                          AND compensation.compensates_application_id = a.id)
+       AND p.kind <> ?3 AND r.id = a.revision_id AND p.status = 'approved'
+       AND d.revision_id = r.id AND d.decision = 'approved'
+     GROUP BY p.id, r.id, d.id";
+
+pub(crate) enum EventExistenceChange<'a> {
+    /// The author's re-approval (SRD/1 RA). The writer judges the target itself.
+    Reapproved {
+        target: &'a super::ChronicleBulkApproveTarget,
+        decision_id: &'a str,
+    },
+    Removed {
+        event_ids: &'a [String],
+        via: RemovedVia,
+    },
+}
+
+/// Only Native selects the targets, actor and decision. Finish the read before mutating
+/// the tables it depends on. The caller owns the transaction and must propagate errors.
+pub(crate) fn append_event_existence_decisions_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    change: EventExistenceChange<'_>,
+) -> anyhow::Result<usize> {
+    anyhow::ensure!(
+        !conn.is_autocommit(),
+        "event existence decisions require a transaction"
+    );
+    let (decision, actor, targets) = match change {
+        EventExistenceChange::Removed { event_ids, via } => {
+            if event_ids.is_empty() {
+                return Ok(0);
+            }
+            let targets = conn
+                .prepare(REMOVED_EVENT_PROPOSALS_SQL)?
+                .query_map(
+                    params![
+                        project_id,
+                        serde_json::to_string(event_ids)?,
+                        NIR1_ENTITY_RELATION_PROPOSAL_KIND
+                    ],
+                    |row| {
+                        let detail = json!({
+                            "cause": "event-removed",
+                            "removedVia": via,
+                            "removedEventId": row.get::<_, String>(2)?,
+                            "revokesDecisionId": row.get::<_, String>(3)?,
+                        });
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            detail,
+                            Uuid::new_v4().to_string(),
+                        ))
+                    },
+                )?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            (
+                "rejected",
+                TrustedDecisionActor::Automated {
+                    actor_id: "native:event-existence-sync".into(),
+                },
+                targets,
+            )
+        }
+        EventExistenceChange::Reapproved {
+            target,
+            decision_id,
+        } => {
+            let rejection_id = match super::reapproval::judge_reapproval(conn, project_id, target)?
+            {
+                super::reapproval::Eligibility::Eligible { rejection_id } => rejection_id,
+                super::reapproval::Eligibility::Skip(reason) => {
+                    anyhow::bail!("NEX_REAPPROVE_NOT_ELIGIBLE: {reason}")
+                }
+            };
+            (
+                "approved",
+                TrustedDecisionActor::Human {
+                    actor_id: "electron:human-review".into(),
+                },
+                vec![(
+                    target.proposal_id.clone(),
+                    target.revision_id.clone(),
+                    json!({"cause": "event-reapproved", "reapprovesDecisionId": rejection_id}),
+                    decision_id.to_owned(),
+                )],
+            )
+        }
+    };
+    for (proposal, revision, detail, decision_id) in &targets {
+        let authority = derive_decision_authority(&actor, project_id, proposal, revision, detail)?;
+        conn.execute(
+            "INSERT INTO narrative_proposal_decisions
+                (id, proposal_id, revision_id, decision, decision_json, created_at, created_by,
+                 actor_kind, actor_id, authority_scope, override_field_paths_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?7, ?9, ?10)",
+            params![
+                decision_id,
+                proposal,
+                revision,
+                decision,
+                detail.to_string(),
+                next_decision_created_at(conn, proposal)?,
+                authority.actor_id,
+                authority.actor_kind,
+                authority.authority_scope,
+                serde_json::to_string(&authority.override_field_paths)?
+            ],
+        )?;
+        let updated = conn.execute(
+            "UPDATE narrative_proposals SET status = ?1, updated_at = datetime('now')
+              WHERE id = ?2 AND current_revision_id = ?3",
+            params![map_decision_to_status(decision)?, proposal, revision],
+        )?;
+        anyhow::ensure!(
+            updated == 1,
+            "NEX_PROPOSAL_REVISION_MISMATCH: current revision changed"
+        );
+    }
+    if !targets.is_empty() {
+        super::nir1_chronicle_index::invalidate::suspend_project_in_tx(conn, project_id)?;
+    }
+    Ok(targets.len())
+}
+
 /// A typed Entity/Relation Revision is an immutable human-review decision
 /// point. Generic Proposal decision replay must not turn a rejected/deferred
 /// Revision back into an approved one. The one intentional transition kept
@@ -6842,6 +6998,12 @@ mod unit_tests {
         SetNarrativeRuntimePolicyInput,
     };
     use serde_json::json;
+
+    // The file drives the product delete paths (SRD/1 X), so it lives outside
+    // the semantic boundary of this directory, whose code must not call writers.
+    mod event_existence_tests {
+        include!("../event_existence_tests.rs");
+    }
 
     #[test]
     fn project_creation_reservations_count_and_release_without_run_id_leaks() {

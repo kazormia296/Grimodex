@@ -11,7 +11,8 @@ import { countTokens } from "../contextBuilder";
 /**
  * renderer の Codex read tool 4 本（search_codex・list_codex_by_type・search_codex_by_tags・
  * find_related_entries）の ports（MP-4b PR-8b、DR-MP4-40）。getter は呼出しの時点で live な値を返す
- * （tree store・phase store・`db`）。import の束縛は arrow の中で読むので、試験の `vi.mock`
+ * （tree store・phase store・`db`）。agent executor が turn 固定 scene を重ねる。
+ * import の束縛は arrow の中で読むので、試験の `vi.mock`
  * （`@/db/client` の chain、`@/features/codex/phaseApi`、`useTreeStore` の差し替え、`@/lib/tauri`、
  * `@/features/semantic-search/api`）が今までどおり効く。
  *

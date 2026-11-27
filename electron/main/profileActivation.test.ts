@@ -36,7 +36,7 @@ const {
 } = await import("./profileEgress.js");
 const { fakeGrantSender, fakeGrantWindow } =
   await import("./profileActivation.test.support.js");
-const { nativeSqlPolicyV2 } = await import("./d2aSqlPolicyFixture.js");
+const { nativeSqlPolicyV3 } = await import("./d2aSqlPolicyFixture.js");
 
 afterEach(() => {
   vi.useRealTimers();
@@ -85,7 +85,7 @@ const UNRESTRICTED = {
   restricted: false,
   handlesInvalidated: false,
   inFlightStopped: true,
-  sqlPolicy: nativeSqlPolicyV2(),
+  sqlPolicy: nativeSqlPolicyV3(),
 };
 const RESTRICTED = {
   ...UNRESTRICTED,
@@ -473,8 +473,7 @@ describe("refusals (Negative (4)(5))", () => {
   it("a sender gone or a window closed during the dialog revokes and closes nothing", async () => {
     for (const end of ["sender", "navigation", "window"] as const) {
       const native = mockNative();
-      let r!: Awaited<ReturnType<typeof rig>>;
-      r = await rig(native, {
+      const r = await rig(native, {
         confirm: async () => {
           if (end === "sender") r.sender.emit("destroyed");
           if (end === "navigation")

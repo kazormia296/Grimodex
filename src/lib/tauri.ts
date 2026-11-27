@@ -1,5 +1,5 @@
 import type { BrowserMock } from "./browser-mock";
-import { enqueueIpc } from "./ipcQueue";
+import { enqueueIpc, enqueueTrackedMutationIpc } from "./ipcQueue";
 import { electronBridge, isElectron } from "./shell";
 import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
 import {
@@ -77,6 +77,8 @@ export type IpcInvokeErrorCode =
   | "IPC_DERIVED_CANCELLED"
   | "IPC_MUTATION_CANCELLED"
   | "IPC_TIMEOUT"
+  /** A history replay was rolled back because approvals could not be revoked. */
+  | "NEX_EXISTENCE_SYNC_FAILED"
   | "UNKNOWN";
 
 export type IpcInvokeOutcome = "failed" | "unknown";
@@ -161,6 +163,9 @@ function classifyLegacyIpcError(message: string): IpcInvokeFailureInfo {
   }
   if (message.includes("WORKSPACE_QUARANTINED")) {
     return { ...base, code: "WORKSPACE_QUARANTINED", retryable: false };
+  }
+  if (message.includes("NEX_EXISTENCE_SYNC_FAILED:")) {
+    return { ...base, code: "NEX_EXISTENCE_SYNC_FAILED", retryable: true };
   }
   if (/No workspace is open/i.test(message)) {
     return { ...base, code: "NO_WORKSPACE_OPEN", retryable: true };
@@ -249,14 +254,9 @@ const READ_ONLY_COMMAND_TIMEOUTS = new Map<string, number>([
   // command would be a mutation: no timeout, and a hold on the workspace
   // switch and close quiescence. The route itself is closed (S1-A).
   ["chat_agent_ir_select", CHAT_AGENT_IR_TIMEOUT_MS],
-  // The Mastra agent turn (MP-3b) is deliberately NOT here: `mastra_agent_turn_start`
-  // settles when the whole turn does, so it is a mutation with no caller timeout
-  // (a timeout would end the wait while Main's turn runs on), and
-  // `mastra_agent_turn_cancel` is a mutation too. The queue runs four commands at
-  // a time, so a cancel is not held behind pending starts only while fewer than
-  // four are pending (and it is refused while an audit export freezes mutations):
-  // MP-4 keeps the pending starts of a window under that, or gives the cancel a
-  // lane. `tauri.electron.test.ts` pins the no-timeout and the one-pending case.
+  // The Mastra start settles when the whole turn does, so it is a mutation with
+  // no caller timeout. Answer and cancel use the tracked turn-control lane below
+  // to bypass queue slots while remaining visible to lifecycle drains.
   // CB-3: the author's screen reads a Scene's declaration state. It must not
   // wait behind a declare (a confirmation dialog of up to 60 s) in the
   // mutation queue.
@@ -570,9 +570,46 @@ export async function emit<T = unknown>(
   window.dispatchEvent(new CustomEvent(event, { detail: payload }));
 }
 
-export async function invoke<T = unknown>(
+type MastraAgentTurnControlCommand =
+  | "mastra_agent_turn_answer"
+  | "mastra_agent_turn_cancel";
+
+export function invokeMastraAgentTurnControl<T = unknown>(
+  cmd: MastraAgentTurnControlCommand,
+  args?: Record<string, unknown>,
+): Promise<T> {
+  return invokeCommand<T>(cmd, args, true);
+}
+
+export function invoke<T = unknown>(
   cmd: string,
   args?: Record<string, unknown>,
+): Promise<T> {
+  return invokeCommand<T>(cmd, args, false);
+}
+
+function enqueueCommand<T>(
+  cmd: string,
+  run: () => Promise<T>,
+  timeoutMs: number | null,
+  category: "mutation" | "read" | "derived",
+  pair: string | null,
+  urgentMutation: boolean,
+): Promise<T> {
+  if (!urgentMutation) return enqueueIpc(cmd, run, timeoutMs, category, pair);
+  if (
+    cmd === "mastra_agent_turn_answer" ||
+    cmd === "mastra_agent_turn_cancel"
+  ) {
+    return enqueueTrackedMutationIpc(cmd, run);
+  }
+  return Promise.reject(new Error(`Unsupported turn-control command: ${cmd}`));
+}
+
+async function invokeCommand<T = unknown>(
+  cmd: string,
+  args: Record<string, unknown> | undefined,
+  urgentMutation: boolean,
 ): Promise<T> {
   // DA-2b の PUB-G 前の必須 3（DR-DA2B-R22、R25）：閉なら（lazy な状態の表示が台帳の
   // 関数を global に置いたら）、Main の gate が拒否する command を IPC に出さず、Main と
@@ -591,11 +628,13 @@ export async function invoke<T = unknown>(
     const { invoke: tauriInvoke } = await import("@tauri-apps/api/core");
     const ms = callerTimeoutForCommand(cmd, args);
     try {
-      return await enqueueIpc(
+      return await enqueueCommand(
         cmd,
         () => tauriInvoke<T>(cmd, args),
         ms,
         ipcCategoryForCommand(cmd, args),
+        null,
+        urgentMutation,
       );
     } catch (error) {
       throw normalizeIpcFailure(cmd, error);
@@ -610,7 +649,7 @@ export async function invoke<T = unknown>(
         ? createRelatedScenesBeginLateResultCleanup()
         : null;
     try {
-      return await enqueueIpc(
+      return await enqueueCommand(
         cmd,
         async () => {
           const envelope = await bridge.invoke<T>(cmd, args);
@@ -640,6 +679,7 @@ export async function invoke<T = unknown>(
         ms,
         ipcCategoryForCommand(cmd, args),
         derivedPairForCommand(cmd, args),
+        urgentMutation,
       );
     } catch (error) {
       const normalized = normalizeIpcFailure(cmd, error);
@@ -649,7 +689,7 @@ export async function invoke<T = unknown>(
   }
   const ms = callerTimeoutForCommand(cmd, args);
   try {
-    return await enqueueIpc(
+    return await enqueueCommand(
       cmd,
       async () => {
         const mock = await getBrowserMock();
@@ -657,6 +697,8 @@ export async function invoke<T = unknown>(
       },
       ms,
       ipcCategoryForCommand(cmd, args),
+      null,
+      urgentMutation,
     );
   } catch (error) {
     throw normalizeIpcFailure(cmd, error);

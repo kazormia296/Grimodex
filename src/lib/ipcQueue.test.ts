@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   acquireIpcDerivedAdmissionBarrier,
+  acquireIpcMutationAdmissionBarrier,
   cancelDerivedIpcCallersForLifecycle,
   enqueueIpc,
+  enqueueTrackedMutationIpc,
   resetIpcQueueForTests,
 } from "./ipcQueue";
 import { flushQuiescenceProviderStage } from "./quiescenceProviders";
@@ -33,6 +35,81 @@ describe("enqueueIpc", () => {
     const results = await Promise.all(tasks);
     expect(results).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
     expect(maxActive).toBeLessThanOrEqual(4);
+  });
+
+  it("runs turn answers and cancel outside full queue slots", async () => {
+    const gates = Array.from({ length: 4 }, () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return { gate, release };
+    });
+    const queued = gates.map(({ gate }, index) =>
+      enqueueIpc(`blocked-${index}`, () => gate, null, "mutation"),
+    );
+    const answer = vi.fn(async () => "answered");
+    const cancel = vi.fn(async () => "cancelled");
+
+    await expect(
+      enqueueTrackedMutationIpc("mastra_agent_turn_answer", answer),
+    ).resolves.toBe("answered");
+    await expect(
+      enqueueTrackedMutationIpc("mastra_agent_turn_cancel", cancel),
+    ).resolves.toBe("cancelled");
+    expect(answer).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
+
+    gates.forEach(({ release }) => release());
+    await Promise.all(queued);
+  });
+
+  it("tracks a turn answer admitted after drain starts and waits for it", async () => {
+    let releaseBlocker!: () => void;
+    const blocker = enqueueIpc(
+      "blocked-mutation",
+      () =>
+        new Promise<void>((resolve) => {
+          releaseBlocker = resolve;
+        }),
+      null,
+      "mutation",
+    );
+    let releaseAnswer!: () => void;
+    const answer = new Promise<string>((resolve) => {
+      releaseAnswer = () => resolve("answered");
+    });
+    let drained = false;
+    const drain = flushQuiescenceProviderStage("ipc-actual-tasks").then(() => {
+      drained = true;
+    });
+
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    const caller = enqueueTrackedMutationIpc(
+      "mastra_agent_turn_answer",
+      () => answer,
+    );
+    releaseBlocker();
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    releaseAnswer();
+    await expect(caller).resolves.toBe("answered");
+    await expect(blocker).resolves.toBeUndefined();
+    await expect(drain).resolves.toBeUndefined();
+    expect(drained).toBe(true);
+  });
+
+  it("rejects a turn answer admitted under the mutation barrier", async () => {
+    const releaseBarrier = acquireIpcMutationAdmissionBarrier();
+    const answer = vi.fn(async () => "answered");
+    await expect(
+      enqueueTrackedMutationIpc("mastra_agent_turn_answer", answer),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining("IPC_MUTATION_CANCELLED"),
+    });
+    expect(answer).not.toHaveBeenCalled();
+    releaseBarrier();
   });
 
   it("starts timeout when execution begins, not while queued", async () => {
