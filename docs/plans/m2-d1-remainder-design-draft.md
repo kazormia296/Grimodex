@@ -139,6 +139,7 @@ D2〜D4 と、後で M2-D1 の保存物を消すことになった場合に適�
 公開版の workspace は §1.4 の 3 表の行を持ちうるのに、Gate A2 の fixture は覆っていない。M2〜M4 の同一性（`codex-relation:{edge_id}`）は Relation の id を使うので、公開版の Relation の行が今の版で読めることの証跡は要る。
 
 - **3 表**：M2 が別の product PR（枝 `claude/m2-a2-release-fixture`、試験だけ）で、fixture に v2.0.10 の最終形の DDL と作者の行を足し、移行の後に残ることを確かめる（統合者と 2026-11-26 に合意。fixture の持ち主は不在で、最後の変更は #564）。
+  - **2026-11-27：#1171 で merge 済み（master `7d46cfbf1`）。** 途中で、undo の行の固定の日付が開き直しの保守の処理の 90 日の保持（`open.rs:718-726` → `lib.rs:785-824`）を過ぎて消える件があった（製品の不具合ではない）。日付の列は「今の 1 日前」にした。
 - **残りの 26 表**：この版では覆わない。手写しでなく、tag の crate を実際に動かして `sqlite_master` を取る形が筋。重い作業なので、やるか・誰がやるかは公開の前に決める（**未決**）。
 
 ## 4. 7 項目の状態（M2-D1）
@@ -146,7 +147,7 @@ D2〜D4 と、後で M2-D1 の保存物を消すことになった場合に適�
 | 項目                                 | 状態                                                                                                                                                                                                                | 根拠                                                    |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
 | Shared Narrative IR typed payloads   | `EntityRelationBundle`（`narrative_nir1.rs:249`、#572 から）。#1108 は Assertion の任意の `identityDeclaration` の検証を足した（呼び手なし）                                                                        | [同一性の設計](m2-d1-identity-design-draft.md) §1・§2.1 |
-| Compatibility adapters               | データの移行は不要と判断（同 §2.4）。公開版の Relation の行は fixture で覆われていない（§3.3、未解決）                                                                                                              | 同 §2.4                                                 |
+| Compatibility adapters               | データの移行は不要と判断（同 §2.4）。公開版の Relation・変更の記録・undo の行は Gate A2 の fixture で覆った（#1171、§3.3）。seed に無い残りの 26 表は未決                                                           | 同 §2.4、§3.3                                           |
 | Producer-time Dependency declaration | registry の `nir1-reviewed-entity-relation-v1`（既存）と、版を作る prepare の時に書く proposal-revision の辺（`nir1_entity_relation.rs:1095`、呼び出し `:1949`）。#1108 の同一性の宣言（同 §2.3）は依存の宣言とは別 | registry、`nir1_entity_relation.rs`                     |
 | Review and Projection state mapping  | bundle 単位の Decision を継承                                                                                                                                                                                       | 同 §2.5                                                 |
 | Structure Health rules               | コードの追加なし                                                                                                                                                                                                    | 同 §2.6                                                 |
