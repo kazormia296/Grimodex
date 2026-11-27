@@ -91,6 +91,33 @@ run("B1 live approved Codex rank evaluation", () => {
     );
     assertWithinCap(estimate, cap);
     const records = [];
+    const output = path.resolve(
+      here,
+      "../../..",
+      ".artifacts/b1-approved-codex-rank-eval",
+      `run-${new Date().toISOString().replace(/[:.]/gu, "-")}.json`,
+    );
+    await mkdir(path.dirname(output), { recursive: true });
+    // Write after every send so an interrupted run still shows what was sent.
+    const writeResult = (complete: boolean) =>
+      writeFile(
+        output,
+        `${JSON.stringify(
+          {
+            model,
+            effort,
+            estimatedCostUsd: estimate,
+            complete,
+            refusalCount: records.filter(
+              (record) => record.stopReason === "refusal",
+            ).length,
+            records,
+          },
+          null,
+          2,
+        )}\n`,
+        { mode: 0o600 },
+      );
     for (const entry of prepared) {
       const response = await sendAnthropicMessages({
         apiKey: key!,
@@ -118,31 +145,9 @@ run("B1 live approved Codex rank evaluation", () => {
         outputTokens: response.usage.outputTokens,
         stopReason: response.stopReason,
       });
+      await writeResult(false);
     }
-    const output = path.resolve(
-      here,
-      "../../..",
-      ".artifacts/b1-approved-codex-rank-eval",
-      `run-${new Date().toISOString().replace(/[:.]/gu, "-")}.json`,
-    );
-    await mkdir(path.dirname(output), { recursive: true });
-    await writeFile(
-      output,
-      `${JSON.stringify(
-        {
-          model,
-          effort,
-          estimatedCostUsd: estimate,
-          refusalCount: records.filter(
-            (record) => record.stopReason === "refusal",
-          ).length,
-          records,
-        },
-        null,
-        2,
-      )}\n`,
-      { mode: 0o600 },
-    );
+    await writeResult(true);
     expect(records).toHaveLength(schedule.length);
   });
 });
