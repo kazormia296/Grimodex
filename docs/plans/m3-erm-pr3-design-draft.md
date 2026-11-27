@@ -86,3 +86,9 @@ Status: 草稿（起案者 WrokLayer/M3、2026-11-27）。ADR 015（Proposed）�
 - **取込み**：回答「名前と別名でも照合」（推奨の「規則だけ当てる」ではない）。取込みで、規則に加えて既存の項目の名前・別名と一致するものも、重複の候補として確認に出す。今の取込みは確認を挟まずに項目を作るので、確認の段を足す新しい挙動になる。**ERM PR 3 とは別の PR**（取込みの照合）にし、確認の画面の形と文言は実装の前に伺う。規則の当て方は §2 と同じ native の読み取りを使う。§0 の【未決】はこれで閉じる。
 - **点検の規則**：元の資料に根拠はあるが本文に出ない項目には注意を出さない（`zero-mentions` を単独で出さない）。語の一覧は項目の種類に合う語だけを当てる。どちらも PR 5（健全性の検査）で使う。
 
+## 10. 規則で足す版の basis（2 本目の前の判断）
+
+- 版の basis の語彙は `policies/narrative/narrative-ir-contract.json` の `staleValidation` で `interpretation` と `humanDerived` の 2 つに決まっている。3 つ目を足すのは取り決めの変更になるので、そうするなら作者に伺う。
+- 【起案者案】取り決めを変えずに、規則で足す版は `interpretation` の basis にする。規則の適用は決まった手順の機械の処理で、作者の手の編集ではない。`human-derived` にしないので、作者が見ていない結び付けに人の編集の扱い（一括承認からの除外の理由 `Edited`、apply の root の系譜の確認など）が付かない。`interpretation` は live の source token の一致を求め、ずれたら `NEX_READ_SET_STALE` で拒む。
+- `interpretation` の版は owner（`revisionBasis.runId+taskId`）を持つ。抽出への適用（2 本目）は抽出の run と task を使える。保存直後の当て直し（3 本目）には run が無いので、当て直し用の run を作るか、別の形にするかを 3 本目の前に決める【未決】。
+
