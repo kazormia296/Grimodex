@@ -283,13 +283,15 @@ Agent Auto既定化後、設定破損が自動書き込み許可へ変換され�
 
 ## 追補（2026-11-23）：作者の出来事の更新・削除に限る、承認つきの書き込みの先行実装（AWA/1）
 
+2026-11-23 の確認 141（`nir1-agent-event-write-approval-proposal/1#agent-event-write-approval`）・確認 142（`nir1-agent-event-write-approval-proposal/1#mcp-author-event-write`）。
+
 本 ADR の本文は書き換えない。AWA/1 が確認されたので、承認つきの書き込みの一部を、Gate A より先に実装することの扱いを、ここに記す。規則の正本は AWA/1 である。この追補は、本文のどの文がどう読み替わるかを示すだけで、規則を足さない。
 
 - 起案：AWA/1（[nir1-agent-event-write-approval-proposal-1-draft.md](../plans/nir1-agent-event-write-approval-proposal-1-draft.md)。draftRef `nir1-agent-event-write-approval-proposal/1`、下書きの SHA-256 `1dd0fdf64700393b0b8d6a9e5c7034f14edddf7be9dcf6dc87a4f8b31a650d0e`）。
 - 確認の記録：`claude/nir1-contracts` の commit `2778cf5abbbc25114b40c9ce8e1233543515ddc8` の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-22-chronicle-scene-review-apply.md`。AWA/1-1（`#agent-event-write-approval`。アプリ内の AI の承認）は確認 141、AWA/1-2（`#mcp-author-event-write`。MCP）は確認 142。それぞれ、その行だけに掛かる。
 - 順番：この追補（amendment）が、実装より先である（agent-auto-write-safety-roadmap の保守規則 3。[agent-auto-write-safety-roadmap.md](../plans/agent-auto-write-safety-roadmap.md)）。
 
-1. **範囲。** 承認つきの書き込みを先に実装するのは、アプリ内の AI の `update_event` と `delete_event` のうち、作者の出来事（手書き・承認して入れたもの）に触れる呼出しだけである。作者のものに触れるとき、チャットのカードで 1 回ずつ承認する。
+1. **範囲。** 承認つきの書き込みを先に実装するのは、アプリ内の AI の `update_event` と `delete_event` のうち、作者の項目（手書き・承認して入れたもの。削除では因果で結ばれた出来事の作者の欄も含む）に触れる呼出しだけである。作者のものに触れるとき、チャットのカードで 1 回ずつ承認する。
 2. **「承認」の形。** `human-authorized override` は、ApprovalRequest の一形とする。承認の要求は main が作り、承認が確定するまで capability を発行しない（Decision §4）。承認は、新しい一回限りの capability に交換する（Decision §4）。
 3. **Invariants 2・3・4。** 上の範囲だけを満たす。AI が自分で作った出来事の `update_event`（と、因果で作者の出来事に触れない、AI が作った出来事の `delete_event`）と、ほかの変更系ツール 16 本は、Gate A までは今のままで、Invariants 2・3・4 を満たさない状態が続く（`allow` は、LLM の応答の時点で capability を発行するので、4 も満たさない）。roadmap の Gate A の A1・A2 と Exit criteria 1・2（無承認実行が不可能であることの機械的な試験）も、この範囲では、字義どおりには満たされない。
 4. **交換のときの policy の再検査。** Decision §5 の「ポリシーが現在も有効、…を検証してから新Capabilityを発行する」と、roadmap の A2（交換のときの policy の再検査）は、AWA/1 の規則（A5〜A7）が満たす。

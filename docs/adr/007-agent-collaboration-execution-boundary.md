@@ -268,13 +268,15 @@ idempotency、race test、startup reconciliationを必要とする。
 
 ## 追補（2026-11-23）：MCP による作者の出来事の削除と、承認の要求の保持（AWA/1）
 
+2026-11-23 の確認 141（`nir1-agent-event-write-approval-proposal/1#agent-event-write-approval`）・確認 142（`nir1-agent-event-write-approval-proposal/1#mcp-author-event-write`）。
+
 本 ADR の本文は書き換えない。AWA/1 が確認されたので、本文の文との関係を、ここに記す。規則の正本は AWA/1 である。この追補は、本文のどの文がどう読み替わるかを示すだけで、規則を足さない。
 
 - 起案：AWA/1（[nir1-agent-event-write-approval-proposal-1-draft.md](../plans/nir1-agent-event-write-approval-proposal-1-draft.md)。draftRef `nir1-agent-event-write-approval-proposal/1`、下書きの SHA-256 `1dd0fdf64700393b0b8d6a9e5c7034f14edddf7be9dcf6dc87a4f8b31a650d0e`）。
 - 確認の記録：`claude/nir1-contracts` の commit `2778cf5abbbc25114b40c9ce8e1233543515ddc8` の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-22-chronicle-scene-review-apply.md`。AWA/1-1（`#agent-event-write-approval`）は確認 141、AWA/1-2（`#mcp-author-event-write`）は確認 142。それぞれ、その行だけに掛かる。
 
 1. **「destructive、external、publish、credential、広範なstructure effectは常に明示的な人間承認を必要とする。」** この節は、Task の review を対象にし、MCP に触れない。MCP の削除は、ユーザーの選択により、承認なしである（設定で許した、1 つの作品に固定した接続だけ。AWA/1-2。確認 70・74・77・142）。MCP の削除は、SRD/1 の X（出来事が無くなったら承認を外す規則）が入ってから開ける。間に合わなければ、閉じたまま公開する。Task の review の文は、変えない。
-2. **保留中の承認の保持（AgentRunInteraction の節）。** 「request payload、対象Session、status、OCC versionを永続化する」に対し、AWA/1 の承認の要求は、main のメモリだけに置く（再起動で消える）。型・指紋・交換の API は、後で永続にできる形にする。renderer を失った後の Evidence の保持は、満たさない。ADR 008 が許すメモリ置きの範囲である（ADR 008 の同日の追補を参照）。
+2. **保留中の承認の保持（§5 AgentRunInteraction）。** 「request payload、対象Session、status、OCC versionを永続化する」に対し、AWA/1 の承認の要求は、main のメモリだけに置く（再起動で消える）。型・指紋・交換の API は、後で永続にできる形にする。renderer を失った後の Evidence の保持は、満たさない。ADR 008 が許すメモリ置きの範囲である（ADR 008 の同日の追補を参照）。
 
 ## 追補（2026-11-26）：SessionTasks の評価の時期（DR-ST-6）
 

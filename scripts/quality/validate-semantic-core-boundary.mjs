@@ -819,7 +819,12 @@ const EXPECTED_CONDITIONAL_CONTROLS = Object.freeze({
   "human-direct": [
     { control: "field-authority", when: "writes-authority-protected-field" },
   ],
-  "interactive-agent-command": [],
+  "interactive-agent-command": [
+    {
+      control: "author-field-override",
+      when: "event-update-or-delete-affects-author-fields",
+    },
+  ],
   "interpreter-projection": [],
   "import-apply": [],
   "history-replay": [],

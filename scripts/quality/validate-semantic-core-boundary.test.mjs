@@ -219,6 +219,12 @@ function minimalFixtureRoot() {
       },
       {
         id: "interactive-agent-command",
+        conditionalControls: [
+          {
+            control: "author-field-override",
+            when: "event-update-or-delete-affects-author-fields",
+          },
+        ],
         requiredControls: ["typed-writer", "field-authority"],
         forbiddenCallers: ["background-maintenance"],
       },
@@ -3887,6 +3893,19 @@ describe("validate-semantic-core-boundary", () => {
         error.includes("missing required control 'field-authority'"),
       ),
     );
+  });
+
+  it("requires the author-field override condition on interactive agent commands", () => {
+    const root = minimalFixtureRoot();
+    const registry = path.join(root, "policies/narrative/mutation-authority-routes.json");
+    const mismatch = "interactive-agent-command conditionalControls do not match the canonical contract";
+    assert.ok(!validateSemanticCoreBoundary({ repoRoot: root }).errors.includes(mismatch));
+
+    const parsed = JSON.parse(readFileSync(registry, "utf8"));
+    const route = parsed.routes.find(({ id }) => id === "interactive-agent-command");
+    route.conditionalControls = [];
+    writeFileSync(registry, JSON.stringify(parsed));
+    assert.ok(validateSemanticCoreBoundary({ repoRoot: root }).errors.includes(mismatch));
   });
 
   it("rejects caller allowlist overlap and required/conditional control overlap", () => {
