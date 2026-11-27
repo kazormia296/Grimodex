@@ -37,11 +37,14 @@ import {
   captureNarrativeExtractionWorkspaceBinding,
   narrativeExtractionChronicleBulkApprove,
   narrativeExtractionGetRunReviewBundle,
+  narrativeExtractionReapproveAppliedProposals,
   narrativeExtractionIsRunResumableForReview,
   type ChronicleBlockedDiscardExpectation,
   type ChronicleBulkApproval,
   type ChronicleTaskResumeCandidate,
   type GetRunReviewBundleResult,
+  type RedecideStatus,
+  type ReapproveAppliedProposalSkipReasonCode,
   type ReviewBundleProposal,
   type ReviewBundleProposalApplication,
 } from "@/application/narrative-extraction/nativeApi";
@@ -65,6 +68,8 @@ import {
   buildProposalSafetyFlags,
   emptyTaskCounts,
   isBulkApprovalTarget,
+  isChronicleReapprovalTarget,
+  sameProjectionIdentity,
   selectChronicleProposalsForAtomicApply,
   useChronicleExtractionStore,
   type ChronicleExtractionCoverage,
@@ -124,6 +129,7 @@ interface SnapshotArtifactPayload {
   };
 }
 
+let pendingRevisionSyncEpoch: number | null = null;
 const proposalSetIdByRunId = new Map<string, string>();
 const resumeInFlight = new Map<string, Promise<{ runId: string }>>();
 const discardInFlight = new Map<string, Promise<{ runId: string }>>();
@@ -145,6 +151,7 @@ function rememberProposalSetId(runId: string, proposalSetId: string): void {
 }
 
 export function resetChronicleExtractionApiCachesForTests(): void {
+  pendingRevisionSyncEpoch = null;
   proposalSetIdByRunId.clear();
   resumeInFlight.clear();
   discardInFlight.clear();
@@ -301,6 +308,7 @@ function buildReviewProposalFromPlanned(args: {
     | null;
   readonly probableDuplicateChoice?: ProbableDuplicateChoice | null;
   readonly application?: ReviewBundleProposalApplication | null;
+  readonly redecide?: RedecideStatus | null;
   readonly bulkApproval?: ChronicleBulkApproval | null;
 }): ChronicleReviewProposal {
   // Match/safety is computed against the immutable plan-time payload. A
@@ -360,6 +368,7 @@ function buildReviewProposalFromPlanned(args: {
     // remains conservatively non-bulk-safe.
     probableDuplicateChoice: args.probableDuplicateChoice ?? null,
     application: args.application ?? null,
+    redecide: args.redecide ?? null,
     bulkApproval: args.bulkApproval ?? null,
     blockedReason: fragmented
       ? "断片 Evidence のため適用不可（確認のみ）"
@@ -377,6 +386,7 @@ type SavedReviewSeed = {
   readonly payload?: CreateChronicleEventProposalPayloadV1;
   readonly probableDuplicateChoice?: ProbableDuplicateChoice | null;
   readonly application?: ReviewBundleProposalApplication | null;
+  readonly redecide?: RedecideStatus | null;
   /** Native's bulk-approval judgement, read with the review bundle (B3). */
   readonly bulkApproval?: ChronicleBulkApproval | null;
 };
@@ -416,6 +426,21 @@ function probableDuplicateChoiceFromDecisionJson(
   return null;
 }
 
+function redecideFromBundle(
+  proposal: ReviewBundleProposal,
+): RedecideStatus | null {
+  const { rejectedBy, removedVia, rejectedAt, reapproval } = proposal;
+  if (
+    !proposal.application ||
+    rejectedBy === undefined ||
+    removedVia === undefined ||
+    rejectedAt === undefined ||
+    !reapproval
+  )
+    return null;
+  return { rejectedBy, removedVia, rejectedAt, reapproval };
+}
+
 function savedSeedsFromBundle(
   proposals: readonly ReviewBundleProposal[],
 ): SavedReviewSeed[] {
@@ -434,6 +459,7 @@ function savedSeedsFromBundle(
         status: proposal.status,
         payload,
         application: cloneReviewApplication(proposal.application),
+        redecide: redecideFromBundle(proposal),
         bulkApproval: cloneBulkApproval(proposal.bulkApproval),
         probableDuplicateChoice:
           proposal.latestDecision?.revisionId === proposal.currentRevisionId
@@ -522,6 +548,7 @@ export function buildChronicleExtractionReviewProjection(args: {
         existingEventsCatalog: args.existingEventsCatalog,
         probableDuplicateChoice: seed.probableDuplicateChoice ?? null,
         application: seed.application ?? null,
+        redecide: seed.redecide ?? null,
         bulkApproval: seed.bulkApproval ?? null,
       });
     },
@@ -556,6 +583,7 @@ export function buildChronicleExtractionReviewProjection(args: {
       }),
       probableDuplicateChoice: null,
       application: null,
+      redecide: null,
     });
   }
 
@@ -1726,13 +1754,9 @@ function chronicleProjectionIdentity(
 }
 
 /**
- * Re-read Native's bulk-approval judgement for the active review projection
- * (B3, DR-BAO-8): one review-bundle read. Only `bulkApproval` is merged (and,
- * with `syncRevisions`, the revision/status/payload of proposals whose current
- * revision changed — the result of a bulk approval). The author's selection and
- * choices are not rolled back. A failed read makes every judgement unknown
- * (null), so no stale judgement is shown or sent. Never throws.
- * @returns true when Native's judgement was merged.
+ * One review-bundle read updates bulk judgements and decisions on applied rows.
+ * After bulk approval, syncRevisions also restores new child revisions.
+ * A failed read invalidates the judgements for the active projection.
  */
 export async function refreshChronicleBulkApprovalJudgements(
   options: { readonly syncRevisions?: boolean } = {},
@@ -1753,9 +1777,15 @@ async function readChronicleBulkApprovalJudgements(
   const identity = chronicleProjectionIdentity(projection);
   // A newer read, or a local operation that nulls a judgement, makes this
   // answer stale: the store then drops it.
+  // A newer bundle read also finishes any revision sync it supersedes.
+  const syncRevisions =
+    options.syncRevisions ||
+    pendingRevisionSyncEpoch ===
+      useChronicleExtractionStore.getState().bulkJudgementEpoch;
   const epoch = useChronicleExtractionStore
     .getState()
     .advanceBulkJudgementEpoch();
+  if (syncRevisions) pendingRevisionSyncEpoch = epoch;
   const adjustReads = (delta: number) =>
     useChronicleExtractionStore.setState((state) => ({
       bulkJudgementReads: Math.max(0, state.bulkJudgementReads + delta),
@@ -1779,10 +1809,13 @@ async function readChronicleBulkApprovalJudgements(
     );
     const rows: ChronicleNativeReviewRow[] = bundle.proposals.map((native) => {
       const bulkApproval = cloneBulkApproval(native.bulkApproval);
+      const appliedDecision = native.application
+        ? { status: native.status, redecide: redecideFromBundle(native) }
+        : undefined;
       const local = localById.get(native.proposalId);
       if (
-        options.syncRevisions &&
-        local &&
+        syncRevisions &&
+        local?.application === null &&
         native.currentRevisionId &&
         native.currentRevisionId !== local.revisionId
       ) {
@@ -1791,6 +1824,7 @@ async function readChronicleBulkApprovalJudgements(
           proposalId: native.proposalId,
           revisionId: native.currentRevisionId,
           bulkApproval,
+          appliedDecision,
           sync: {
             revisionId: native.currentRevisionId,
             status: native.status,
@@ -1805,6 +1839,7 @@ async function readChronicleBulkApprovalJudgements(
       return {
         proposalId: native.proposalId,
         revisionId: native.currentRevisionId,
+        appliedDecision,
         bulkApproval,
       };
     });
@@ -1823,6 +1858,7 @@ async function readChronicleBulkApprovalJudgements(
       .clearBulkApprovalJudgements(identity, epoch);
     return "failed";
   } finally {
+    if (pendingRevisionSyncEpoch === epoch) pendingRevisionSyncEpoch = null;
     adjustReads(-1);
   }
 }
@@ -2185,6 +2221,88 @@ export class ChronicleBulkApproveCommandError extends Error {
     this.name = "ChronicleBulkApproveCommandError";
     this.listRefreshed = listRefreshed;
   }
+}
+
+/**
+ * SRD/1 RA7: re-read the review bundle for the applied proposals' removal
+ * state. `false` only when the read failed (the store then marks applied
+ * proposals unverified); a read superseded by a newer one is not a failure,
+ * since the newer read owns the screen.
+ */
+export async function refreshChronicleRedecideState(): Promise<boolean> {
+  return (await readChronicleBulkApprovalJudgements()) !== "failed";
+}
+
+export interface ChronicleReapprovalOutcome {
+  readonly approved: number;
+  readonly skipped: readonly {
+    readonly proposalId: string;
+    readonly reason: ReapproveAppliedProposalSkipReasonCode;
+  }[];
+  readonly failed: readonly {
+    readonly proposalId: string;
+    readonly code: string;
+  }[];
+  readonly stopped: boolean;
+  readonly refreshed: boolean;
+}
+
+export async function reapproveChronicleProposals(
+  proposalIds?: readonly string[],
+): Promise<ChronicleReapprovalOutcome> {
+  const projection = useChronicleExtractionStore.getState().projection;
+  if (!projection) throw new Error("No active chronicle extraction review");
+  const identity = chronicleProjectionIdentity(projection);
+  const isCurrent = () =>
+    sameProjectionIdentity(
+      useChronicleExtractionStore.getState().projection,
+      identity,
+    );
+  const requested = proposalIds && new Set(proposalIds);
+  const targets = projection.proposals
+    .filter(isChronicleReapprovalTarget)
+    .filter(({ proposalId }) => !requested || requested.has(proposalId))
+    .map(({ proposalId, revisionId }) => ({ proposalId, revisionId }));
+  let approved = 0;
+  let stopped = false;
+  const skipped: ChronicleReapprovalOutcome["skipped"][number][] = [];
+  const failed: ChronicleReapprovalOutcome["failed"][number][] = [];
+  try {
+    for (
+      let i = 0;
+      i < targets.length;
+      i += CHRONICLE_BULK_APPROVE_MAX_TARGETS
+    ) {
+      if (!isCurrent()) {
+        stopped = true;
+        break;
+      }
+      const result = await narrativeExtractionReapproveAppliedProposals({
+        projectId: identity.projectId,
+        targets: targets.slice(i, i + CHRONICLE_BULK_APPROVE_MAX_TARGETS),
+      });
+      approved += result.approved.length;
+      for (const { proposalId, reasons } of result.skipped) {
+        if (reasons.includes("already-approved")) {
+          approved++;
+        } else {
+          for (const reason of reasons) skipped.push({ proposalId, reason });
+        }
+      }
+      failed.push(...result.failed);
+      if (result.stopped) {
+        stopped = true;
+        break;
+      }
+    }
+  } catch (error) {
+    throw new ChronicleBulkApproveCommandError(
+      error,
+      await refreshChronicleRedecideState(),
+    );
+  }
+  const refreshed = await refreshChronicleRedecideState();
+  return { approved, skipped, failed, stopped, refreshed };
 }
 
 function countUndecidedProposals(runId: string): number {
