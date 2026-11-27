@@ -11,6 +11,7 @@ import {
 } from "../main/mastra/agentWire.js";
 import { M4_READ_TOOL_NAMES } from "./agentReadToolDefinitions.js";
 import { MASTRA_UI_TOOL_NAMES } from "./mastraUiToolDefinitions.js";
+import { MASTRA_AGENT_WRITE_TOOL_NAMES } from "./mastraWriteToolDefinitions.js";
 import {
   hasMastraAgentTurnForbiddenKey,
   isMastraAgentTurnCommand,
@@ -120,6 +121,7 @@ function start(overrides: Record<string, unknown> = {}) {
   return {
     turnId: TURN_ID,
     chatSessionId: "session-1",
+    writerSessionId: "writer-session-1",
     projectId: "project-1",
     currentSceneId: "scene-1",
     chatMessageId: "message-1",
@@ -304,6 +306,7 @@ describe("parseMastraAgentTurnStartRequest", () => {
     for (const key of [
       "turnId",
       "chatSessionId",
+      "writerSessionId",
       "projectId",
       "currentSceneId",
       "chatMessageId",
@@ -483,7 +486,7 @@ describe("parseMastraAgentTurnStartRequest", () => {
     expect(issueOf(start({ currentSceneId: false }))).toBe("current-scene-id");
   });
 
-  it("the three scope fields are required keys (START_KEYS is twelve)", () => {
+  it("the start request has thirteen exact required keys", () => {
     const wire = readFileSync(
       new URL("./mastraAgentTurnWire.ts", import.meta.url),
       "utf8",
@@ -491,7 +494,7 @@ describe("parseMastraAgentTurnStartRequest", () => {
     const keys = /const START_KEYS = \[([^\]]*)\]/u
       .exec(wire)?.[1]
       ?.match(/"([A-Za-z]+)"/gu);
-    expect(keys).toHaveLength(12);
+    expect(keys).toHaveLength(13);
     expect(Object.keys(start()).sort()).toEqual(
       keys?.map((key) => key.slice(1, -1)).sort(),
     );
@@ -877,6 +880,17 @@ describe("parseMastraAgentTurnStartRequest", () => {
     ).toBeNull();
   });
 
+  it("requires the renderer recorder session for Native write attribution", () => {
+    for (const writerSessionId of [
+      "",
+      " writer",
+      "writer ",
+      "w".repeat(MASTRA_AGENT_TURN_ID_UTF16_MAX + 1),
+    ]) {
+      expect(issueOf(start({ writerSessionId }))).toBe("writer-session-id");
+    }
+  });
+
   it("accepts messages of text only", () => {
     expect(issueOf(start({ messages: [] }))).toBe("messages");
     expect(issueOf(start({ messages: "x" }))).toBe("messages");
@@ -1069,10 +1083,13 @@ describe("parseMastraAgentTurnStartRequest", () => {
     }
   });
 
-  it("allows only distinct M4 or MP-5 UI tool names", () => {
+  it("allows only distinct M4, MP-5 UI and MP-6 write tool names", () => {
     expect(issueOf(start({ tools: [...M4_READ_TOOL_NAMES] }))).toBeNull();
     expect(issueOf(start({ tools: [...MASTRA_UI_TOOL_NAMES] }))).toBeNull();
-    expect(MASTRA_AGENT_TURN_TOOLS_MAX).toBe(28);
+    expect(
+      issueOf(start({ tools: [...MASTRA_AGENT_WRITE_TOOL_NAMES] })),
+    ).toBeNull();
+    expect(MASTRA_AGENT_TURN_TOOLS_MAX).toBe(41);
     expect(issueOf(start({ tools: ["get_scene"] }))).toBeNull();
     expect(issueOf(start({ tools: ["not_a_tool"] }))).toBe("tools");
     expect(issueOf(start({ tools: ["get_scene", "get_scene"] }))).toBe("tools");
@@ -1369,14 +1386,16 @@ describe("MP-5 UI question and answer wire", () => {
     expect(
       parseMastraAgentTurnQuestionPayload(
         question({
-          deadlineAt: Date.now() + MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS + 60_000,
+          deadlineAt:
+            Date.now() + MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS + 60_000,
         }),
       ),
     ).toEqual({ ok: false, issue: "deadline" });
     expect(
       parseMastraAgentTurnQuestionPayload(
         question({
-          deadlineAt: Date.now() + MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT_MS + 60_000,
+          deadlineAt:
+            Date.now() + MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT_MS + 60_000,
         }),
       ),
     ).toEqual({ ok: false, issue: "deadline" });

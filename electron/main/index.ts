@@ -40,7 +40,14 @@ import {
   parseBodyDeclarationCiSeam,
   startBodyDeclarationCiSeam,
 } from "./bodyDeclarationCiSeam.js";
-import { nir1LocalGenerationLaunchFromApp, registerIpcRouter } from "./ipc.js";
+import {
+  agentAuthorityRequestId,
+  consumeAndBindAgentAuthorityCapability,
+  issueAgentAuthorityCapabilitiesForSender,
+  nir1LocalGenerationLaunchFromApp,
+  registerIpcRouter,
+} from "./ipc.js";
+import type { CommandArgs } from "./ipc.js";
 import { createMastraAgentLoader } from "./mastraAgentLoader.js";
 import {
   createMainO200kTokenizer,
@@ -115,6 +122,7 @@ import {
   setWindowTitleLock,
 } from "./windows.js";
 import { createProfileEgressGate } from "./profileEgress.js";
+import type { MainIssuedCallerIdentity } from "./profileEgress.js";
 import {
   applySessionPermissionPolicy,
   registerSecurityHandlers,
@@ -626,6 +634,16 @@ if (!gotSingleInstanceLock) {
       profile: profileEgress,
       loadRuntime: () => mastraAgentLoader.load(),
       loadReadBindings: () => import("./mastraTurnReadBindings.js"),
+      issueWriteCapabilities: (senderId, args, response, writer, identity) =>
+        issueAgentAuthorityCapabilitiesForSender(
+          senderId,
+          args as unknown as CommandArgs,
+          response,
+          writer,
+          identity as MainIssuedCallerIdentity,
+        ),
+      agentAuthorityRequestId,
+      bindWriteCapability: consumeAndBindAgentAuthorityCapability,
       appVersion: app.getVersion(),
       log: (level, message) => {
         console[level](`[mastra-turn-owner] ${message}`);

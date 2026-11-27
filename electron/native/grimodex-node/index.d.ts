@@ -316,7 +316,7 @@ export declare class Backend {
   /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
   memoryVectorDelete(indexName: string, id: string): Promise<string>
   /** Main-only typed Mastra memory access. This is intentionally absent from renderer IPC. */
-  memoryVectorDeleteMany(indexName: string, ids: Array<string>): Promise<string>
+  memoryVectorDeleteMany(indexName: string, request: any): Promise<string>
   /**
    * DA-2b CW (DR-DA2-50): delete messages of one chat session. Typed
    * `internal` writer; Main attaches the caller identity as the trailing

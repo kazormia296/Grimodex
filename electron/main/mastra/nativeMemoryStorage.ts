@@ -30,9 +30,50 @@ function isoDate(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : value;
 }
 
+const OM_FIELDS = new Set([
+  "updatedAt",
+  "lastObservedAt",
+  "originType",
+  "generationCount",
+  "supersededBy",
+  "activeObservations",
+  "bufferedObservationChunks",
+  "bufferedObservations",
+  "bufferedObservationTokens",
+  "bufferedMessageIds",
+  "bufferedReflection",
+  "bufferedReflectionTokens",
+  "bufferedReflectionInputTokens",
+  "reflectedObservationLineCount",
+  "observedMessageIds",
+  "observedTimezone",
+  "totalTokensObserved",
+  "observationTokenCount",
+  "pendingMessageTokens",
+  "isReflecting",
+  "isObserving",
+  "isBufferingObservation",
+  "isBufferingReflection",
+  "lastBufferedAtTokens",
+  "lastBufferedAtTime",
+  "config",
+  "metadata",
+]);
+
+function omRecord(args: unknown[]): Record<string, unknown> {
+  const [first, second] = args;
+  if (first && typeof first === "object" && !Array.isArray(first)) {
+    return first as Record<string, unknown>;
+  }
+  if (second && typeof second === "object" && !Array.isArray(second)) {
+    return { ...(second as Record<string, unknown>), id: first };
+  }
+  return { id: first, value: second };
+}
+
 /** Main-only adapter. Persistence and validation stay in the typed Native commands. */
 export class NativeMemoryStorage extends MemoryStorage {
-  readonly supportsObservationalMemory = false;
+  readonly supportsObservationalMemory = true;
   readonly supportsPartialThreadUpdate = true;
   readonly supportsAtomicWorkingMemoryMerge = false;
 
@@ -237,98 +278,181 @@ export class NativeMemoryStorage extends MemoryStorage {
   }
 
   async getObservationalMemory(
-    ..._args: Parameters<MemoryStorage["getObservationalMemory"]>
+    ...args: Parameters<MemoryStorage["getObservationalMemory"]>
   ): ReturnType<MemoryStorage["getObservationalMemory"]> {
-    throw unsupported("getObservationalMemory");
+    return this.readObservationalMemory("get", args) as ReturnType<
+      MemoryStorage["getObservationalMemory"]
+    >;
   }
   async getObservationalMemoryHistory(
-    ..._args: Parameters<MemoryStorage["getObservationalMemoryHistory"]>
+    ...args: Parameters<MemoryStorage["getObservationalMemoryHistory"]>
   ): ReturnType<MemoryStorage["getObservationalMemoryHistory"]> {
-    throw unsupported("getObservationalMemoryHistory");
+    return this.readObservationalMemory("history", args) as ReturnType<
+      MemoryStorage["getObservationalMemoryHistory"]
+    >;
   }
   async initializeObservationalMemory(
-    ..._args: Parameters<MemoryStorage["initializeObservationalMemory"]>
+    ...args: Parameters<MemoryStorage["initializeObservationalMemory"]>
   ): ReturnType<MemoryStorage["initializeObservationalMemory"]> {
-    throw unsupported("initializeObservationalMemory");
+    return this.saveObservationalMemory(args[0]) as ReturnType<
+      MemoryStorage["initializeObservationalMemory"]
+    >;
   }
   async updateActiveObservations(
-    ..._args: Parameters<MemoryStorage["updateActiveObservations"]>
+    ...args: Parameters<MemoryStorage["updateActiveObservations"]>
   ): ReturnType<MemoryStorage["updateActiveObservations"]> {
-    throw unsupported("updateActiveObservations");
+    return this.updateObservationalMemory(args) as ReturnType<
+      MemoryStorage["updateActiveObservations"]
+    >;
   }
   async commitActiveObservations(
-    ..._args: Parameters<MemoryStorage["commitActiveObservations"]>
+    ...args: Parameters<MemoryStorage["commitActiveObservations"]>
   ): ReturnType<MemoryStorage["commitActiveObservations"]> {
-    throw unsupported("commitActiveObservations");
+    return this.updateObservationalMemory(args) as ReturnType<
+      MemoryStorage["commitActiveObservations"]
+    >;
   }
   async updateBufferedObservations(
-    ..._args: Parameters<MemoryStorage["updateBufferedObservations"]>
+    ...args: Parameters<MemoryStorage["updateBufferedObservations"]>
   ): ReturnType<MemoryStorage["updateBufferedObservations"]> {
-    throw unsupported("updateBufferedObservations");
+    return this.updateObservationalMemory(args) as ReturnType<
+      MemoryStorage["updateBufferedObservations"]
+    >;
   }
   async appendBufferedObservations(
-    ..._args: Parameters<MemoryStorage["appendBufferedObservations"]>
+    ...args: Parameters<MemoryStorage["appendBufferedObservations"]>
   ): ReturnType<MemoryStorage["appendBufferedObservations"]> {
-    throw unsupported("appendBufferedObservations");
+    return this.updateObservationalMemory(args) as ReturnType<
+      MemoryStorage["appendBufferedObservations"]
+    >;
   }
   async swapBufferedToActive(
-    ..._args: Parameters<MemoryStorage["swapBufferedToActive"]>
+    ...args: Parameters<MemoryStorage["swapBufferedToActive"]>
   ): ReturnType<MemoryStorage["swapBufferedToActive"]> {
-    throw unsupported("swapBufferedToActive");
+    return this.updateObservationalMemory(args) as ReturnType<
+      MemoryStorage["swapBufferedToActive"]
+    >;
   }
   async createReflectionGeneration(
-    ..._args: Parameters<MemoryStorage["createReflectionGeneration"]>
+    ...args: Parameters<MemoryStorage["createReflectionGeneration"]>
   ): ReturnType<MemoryStorage["createReflectionGeneration"]> {
-    throw unsupported("createReflectionGeneration");
+    return this.updateObservationalMemory(args) as ReturnType<
+      MemoryStorage["createReflectionGeneration"]
+    >;
   }
   async updateBufferedReflection(
-    ..._args: Parameters<MemoryStorage["updateBufferedReflection"]>
+    ...args: Parameters<MemoryStorage["updateBufferedReflection"]>
   ): ReturnType<MemoryStorage["updateBufferedReflection"]> {
-    throw unsupported("updateBufferedReflection");
+    return this.updateObservationalMemoryVoid(args);
   }
   async swapBufferedReflectionToActive(
-    ..._args: Parameters<MemoryStorage["swapBufferedReflectionToActive"]>
+    ...args: Parameters<MemoryStorage["swapBufferedReflectionToActive"]>
   ): ReturnType<MemoryStorage["swapBufferedReflectionToActive"]> {
-    throw unsupported("swapBufferedReflectionToActive");
+    return this.updateObservationalMemory(args) as ReturnType<
+      MemoryStorage["swapBufferedReflectionToActive"]
+    >;
   }
   async setReflectingFlag(
-    ..._args: Parameters<MemoryStorage["setReflectingFlag"]>
+    ...args: Parameters<MemoryStorage["setReflectingFlag"]>
   ): ReturnType<MemoryStorage["setReflectingFlag"]> {
-    throw unsupported("setReflectingFlag");
+    return this.updateObservationalMemoryVoid(args, "isReflecting");
   }
   async setObservingFlag(
-    ..._args: Parameters<MemoryStorage["setObservingFlag"]>
+    ...args: Parameters<MemoryStorage["setObservingFlag"]>
   ): ReturnType<MemoryStorage["setObservingFlag"]> {
-    throw unsupported("setObservingFlag");
+    return this.updateObservationalMemoryVoid(args, "isObserving");
   }
   async setBufferingObservationFlag(
-    ..._args: Parameters<MemoryStorage["setBufferingObservationFlag"]>
+    ...args: Parameters<MemoryStorage["setBufferingObservationFlag"]>
   ): ReturnType<MemoryStorage["setBufferingObservationFlag"]> {
-    throw unsupported("setBufferingObservationFlag");
+    return this.updateObservationalMemoryVoid(args, "isBufferingObservation");
   }
   async setBufferingReflectionFlag(
-    ..._args: Parameters<MemoryStorage["setBufferingReflectionFlag"]>
+    ...args: Parameters<MemoryStorage["setBufferingReflectionFlag"]>
   ): ReturnType<MemoryStorage["setBufferingReflectionFlag"]> {
-    throw unsupported("setBufferingReflectionFlag");
+    return this.updateObservationalMemoryVoid(args, "isBufferingReflection");
   }
   async insertObservationalMemoryRecord(
-    ..._args: Parameters<MemoryStorage["insertObservationalMemoryRecord"]>
+    ...args: Parameters<MemoryStorage["insertObservationalMemoryRecord"]>
   ): ReturnType<MemoryStorage["insertObservationalMemoryRecord"]> {
-    throw unsupported("insertObservationalMemoryRecord");
+    return this.saveObservationalMemoryVoid(args[0]);
   }
   async clearObservationalMemory(
-    ..._args: Parameters<MemoryStorage["clearObservationalMemory"]>
+    ...args: Parameters<MemoryStorage["clearObservationalMemory"]>
   ): ReturnType<MemoryStorage["clearObservationalMemory"]> {
-    throw unsupported("clearObservationalMemory");
+    const [threadId, resourceId] = args;
+    return this.writeObservationalMemoryVoid({
+      operation: "clear",
+      threadId,
+      resourceId,
+    });
   }
   async setPendingMessageTokens(
-    ..._args: Parameters<MemoryStorage["setPendingMessageTokens"]>
+    ...args: Parameters<MemoryStorage["setPendingMessageTokens"]>
   ): ReturnType<MemoryStorage["setPendingMessageTokens"]> {
-    throw unsupported("setPendingMessageTokens");
+    return this.updateObservationalMemoryVoid(args, "pendingMessageTokens");
   }
   async updateObservationalMemoryConfig(
-    ..._args: Parameters<MemoryStorage["updateObservationalMemoryConfig"]>
+    ...args: Parameters<MemoryStorage["updateObservationalMemoryConfig"]>
   ): ReturnType<MemoryStorage["updateObservationalMemoryConfig"]> {
-    throw unsupported("updateObservationalMemoryConfig");
+    return this.updateObservationalMemoryVoid(args, "config");
+  }
+
+  private readObservationalMemory(
+    operation: "get" | "history",
+    args: unknown[],
+  ) {
+    const [threadId, resourceId, limit] = args;
+    return this.backend
+      .memoryObservationalMemoryRead({
+        operation,
+        threadId: threadId ?? undefined,
+        resourceId,
+        ...(operation === "history" && limit !== undefined ? { limit } : {}),
+      })
+      .then((wire) => decode(wire));
+  }
+
+  private saveObservationalMemory(record: unknown) {
+    const value =
+      record && typeof record === "object" && "record" in record
+        ? (record as { record: unknown }).record
+        : record;
+    return this.backend
+      .memoryObservationalMemoryWrite({ operation: "save", record: value })
+      .then((wire) => decode(wire));
+  }
+
+  private updateObservationalMemory(args: unknown[], field?: string) {
+    const { id, value, ...values } = omRecord(args);
+    const fields = Object.fromEntries(
+      Object.entries(values).filter(([key]) => OM_FIELDS.has(key)),
+    );
+    if (field && !Object.hasOwn(fields, field))
+      fields[field] = value ?? args[1];
+    return this.backend
+      .memoryObservationalMemoryWrite({ operation: "update", id, fields })
+      .then((wire) => decode(wire));
+  }
+
+  private writeObservationalMemory(request: unknown) {
+    return this.backend
+      .memoryObservationalMemoryWrite(request)
+      .then((wire) => decode(wire));
+  }
+
+  private async updateObservationalMemoryVoid(
+    args: unknown[],
+    field?: string,
+  ): Promise<void> {
+    await this.updateObservationalMemory(args, field);
+  }
+
+  private async saveObservationalMemoryVoid(record: unknown): Promise<void> {
+    await this.saveObservationalMemory(record);
+  }
+
+  private async writeObservationalMemoryVoid(request: unknown): Promise<void> {
+    await this.writeObservationalMemory(request);
   }
 }

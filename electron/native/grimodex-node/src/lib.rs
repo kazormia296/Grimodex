@@ -11142,11 +11142,13 @@ impl Backend {
     pub async fn memory_vector_delete_many(
         &self,
         index_name: String,
-        ids: Vec<String>,
+        request: serde_json::Value,
     ) -> Result<String> {
-        run_memory_operation(Arc::clone(&self.state), move |db| {
-            memory::vector_delete_many(db, &index_name, &ids)
-        })
+        run_memory_payload(
+            Arc::clone(&self.state),
+            request,
+            move |db, request| memory::vector_delete_many_request(db, &index_name, request),
+        )
         .await
     }
 
