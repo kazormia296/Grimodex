@@ -77,7 +77,7 @@ Status: 草稿（起案者 grimodex-13、2026-11-26）。実装の前の技術�
 
 ## 3. Change Feed
 
-- canonical の `change_events`：domain は新しく `identity-correction`、op は `rule.revise`。**payload は `ruleRevisionId`・`ruleId`・`kind` だけ**（作者の回答の「規則の ID と種類だけ」。撤回かどうかの `state` も入れず、必要な読み手は revision の ID から typed reader で引く）。表記・項目 ID・場面 ID・名前・理由は入れない。payload の外の列も固定する：`entity_type`＝`identity_correction_rule`、`entity_id`＝規則の revision の ID、`scene_id`＝NULL（場面 scope でも入れない）。監査の ZIP（`legacyEvidence.ts`）は `change_events` の全列を種類で絞らずそのまま出すため（codex-jobs/m3-erm-pr1-facts.out.md の 5）。
+- canonical の `change_events`：domain は新しく `identity-correction`、op は `rule.revise`。**payload は `ruleRevisionId` と `kind` だけ**（作者の回答の「規則の ID と種類だけ」。実装の独立レビューで系列の `ruleId` も外した〔DR-M3-39〕。撤回かどうかの `state` も入れず、必要な読み手は revision の ID から typed reader で引く）。表記・項目 ID・場面 ID・名前・理由は入れない。payload の外の列も固定する：`entity_type`＝`identity_correction_rule`、`entity_id`＝規則の revision の ID、`scene_id`＝NULL（場面 scope でも入れない）。監査の ZIP（`legacyEvidence.ts`）は `change_events` の全列を種類で絞らずそのまま出すため（codex-jobs/m3-erm-pr1-facts.out.md の 5）。
 - 規則の event は Undo の対象にしない（取り消しは撤回の revision）。Undo・履歴の表示・timelapse の caption が知らない domain をどう扱うかは facts3 の結果で決める。
 - narrative の transaction：依存する提案の freshness を古くする伝播は narrative の表を読む（`load_change_batch_envelope`）。PR 1 では依存先が無いので、無効化の key は規則の ID までにとどめる（表記や項目 ID を key にすると、narrative の表が別の漏れ口になる）。当て直しは PR 3。
 - `change-feed-writers.json` の operation は `required`、`protected-writers.json` に表と writer を登録する。
