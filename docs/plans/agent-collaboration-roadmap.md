@@ -182,6 +182,14 @@ force-kill delay after explicit cancellation
 F0-liteはRelease Aと最小Task integrationが実際に使うcontractだけを固定する。
 Workspace／Semantic contractは明示的にscope外とする。
 
+> 注記（2026-11-27、[A3 の判断記録](a3-durable-agentrun-decisions.md) の DR-A3-13）：
+> F0-lite を 2 つに分ける。
+>
+> - F0-lite-A（A3 の lane）：`TransportExecutionHandle`、`AgentRunStatus`、`AgentRunInteractionStatus`、`ExecutionAuthority`、`ProjectionAttachment`、`AnalysisReadBasisEntryV1`。
+> - F0-lite-B（Release B の lane）：`WorkTaskStatus`、`minimal TaskContractSnapshotV1`、`AnalysisReadBasisV1`。
+>
+> Release B の前提にある「F0-lite」は、F0-lite-A と読む。
+
 ### Contracts
 
 ```text
@@ -248,6 +256,15 @@ result
 ## A3 — Durable AgentRun and durable interactions
 
 **State:** R1およびF0-lite state contractでBlocked。
+
+> 注記（2026-11-27）：
+> 利用者の決定により、A3 を「中断した瞬間の状態から、読み直しなしで同じ Run が続く」途中再開に拡張した（[A3 の判断記録](a3-durable-agentrun-decisions.md)、[ADR 007 の同日の追補](../adr/007-agent-collaboration-execution-boundary.md)）。
+> 下の Interaction contract の「明示的continuation contractがない限りRunを`interrupted`へ遷移」は、次のように読む。
+>
+> - legacy の API の agent loop には、その continuation contract がある。
+> - `interrupted` は非終端で、作者の操作で同じ Run を再開する。
+>
+> `AgentRunStatus` の値は判断記録の DR-A3-2 による（成功は `completed`）。
 
 ### Durable records
 

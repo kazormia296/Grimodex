@@ -7,6 +7,16 @@ import type { RestoreScope } from "./projectSnapshotScopes";
 export interface RestoreLossPreviewState {
   status: "idle" | "loading" | "ready" | "error";
   notices: RestoreLossNotice[];
+  /**
+   * SRD/1 RD6: imported proposals whose approval the restore takes off.
+   * `null` unless `status` is "ready" and Native said.
+   */
+  approvalLossCount: number | null;
+}
+
+interface CachedPreview {
+  notices: RestoreLossNotice[];
+  approvalLossCount: number | null;
 }
 
 export function useRestoreLossPreview(
@@ -18,8 +28,9 @@ export function useRestoreLossPreview(
   const [state, setState] = useState<RestoreLossPreviewState>({
     status: "idle",
     notices: [],
+    approvalLossCount: null,
   });
-  const cache = useRef(new Map<string, RestoreLossNotice[]>());
+  const cache = useRef(new Map<string, CachedPreview>());
   const activeSnapshotId = useRef<string | null>(null);
   const hasStarted = useRef(false);
   const requestNumber = useRef(0);
@@ -39,7 +50,7 @@ export function useRestoreLossPreview(
       cache.current.clear();
       activeSnapshotId.current = null;
       hasStarted.current = false;
-      setState({ status: "idle", notices: [] });
+      setState({ status: "idle", notices: [], approvalLossCount: null });
       return cancel;
     }
     if (activeSnapshotId.current !== snapshotId) {
@@ -48,28 +59,33 @@ export function useRestoreLossPreview(
       hasStarted.current = false;
     }
     if (!enabled || !structural) {
-      setState({ status: "idle", notices: [] });
+      setState({ status: "idle", notices: [], approvalLossCount: null });
       return cancel;
     }
 
     const key = `${snapshotId}\u0000${scopesKey}`;
     const cached = cache.current.get(key);
     if (cached) {
-      setState({ status: "ready", notices: cached });
+      setState({ status: "ready", ...cached });
       return cancel;
     }
 
-    setState({ status: "loading", notices: [] });
+    setState({ status: "loading", notices: [], approvalLossCount: null });
     const delay = hasStarted.current ? 300 : 0;
     hasStarted.current = true;
     const run = () => {
       void previewProjectSnapshotRestoreLoss(snapshotId, new Set(orderedScopes))
-        .then(({ structural: isStructural, lossNotices }) => {
-          if (request !== requestNumber.current) return;
-          const notices = isStructural ? lossNotices : [];
-          cache.current.set(key, notices);
-          setState({ status: "ready", notices });
-        })
+        .then(
+          ({ structural: isStructural, lossNotices, approvalLossCount }) => {
+            if (request !== requestNumber.current) return;
+            const preview: CachedPreview = {
+              notices: isStructural ? lossNotices : [],
+              approvalLossCount: isStructural ? approvalLossCount : null,
+            };
+            cache.current.set(key, preview);
+            setState({ status: "ready", ...preview });
+          },
+        )
         .catch((error: unknown) => {
           if (request !== requestNumber.current) return;
           debugLog.error(
@@ -77,7 +93,7 @@ export function useRestoreLossPreview(
             "restore loss preview failed",
             errorDetail(error),
           );
-          setState({ status: "error", notices: [] });
+          setState({ status: "error", notices: [], approvalLossCount: null });
         });
     };
     if (delay === 0) run();

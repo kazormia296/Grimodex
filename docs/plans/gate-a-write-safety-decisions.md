@@ -20,7 +20,7 @@ Gate A は Roadmap の A3（stage の分離）・A4（AI policy parse の fail-c
 - Capability の現行 TTL は 5 分（`ipc.ts:231`）。承認待ちは ADR 008 §5 の `expired` として扱い、推奨 30 分で失効させる（`ask_user` と同じ）。待機中も main turn と書込み行列の枠を保持する（脅威モデル:452）。
 - Manifest の画面操作 3 本（`run_app_command`、`apply_layout_preset`、`propose_setting_change`。:45-47）は作品内容を変えないため、承認なしを推奨する。`propose_scene_body` は stage として提案作成まで自動、正規状態への適用は別の承認。
 - AWA/1（[提案書](nir1-agent-event-write-approval-proposal-1-draft.md) :284-299）は、main が要求を作り、承認が確定するまで Capability を出さず、確定後に束縛を検査して one-shot Capability に交換する経路を記録している。Gate A ではこの交換境界を参照し、対象を 15 tool に広げる。AWA/1-2 の MCP 経路は含めない。
-- Release A の A3（`docs/plans/a3-durable-agentrun-decisions.md`）は `waiting_approval` Interaction の durable な実体と再開を担う。Gate A は Interaction の `interaction_id` を参照し、交換時に承認・引数・project・版・policy を確かめ直して Capability を発行／消費する。保存された承認だけを信頼しない。Gate A の要求と交換状態は memory の中だけに持ち、再開時の durable な続きは Release A の A3 の Interaction から交換し直す。従来案の「再起動後に復元しない」は、この境界に改める。
+- Release A の A3（`docs/plans/a3-durable-agentrun-decisions.md`）は `waiting_approval` Interaction の durable な実体と再開を担う。Gate A は Interaction の `interaction_id` を参照し、交換時に承認・引数・project・版・policy を確かめ直して Capability を発行／消費する。保存された承認だけを信頼しない。交換状態（capability の発行・消費）は memory の中だけに持つ。承認の要求と判断（承認・却下・時間切れ）は Release A の A3 の Interaction（kind=approval、Run は waiting_approval）に durable に残し、Run の終端で消える。再起動の後は Release A の A3 から要求を出し直し、交換し直す。保存した承認はそのまま使わない（2026-11-27 の利用者の決定、contracts の問 22。作者の出来事の承認 AWA/1 にも及ぼす＝問 23）。従来案の「再起動後に復元しない」は、この境界に改める。
 - MP-6 の [DR-MP6-1・5](mastra-mp6-decisions.md) は、既存の Capability issuer／consumer と束縛を維持し、`requiresUserConfirmation` の確認時点を前倒ししない。したがって Gate A の発行時点変更を先に実装し、その後に MP-6 を接続する。flag L は A2 完了前に開けない。
 
 ## 3. 判断（案）
@@ -35,7 +35,7 @@ Gate A は Roadmap の A3（stage の分離）・A4（AI policy parse の fail-c
 
 | 経路 | owner／開始 | 停止・失効 | error／再開・終端 |
 | --- | --- | --- | --- |
-| turn／tool 応答 | main turn owner。応答時に要求だけを作り、Capability は出さない | Stop・権限失効で未承認要求を閉じ、新規 dispatch を拒む。承認待ちの上限は 30 分 | main memory 内の Gate A 状態は再起動で復元しない。durable な続きは Release A の A3 Interaction から交換し直す |
+| turn／tool 応答 | main turn owner。応答時に要求だけを作り、Capability は出さない | Stop・権限失効で未承認要求を閉じ、新規 dispatch を拒む。承認待ちの上限は 30 分 | 交換状態は memory の中だけで、再起動で復元しない。承認の要求と判断は Release A の A3 の Interaction に残り、再起動の後はそこから出し直して交換し直す（問 22） |
 | 承認・Capability 交換 | main owner が Release A の A3 `interaction_id`、sender／turn／toolCall、要求作成時の digest・base version を束縛 | 承認の時点で digest・project・OCC／版・policy・未使用性を再検証。失効、不一致、二重回答を拒否。一度だけ消費 | issuer の失敗は fail-closed。Native dispatch 後の cancellation／終端 receipt は MP-6 の確認対象 |
 | Mastra suspend／resume | 採用する場合も Mastra runtime は停止・再開のみ、認可と保留は main owner | Stop で suspend／snapshot が有限に閉じる証拠は未確認 | 条件を満たせなければ Mastra 組込み承認を採らない |
 
