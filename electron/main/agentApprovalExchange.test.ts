@@ -311,6 +311,102 @@ describe("agent approval exchange", () => {
     expect(expired.timers[1]?.cancelled).toBe(true);
   });
 
+  it("records a failed execution only against its execution-scoped capability", async () => {
+    const capabilityStates = new Map<string, { active: boolean }>();
+    const first = makeFixture({
+      prepareCapability: (request) => {
+        const state = { active: false };
+        capabilityStates.set(request.executionId, state);
+        const grant = {
+          capability: request.executionId,
+          mainOwnedProvenanceId: `provenance-${request.executionId}`,
+        };
+        return {
+          grant,
+          activate: () => {
+            state.active = true;
+          },
+          revoke: () => {
+            state.active = false;
+          },
+        };
+      },
+    });
+    await first.appendToolCall();
+    const firstCompletion = first.exchange.request(first.request);
+    await first.pendingEntered;
+    first.exchange.resolve({
+      interactionId: "interaction-1",
+      senderId: 11,
+      projectId: "project-1",
+      decision: "approved",
+    });
+    await expect(firstCompletion).resolves.toMatchObject({ kind: "approved" });
+
+    const secondEntry = {
+      toolCallId: "call-1",
+      name: first.request.toolName,
+      canonicalArgs: first.request.modelInput,
+      argsDigest: "digest-1",
+      executionId: "execution-2",
+      chatMessageId: "message-2",
+      mainOwnedProvenanceId: "",
+      model: first.request.model ?? "",
+      capabilityState: "not_issued" as const,
+      executionState: "pending" as const,
+    };
+    await first.port.appendToolCalls("run-1", [secondEntry]);
+    const secondPending = deferred<void>();
+    const secondExchange = createAgentApprovalExchange({
+      ...first.dependencies,
+      onPending: () => secondPending.resolve(),
+      newId: () => "interaction-2",
+    });
+    const secondRequest = {
+      ...first.request,
+      executionId: "execution-2",
+      chatMessageId: "message-2",
+      run: {
+        runId: "run-1",
+        transact: <T>(op: (version: number) => Promise<T>) =>
+          op(first.port.readRun("run-1").version),
+      },
+    };
+    const secondCompletion = secondExchange.request(secondRequest);
+    await secondPending.promise;
+    secondExchange.resolve({
+      interactionId: "interaction-2",
+      senderId: 11,
+      projectId: "project-1",
+      decision: "approved",
+    });
+    await expect(secondCompletion).resolves.toMatchObject({ kind: "approved" });
+    expect(capabilityStates.get("execution-1")?.active).toBe(true);
+    expect(capabilityStates.get("execution-2")?.active).toBe(true);
+
+    await first.exchange.recordExecution(
+      "run-1",
+      "execution-1",
+      "call-1",
+      "failed",
+    );
+
+    expect(capabilityStates.get("execution-1")?.active).toBe(false);
+    expect(capabilityStates.get("execution-2")?.active).toBe(true);
+    expect(
+      first.port.readToolCall("run-1", {
+        executionId: "execution-1",
+        toolCallId: "call-1",
+      }),
+    ).toMatchObject({ capabilityState: "consumed", executionState: "failed" });
+    expect(
+      first.port.readToolCall("run-1", {
+        executionId: "execution-2",
+        toolCallId: "call-1",
+      }),
+    ).toMatchObject({ capabilityState: "issued", executionState: "pending" });
+  });
+
   it("rejects duplicate requests and a second answer", async () => {
     const f = makeFixture();
     await f.appendToolCall();
@@ -1366,6 +1462,39 @@ describe("agent approval exchange", () => {
       kind: "aborted",
     });
     expect(update).toHaveBeenCalled();
+  });
+
+  it("does not activate when the issued ledger update races finalization and abort", async () => {
+    const f = makeFixture();
+    await f.appendToolCall();
+    const originalUpdate = f.port.updateToolCall.bind(f.port);
+    vi.spyOn(f.port, "updateToolCall").mockImplementation(
+      async (runId, key, update) => {
+        if (update.capabilityState === "issued") {
+          f.port.beginFinalizingRun(runId);
+          f.signal.abort();
+        }
+        return originalUpdate(runId, key, update);
+      },
+    );
+    const completion = f.exchange.request(f.request);
+    await f.pendingEntered;
+    f.exchange.resolve({
+      interactionId: "interaction-1",
+      senderId: 11,
+      projectId: "project-1",
+      decision: "approved",
+    });
+
+    await expect(completion).resolves.toEqual({ kind: "aborted" });
+    expect(f.activated).toEqual([]);
+    expect(f.port.readRun("run-1").status).toBe("finalizing");
+    expect(
+      f.port.readToolCall("run-1", {
+        executionId: "execution-1",
+        toolCallId: "call-1",
+      }),
+    ).toMatchObject({ capabilityState: "issued", executionState: "pending" });
   });
 
   it("skips pending notification when the wait settles during timer setup", async () => {

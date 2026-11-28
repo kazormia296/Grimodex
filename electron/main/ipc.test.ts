@@ -693,6 +693,23 @@ describe("Agent approval capability exchange helpers", () => {
 
   it("revokes the real IPC capability when Stop follows approval", async () => {
     const port = new FakeAgentRunApprovalPort();
+    const control = prepareApprovalCapability(
+      "update_codex_entry",
+      { id: "entry-stop", summary: "Updated" },
+      [{ id: "entry-stop", version: 4 }],
+    );
+    expect(
+      consumeAgentAuthorityCapability(
+        "agent_codex_update",
+        agentCapabilityPayload(control, {
+          toolCallId: "call-1",
+          entryId: "entry-stop",
+          summary: "Updated",
+          baseVersion: 4,
+        }),
+        719,
+      ),
+    ).not.toBeNull();
     port.createRunningRun("run-stop");
     const modelInput = { id: "entry-stop", summary: "Updated" };
     const target = {
@@ -790,6 +807,7 @@ describe("Agent approval capability exchange helpers", () => {
         ),
       },
       {
+        toolCallId: "call-stop",
         entryId: "entry-stop",
         summary: "Updated",
         baseVersion: 4,
@@ -889,7 +907,12 @@ describe("Agent approval capability exchange helpers", () => {
               "call-failed",
             ),
           },
-          { entryId: "entry-stop", summary: "Updated", baseVersion: 4 },
+          {
+            toolCallId: "call-failed",
+            entryId: "entry-stop",
+            summary: "Updated",
+            baseVersion: 4,
+          },
         ),
         719,
       ),
