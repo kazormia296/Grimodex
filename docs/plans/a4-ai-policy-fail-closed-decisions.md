@@ -25,7 +25,7 @@ ADR 008 §9 のとおり、`invalid` でも Chat と読み取りは許可し得�
 - **DR-A4-1 三状態と適用値（技術判断）。**
   - `valid`：JSON の object で、`preset` が既知の値、`toggles` の `chat`・`bodyWrite`・`analysis` が boolean。`structureWrite`・`knowledgeWrite` が無い値は、今の画面側と main がともに行っている preset からの補い（named preset はその値、custom は false）をしたうえで `valid` とする。この 2 欄は 2026-06 に足したもので、列の既定値は既存の行に遡らないため（`migrate.rs` の `projects.ai_policy` の追加の comment）。この 2 欄があるのに boolean でない値は `invalid`。
   - `missing`：SQL の NULL だけ。列は `NOT NULL` なので実データでは起こらない前提。値は新規の作品の既定（custom、直接の書込みの 2 軸は false）とする。今の main と画面側は NULL を全許可にしているので、厳しい側に変わる。
-  - `invalid`：空の文字列、JSON の不正、object でない値、未知の `preset`、上の必須欄の欠落や型の違い。`invalid` の effective policy は書込みの 3 軸（`bodyWrite`・`structureWrite`・`knowledgeWrite`）を false にする。Chat と読み取りは許してよい（ADR 008 §9）。
+  - `invalid`：空の文字列、JSON の不正、object でない値、未知の `preset`、上の必須欄の欠落や型の違い。`invalid` の effective policy は書込みの 3 軸（`bodyWrite`・`structureWrite`・`knowledgeWrite`）を false にする。会話と分析は、今の画面側の parser が読む値のままにする（必須の 3 欄がそろう形は `Boolean()` した値、そろわない形・未知の preset・JSON の不正・空は今どおり可）。読めた `false` を可にしない（Chat と読み取りを許してよいという ADR 008 §9 の範囲内で、今より緩めない。2026-11-28、M3 の指摘で訂正）。
 - **DR-A4-2 全実行経路の一致。** TypeScript の画面側、Electron main、Rust の共通 parser（MCP）は同じ分類と同じ書込みの結果を出す。既存の TS／Rust の decision-vector の fixture に DR-A4-1 の例を足して揃える。画面側は機能の門と設定画面で同じ分類を使い、`invalid` を全許可として見せない。main は対象の toggle の boolean だけで許さず、DR-A4-1 の構造を確かめる（今より厳しくなる側だけ）。MCP は `invalid` を `full` にせず拒む。
 - **DR-A4-3 読み込み失敗。** DB 呼出し失敗、応答 JSON の不正、対象の作品の行が無い、行の形の不正は「未設定」とみなさず書込みを拒む。MCP の `load_policy` は今、行なし・NULL・空文字をすべて `full` にしている（行なしと NULL を区別していない）ので、拒むのは新しい変更で、`load_policy` は行なし（拒む）と NULL（`missing`）を区別する。main／Hermes／NIR-1 の既存の拒否は保つ。画面側の作品が未取得・欠損の間は全許可に落とさず、書込みを止める。MCP が拒むときは固定の文で理由を返す。
 - **DR-A4-4 A2 との順序。** Gate A DR-GA-3 の承認時再検証を A4 の完成後に接続する。A4 の実装・負試験が完了するまで、A2 の policy 再検証完了や flag L 解放を主張しない（DR-GA-5）。
@@ -36,7 +36,7 @@ ADR 008 §9 のとおり、`invalid` でも Chat と読み取りは許可し得�
 | --- | --- | --- | --- |
 | `valid` | 設定どおり | 設定どおり | 設定どおり |
 | `missing`（NULL） | 新規の作品の既定（`bodyWrite` だけ可） | 可 | 可（今どおり） |
-| `invalid`（空文字を含む） | 不可 | 今どおり可 | 今どおり拒む（空文字は新しく拒む） |
+| `invalid`（空文字を含む） | 不可 | 今の parser の値のまま（読めない形は可） | 今どおり拒む（空文字は新しく拒む） |
 | 行なし・読込み失敗 | 拒む | 書込みだけ止める | 拒む |
 
 今の製品の経路では、壊れた作品でも会話は続き、書込みを止めた時点で会話と設定画面に出す（問 36）。Mastra の経路は旗 L の内側なので、会話ごと拒んだ画面に何を出すかは旗 L を開ける前に決める（未確認）。main の会話の門を「通す」に変えるのは緩めになるので、今はしない。
