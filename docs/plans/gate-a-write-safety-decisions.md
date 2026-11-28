@@ -30,6 +30,14 @@ Gate A は Roadmap の A3（stage の分離）・A4（AI policy parse の fail-c
 - **DR-GA-3 A2 の発行・交換。** `mutate`／`destructive` の応答時には実行 Capability を発行せず、main が Release A の A3 Interaction を参照する承認要求を作る。要求を作る時点で入力 digest と base version を固定する。承認時に main が digest、project、OCC／base version、未使用状態を再検証し、policy の再検証は A4 の fail-closed 化に依存する。全条件が一致したときだけ既存束縛を保った one-shot Capability に交換する。renderer executor も承認前 dispatch を拒む。二重回答・失効・不一致は fail-closed。
 - **DR-GA-4 Mastra 承認の候補。** UI のカードを同じにして、Mastra の `requireApproval` を停止・再開部品として使う案を問う。main の承認検証と Capability を置き換えない。`resumeData`、モデルの `approved`、再開時に保存された承認を authority にしない。Stop 後に suspend／snapshot が止まりきらない点は未解決で、採用前の条件として残す。AWA/1 の main 経路と比較して選ぶ（第 7 節 Q3）。Mastra を選ぶ場合に限り W12 と DR-MP5-7 の改訂を別途確認する。
 - **DR-GA-5 Roadmap の A3・A4 との境界。** Roadmap の A3 は stage の自動提案と accept 承認を分ける作業、A4 は不正 AI policy を fail-closed にする作業として別に扱う（Roadmap exit criteria 3・6）。A2 の承認時 policy 再検証は A4 に依存する。これらを A2 に混ぜず、flag L を先に開けない。
+- **DR-GA-6 A1 の manifest の値と割り当て（2026-11-28、技術判断）。** 値は DR-GA-2 のとおり ADR 008 §3 の語を使う。画面の操作の 3 本（`run_app_command`・`apply_layout_preset`・`propose_setting_change`）だけは、第 7 節の問 2 を表すために `ui`／`none` を足す（ADR 008 の 2026-11-28 の追補。3 本の名指しに限る）。割り当て（44 本）：読み取り 26 本は `read`／`none`、`propose_scene_body` は `stage`／`none`、削除の 2 本は `destructive`／`always`、残る変更系 12 本は `mutate`／`task-scope`（Task Grant が無い間は毎回個別承認。DR-GA-2）、画面の操作 3 本は `ui`／`none`。A1 は挙動を変えない。
+- **DR-GA-7 承認の Interaction の形（2026-11-28、Release A の A3 の担当とのすり合わせ。確定済みの判断の範囲内）。**
+  - 開くとき：Run の `running` → `waiting_approval` と、`pending`（`kind=approval`）の作成を同じ transaction で行う。`pending` は `root_run_id` ごとに 1 件なので、A2 は承認の要る tool を直列に開く（2 件目は `AGENT_RUN_PENDING_INTERACTION_EXISTS` で拒まれる）。
+  - 呼ぶ順：交換の確かめ直し → `approved` の記録 → 台帳に発行を記録（失敗したら Capability を使わない）→ 使う → 実行の状態を記録。台帳の `requestId` は保存せず、tool・project・toolCallId から再計算する。
+  - 保存した resolution は認可に使わない。`approved` の記録の後に落ちた呼出しは、resolution を tool_result に入れ直さず、commit 済みかの照会だけにする（DR-A3-6）。
+  - 却下は固定の文を tool_result で返して続ける。resolution は `approved`／`rejected` の 2 値。ADR 008 の `executed` は台帳（Capability の消費・実行）が、`expired`・`superseded` は status が持つ。
+  - A3 は対象の版を保存しない。版の保存は保存の追加なので、A2 の設計で利用者に伺う。保存しない場合、再起動の後はカードを今の状態から組み直し、「要求の時点から変わっていないか」は確かめられない（DR-GA-3 との差として A2 で扱う）。
+  - Mastra の Run は `resumable` が偽の間（DR-A3-8）、再起動の後の出し直しは使えない。`approval_timeout` で中断した Run の `pending` は、破棄か `superseded_by_new_turn` で `cancelled` になる。
 
 ## 4. owner／lifecycle（GDX-PRECHECK-001）
 
