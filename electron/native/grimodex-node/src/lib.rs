@@ -14,6 +14,8 @@
 //! - エラーは `AppError` の Display 文字列をそのまま reason に載せる (§5.2 の
 //!   文字列ワイヤ契約。convert.rs 参照)。
 
+#[cfg(not(test))]
+mod agent_runs;
 mod body_declaration_entry;
 #[cfg(test)]
 mod body_declaration_entry_tests;
@@ -7448,6 +7450,8 @@ fn finalize_automatic_maintenance_permit(
 #[napi]
 pub struct Backend {
     state: Arc<AppState>,
+    #[cfg(not(test))]
+    agent_run_owner: Arc<Mutex<Option<agent_runs::WorkspaceOwner>>>,
 }
 
 /// Drop guard for a process-local maintenance attempt. Any early return,
@@ -7948,7 +7952,11 @@ impl Backend {
         let state = Arc::new(state);
         #[cfg(all(feature = "nir1-graph-eval", not(test)))]
         nir1_graph_eval::register(&state);
-        Ok(Backend { state })
+        Ok(Backend {
+            state,
+            #[cfg(not(test))]
+            agent_run_owner: Default::default(),
+        })
     }
 
     /// Main-only D2a startup status. A fresh profile remains unrestricted until
@@ -8242,7 +8250,11 @@ impl Backend {
     /// C2-ZCのexpected NOT_READYだけはmain activation owner向けの小さなJSONを返す。
     #[napi]
     pub async fn run_narrative_freshness_cycle(&self) -> Result<Option<String>> {
-        let owner = Self { state: Arc::clone(&self.state) };
+        let owner = Self {
+            state: Arc::clone(&self.state),
+            #[cfg(not(test))]
+            agent_run_owner: Arc::clone(&self.agent_run_owner),
+        };
         napi::tokio::task::spawn(owner.run_narrative_freshness_cycle_supervised())
             .await
             .map_err(join_err_to_napi)?
@@ -11833,7 +11845,11 @@ impl Backend {
     pub async fn open_workspace(&self, path: String) -> Result<String> {
         // Keep admission, worker Join and terminal publication alive if the
         // N-API response waiter is dropped (including window teardown).
-        let owner = Self { state: Arc::clone(&self.state) };
+        let owner = Self {
+            state: Arc::clone(&self.state),
+            #[cfg(not(test))]
+            agent_run_owner: Arc::clone(&self.agent_run_owner),
+        };
         napi::tokio::task::spawn(owner.open_workspace_supervised(path))
             .await
             .map_err(join_err_to_napi)?
@@ -12284,7 +12300,11 @@ impl Backend {
     pub async fn restore_backup(&self, file_name: String) -> Result<String> {
         // Keep admission, worker Join and terminal publication alive if the
         // N-API response waiter is dropped (including window teardown).
-        let owner = Self { state: Arc::clone(&self.state) };
+        let owner = Self {
+            state: Arc::clone(&self.state),
+            #[cfg(not(test))]
+            agent_run_owner: Arc::clone(&self.agent_run_owner),
+        };
         napi::tokio::task::spawn(owner.restore_backup_supervised(file_name))
             .await
             .map_err(join_err_to_napi)?
