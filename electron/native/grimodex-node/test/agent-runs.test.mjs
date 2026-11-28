@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import {
   mkdirSync,
@@ -11,7 +11,6 @@ import {
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 const { Backend } = createRequire(import.meta.url)("../grimodex-node.node");
@@ -51,6 +50,33 @@ const ledgerEntry = {
 
 function tempRoot() {
   return mkdtempSync(join(tmpdir(), "grimodex-node-agent-runs-"));
+}
+
+// Native はこのプロセスで DB を開いている。同じプロセスで別の SQLite（node:sqlite）が
+// 同じ file を開閉すると POSIX の lock が外れ、WAL の共有メモリが切り詰められて SIGBUS で
+// 落ちる。直接の読みは別のプロセスで行う。
+function readStoredAuditExecutionIds(root, runId) {
+  const script = `
+    const { DatabaseSync } = require("node:sqlite");
+    const db = new DatabaseSync(process.argv[1], { readOnly: true });
+    const row = db
+      .prepare("SELECT audit_execution_ids FROM agent_runs WHERE run_id = ?")
+      .get(process.argv[2]);
+    db.close();
+    process.stdout.write(row.audit_execution_ids);
+  `;
+  const stored = execFileSync(
+    process.execPath,
+    [
+      "--no-warnings",
+      "-e",
+      script,
+      join(root, "workspace", "grimodex.db"),
+      runId,
+    ],
+    { encoding: "utf8" },
+  );
+  return JSON.parse(stored);
 }
 
 async function openWorkspace(t, root = tempRoot()) {
@@ -661,19 +687,9 @@ test("AgentRun lists owned unfinished runs, records audit IDs and finishes witho
     JSON.parse(await backend.agentRunAddAuditExecutionId(audit)),
     null,
   );
-  const sqlite = new DatabaseSync(join(root, "workspace", "grimodex.db"), {
-    readOnly: true,
-  });
-  try {
-    const stored = sqlite
-      .prepare("SELECT audit_execution_ids FROM agent_runs WHERE run_id = ?")
-      .get(runId);
-    assert.deepEqual(JSON.parse(stored.audit_execution_ids), [
-      audit.executionId,
-    ]);
-  } finally {
-    sqlite.close();
-  }
+  assert.deepEqual(readStoredAuditExecutionIds(root, runId), [
+    audit.executionId,
+  ]);
   await assert.rejects(
     backend.agentRunAddAuditExecutionId({ ...audit, executionId: "" }),
     /AGENT_RUN_EXECUTION_ID_INVALID/,
