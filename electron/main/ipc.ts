@@ -300,6 +300,7 @@ const AGENT_AUTHORITY_COMMANDS = new Set([
   // payload as interactive, so they must not become a capability bypass
   // merely because no current chat tool targets them directly.
   "agent_codex_mutate",
+  "agent_codex_delete",
   ...AGENT_CHRONICLE_COMMANDS,
 ]);
 
@@ -1997,6 +1998,27 @@ function authorityRouteForRendererCommand(
   }
 }
 
+function commandRequiresRendererAuthority(cmd: string): boolean {
+  return (
+    GENERIC_CANONICAL_WRITER_COMMANDS.has(cmd) ||
+    IMPORT_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd) ||
+    CODEX_RENDERER_COMMANDS.has(cmd) ||
+    RENDERER_CHRONICLE_COMMANDS.has(cmd) ||
+    HUMAN_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd) ||
+    IDENTITY_CORRECTION_RULE_WRITER_COMMANDS.has(cmd) ||
+    AGENT_AUTHORITY_COMMANDS.has(cmd) ||
+    HISTORY_REPLAY_COMMANDS.has(cmd) ||
+    cmd === "foreshadow_create" ||
+    cmd === "foreshadow_update" ||
+    cmd === "foreshadow_delete" ||
+    cmd === "tree_node_create" ||
+    cmd === "tree_node_patch" ||
+    cmd === "tree_node_delete" ||
+    cmd === "ai_tree_plan_apply" ||
+    cmd === "ai_tree_plan_undo"
+  );
+}
+
 /**
  * Main-process trust boundary for canonical renderer writers. The preload
  * bridge intentionally remains a generic transport; this function is the
@@ -2014,25 +2036,20 @@ export function bindRendererAuthorityForIpc(
       ? "patch"
       : "payload";
   const payload = directPayloadCommand ? args : args[payloadKey];
-  if (!isRecord(payload)) return args;
+  if (!isRecord(payload)) {
+    if (
+      !commandRequiresRendererAuthority(cmd) &&
+      cmd !== "foreshadow_update_setup"
+    ) {
+      return args;
+    }
+    const { [payloadKey]: _discardedPayload, ...remainingArgs } = args;
+    return remainingArgs;
+  }
   const route = authorityRouteForRendererCommand(cmd, payload);
   if (!route) {
     const requiresAuthority =
-      GENERIC_CANONICAL_WRITER_COMMANDS.has(cmd) ||
-      IMPORT_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd) ||
-      CODEX_RENDERER_COMMANDS.has(cmd) ||
-      RENDERER_CHRONICLE_COMMANDS.has(cmd) ||
-      HUMAN_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd) ||
-      IDENTITY_CORRECTION_RULE_WRITER_COMMANDS.has(cmd) ||
-      AGENT_AUTHORITY_COMMANDS.has(cmd) ||
-      cmd === "foreshadow_create" ||
-      cmd === "foreshadow_update" ||
-      cmd === "foreshadow_delete" ||
-      cmd === "tree_node_create" ||
-      cmd === "tree_node_patch" ||
-      cmd === "tree_node_delete" ||
-      cmd === "ai_tree_plan_apply" ||
-      cmd === "ai_tree_plan_undo" ||
+      commandRequiresRendererAuthority(cmd) ||
       isHistoryReplayCommand(cmd, payload);
     if (!requiresAuthority) return args;
     const invalidPayload = { ...payload, authorityRoute: "" };
