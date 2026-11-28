@@ -218,6 +218,8 @@ describe("app help read tools", () => {
       expect(AGENT_TOOL_MANIFEST.find((tool) => tool.name === name)).toEqual({
         name,
         capability: "read",
+        effect: "read",
+        approvalMode: "none",
         requiredPolicy: null,
         allowedChannels: ["agent", "hermes", "native"],
         requiresUserConfirmation: false,
