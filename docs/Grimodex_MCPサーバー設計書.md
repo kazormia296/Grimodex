@@ -793,7 +793,7 @@ Codex エントリの詳細を取得する。
 | `list_events` | R | o | 作中年表イベント一覧（作中順・`events.secret` による除外なし・kind フィルタ可・primaryCharacter は codex 名解決）。任意の `scene_id`（執筆中の場面）を受け付ける。読む順にある `reveal_scene_id` を持つ出来事には `revealScene: {id, title, revealedToReader?}` を付与し、`scene_id` が開示場面と同じか後なら `revealedToReader: true`、前なら `false`。省略時は `revealedToReader` を省略する。指定した `scene_id` が読む順に無く、印の付く出来事がある場合は `revealSceneNote` を返す。 |
 | `get_event_detail` | R | o | 単一イベント詳細（`events.secret` にかかわらず project 内の出来事を返す。参加者 / 紐づきシーン / 因果）。任意の `scene_id` を受け付け、読む順にある `reveal_scene_id` は `revealScene: {id, title, revealedToReader?}` として返す。`revealedToReader` の判定と `revealSceneNote` は `list_events` と同じ。 |
 | `get_character_timeline` | R | o | 人物の作中経歴（primary/participant 関与イベントを作中順・secret 値による除外なし・各時点の ageAtEvent。存在しない・使えない codex_id は null）。任意の `scene_id` を受け付け、読む順にある `reveal_scene_id` は `revealScene: {id, title, revealedToReader?}` として返す。`revealedToReader` の判定と `revealSceneNote` は `list_events` と同じ。 |
-| `get_chronicle_state` | R | o | シーン作中時刻の世界状態スナップショット（全イベントを入力。resolveSceneAnchor→pick→derive を Rust 移植。**in-app と同一 JSON schema**・fixture で TS↔Rust drift を gate） |
+| `get_chronicle_state` | R | o | シーン作中時刻の世界状態スナップショット（全イベントを入力。現在地と前後は日時で決める（`grimodex-core` の `chronicle_order`）。**in-app と同一 JSON schema**・fixture で TS↔Rust drift を gate） |
 | `create_event` | W | o | 作中年表イベント作成（knowledgeWrite gate・tracked: change_event domain='event' + undo_journal surface='mcp'）。`secret` は廃止（`true` は拒否、`false` は無視）。`reveal_scene_id` は読む順の開示場面 id。年表の読み道具はその出来事に `revealScene` を付け、開示場面より前の場面を読者が既知として書かないよう示す。出来事を隠す機能ではない。省略・空文字は未指定。 |
 | `update_event` | W | o | イベント更新（渡したフィールドのみ・project スコープ・tracked。XPROJ=他プロジェクト id は no-op→not found。**現在の主な人物・場所が AI に秘匿（hidden）の人物の出来事は、その欄を変更できない**〔hidden は Phase だけの人物を含む。他の欄の更新は通る。拒否は汎用の internal error〕）。`secret` は廃止（`true` は拒否、`false` は無視）。`reveal_scene_id` は読む順の開示場面 id。年表の読み道具はその出来事に `revealScene` を付け、開示場面より前の場面を読者が既知として書かないよう示す。出来事を隠す機能ではない。省略は変更なし、空文字は解除。 |
 | `delete_event` | W | o | イベント削除（participants/scene/relation を cascade・削除前スナップショットを undo before に格納） |
@@ -872,8 +872,9 @@ Grimodex 内蔵 Agent の read-only executor 14 種のうち、専用 MCP ツー
   MCP は `story_time_order COLLATE BINARY` の SQL 近傍クエリ（fractional key 文字列順は同等）。
   なお **target scene は `server.project_id` で必ず絞る**（単一 DB に全プロジェクトを持つため、
   他プロジェクトの scene_id でタイムラインを読まれないようにする XPROJ 防御）。
-- **`get_chronicle_state`**: TS の `resolveSceneAnchor → pickSnapshotCharacters →
-  deriveChronicleSnapshot` を Rust に移植（`grimodex-mcp/src/chronicle_snapshot.rs`）。
+- **`get_chronicle_state`**: 現在地と前後の判定は `grimodex-core` の `chronicle_order`（日時。CED/1 の K・C・B）を使い、
+  組み立ては TS の `deriveChronicleSnapshot` と同じ数え方（`grimodex-mcp/src/chronicle_snapshot.rs`）。
+  読む順・場面の日付・暦の読み込みは `grimodex-db` の `chronicle_read`。
   **構造化 JSON は in-app と同一 schema** を要求し、両者が読む共有 fixture
   （`src/features/chronicle/fixtures/chronicle-snapshot/*.json`）で TS 側
   （`chronicleSnapshot.fixtures.test.ts`）・Rust 側（`chronicle_snapshot::tests`）が

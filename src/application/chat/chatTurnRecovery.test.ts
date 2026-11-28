@@ -38,9 +38,12 @@ describe("createTurnRecovery", () => {
       chatApi: {
         getSessionForProject: vi.fn(),
         addMessage: vi.fn(),
+        generateSessionTitle: vi.fn(),
         saveMessagePrompt: vi.fn(),
+        updateSessionTitleIfAutomatic: vi.fn(),
       },
       get: () => ({ sessions: [] }) as unknown as ChatState,
+      set: vi.fn(),
       getSessionId: () => "session-1",
       isCapturedWorkspaceCurrent: () => true,
       isCapturedProjectCurrent: () => true,
@@ -61,7 +64,7 @@ describe("createTurnRecovery", () => {
       aiFailureToastText: () => "failed",
       toast: { error: vi.fn(), warning: vi.fn() },
       i18next: { t: (key) => key },
-      debugLog: { error: vi.fn() },
+      debugLog: { error: vi.fn(), warn: vi.fn() },
       errorDetail: String,
     });
     const retry = vi.fn(async () => {});

@@ -2,6 +2,7 @@
 
 - 状態：**草稿・第 3 版（2026-11-27）**。第 2 版の独立レビュー（Fable の再諮問、4 観点の敵対レビュー）の指摘を入れた（第 8 節）。
   - 第 9 節の「画面で見える挙動」をユーザーに見せるまで、PR 4・5 に入らない。
+    - 2026-11-28 20:31 に、第 9 節の全項目を本文で示した（第 9 節の「提示」）。PR 4 は旗を閉じたまま進める。旗を開ける前に改めて伺う。
   - PR 2 の列は、この版で決めた（[GDX-PRECHECK-001](../../policies/quality/iron-laws.md#GDX-PRECHECK-001)）。
 - 担当：A3 の lane（grimodex-59）。統合者「統合」の引き継ぎ（2026-11-27）による。
 - 根拠のユーザー決定：
@@ -181,11 +182,11 @@
   - 状態の変更は、「今の status が期待どおり」と version の両方を条件にする。
   - version を上げるのは、状態の変更だけ（Fable の K1）。
     - `activity_at`、台帳、checkpoint の書込みは version を上げない。
-    - 台帳と checkpoint の書込みの条件は、`execution_owner` が自分、非終端、`checkpoint_step` が今の値より大きいこと（台帳は `tool_call_id` の重複を拒む）。
+    - checkpoint の書込みの条件は、`execution_owner` が自分、非終端、`checkpoint_step` が今の値より大きいこと。台帳は step を使わず、`tool_call_id` の重複を拒む（DR-A3-16）。
     - main の台帳と画面の checkpoint が同じ version を競って、`resumable` が不必要に偽になることを避けるため。
 - **会話ごとの active の制約**：
   - `chat_session_id` ごとに、active（`running`・`waiting_user`・`waiting_approval`・`finalizing`）の Run は 1 つまで（部分 unique index）。
-    - `waiting_approval` は v1 で使わないが、Gate A で index を作り直さないように、今から入れる（Fable の K3）。
+    - `waiting_approval` は、承認待ち（DR-A3-14）が使う。index には初めから入れ、Gate A で作り直さない（Fable の K3）。
   - 新しい turn の開始と途中再開の claim が競っても、勝つのは 1 つ。
 
 ### DR-A3-3 Interaction
@@ -195,15 +196,16 @@
   - 種類：`kind`。
   - 呼出し：`tool_call_id`、`tool_name`、`args_digest`。
   - 中身：`request`（表示文。上限の長さを置く）、`resolution`（作者の回答）。
+  - 承認の対象の版：`target_basis`（DR-A3-17）。
   - 状態：`status`、`version`。
 - **kind**：
   - v1 で使うのは `user_question`（ask_user）と `approval`（DR-A3-14）。
   - `plan_amendment`・`permission` は、値だけ予約する。
   - Mastra の UI 系 6 本（10 秒）は記録しない。
 - **status と遷移**：
-  - `pending` → `resolved`：作者が答えた。live の回答でも、claim と一緒の回答でもよい。
+  - `pending` → `resolved`：作者が答えた。質問は、live の回答でも、claim と一緒の回答でもよい。承認は DR-A3-15。
   - `pending` → `cancelled`：Run が終端（Stop、破棄、`superseded_by_new_turn` を含む）になった。
-  - 承認の Interaction では、`resolution` に承認か却下かを書く。
+  - 承認の Interaction では、`resolution` に `approved` か `rejected` だけを書く（DR-A3-15）。
   - `superseded`：承認の対象が変わり、Gate A の交換で確かめ直しに通らなかった。
   - `expired`：Gate A の交換で失効と判定された。live の 30 分の期限そのものでは使わない（DR-A3-14）。
 - **期限で閉じない**：
@@ -212,8 +214,8 @@
 - **pending の制約**：`root_run_id` ごとに 1 件まで（部分 unique index）。Run の状態と Interaction は、同じ tx で変える。
 - **回答の受け口**：main が、live の保留があるかどうかで振り分ける。
   - live の保留があれば、live の回答として受ける。
-  - なければ、claim と一緒の回答（DR-A3-6）として受ける。
-- **live の回答の後に落ちたとき**：
+  - なければ、質問は claim と一緒の回答（DR-A3-6）として受ける。承認は、claim の後に「決める」で受ける（DR-A3-15）。
+- **live の回答の後に落ちたとき**（`user_question` に限る。承認は DR-A3-15）：
   - Interaction が `resolved` で、checkpoint の未解決の spec に結果が無いことがある。
   - 再開のときは、`resolution` を元の `tool_call_id` の tool_result として入れる。
 
@@ -311,8 +313,9 @@
   - endpoint の識別子が snapshot と同じこと。違えば再開しない（送信先を変えないため）。
   - 通らないときは、`resume_block_detail` と `resume_blocked_at` だけを書き、理由を画面に出す。status、`interrupt_reason`、回答は変えない。
 - **claim**（門の後に、1 つの tx で行う）：
-  - `interrupted` を `running` に変え、`execution_owner` を今の自分にし、sender に束縛し直す。
-  - 回答があるときは、pending の消費と回答の記録も同じ tx で行う。
+  - `interrupted` を active の状態（既定は `running`。`pending` があるときは DR-A3-15）に変え、`execution_owner` を今の自分にし、sender に束縛し直す。
+  - 質問（`user_question`）への回答があるときは、pending の消費と回答の記録も同じ tx で行う。
+  - claim の後の status は、pending の種類で決まる（DR-A3-15）。
   - 冪等の key は、既存の `idempotency_requests` に置く（domain は `agent_run_claim`、Fable の K4）。
   - 勝つのは 1 つ。2 つの窓や 2 つの起動が、同じ Run を取らない。
 - **組み直し**：
@@ -363,7 +366,7 @@
     - 復元の前の退避（`backup_restore.rs:434-488`）。
     - migration の前の snapshot（`migration_supervisor.rs:925-944`。今は slim をしない）。
   - 写しでは、次のものを空にする。
-    - checkpoint と台帳の列、Interaction の `request` と `resolution`。
+    - checkpoint と台帳の列、Interaction の `request`、`resolution`、`target_basis`（DR-A3-17）。
     - slim の最後の VACUUM（`lib.rs:277`）の前に置く。そうすれば、本文は物理的にも残らない。
   - 非終端の行は、`interrupted`（`copied_snapshot`）に倒し、`resumable` を偽（`restored_from_copy`）にする。
   - 作者が破棄した後も写しに本文が残ることを防ぎ、保持を問 15 の範囲に収めるため。
@@ -416,7 +419,7 @@
   - assistant の行は、予約の行（`reserved`）が先にあることがある。完了の判定は、id の有無でなく、予約が外れたことで行う。
 - 2 の後・3 の前に落ちたとき、回収が `finalizing` の Run を見つけたら：
   - 両方の行が完了していれば、予定の終端にする。
-  - そうでなければ、予定の終端が `completed` 系のときは `interrupted`（`resumable` は真のまま）に戻す。再開は、保存の step からやり直す。
+  - そうでなければ、予定の終端が `cancelled` でないとき（`completed` 系と `failed` 系）は `interrupted`（`resumable` は真のまま）に戻す。再開は、保存の step からやり直し、予定の終端にする。失敗の予定の実行が「中断」と見えることは、PR 5 の画面を見せるときに含める。
   - 予定の終端が `cancelled` のとき（Stop）は、保存を流し直してから `cancelled` にする。Stop は「再開しない」という作者の意思だから。
 - 同じ起動の中で、`finalizing` の間に画面を失ったとき：main の見張りが、回収と同じ判定を行う。
 - Stop と provider の終端が競っても、`finalizing` を取れるのは 1 つなので、message は一度だけ保存される。
@@ -424,7 +427,10 @@
 
 ### DR-A3-11a PR 4・5 の前に決めること（Fable の第 3 版の懸念）
 
-- 台帳の `mainOwnedProvenanceId`：未発行の行では空にし、発行のときに書き足す。`awaiting_approval` は v1 の予約で、使わない。
+- 台帳の `mainOwnedProvenanceId`：未発行の行では空にし、発行のときに書き足す（Native の操作は DR-A3-15）。`awaiting_approval` を通すかは、Gate A の A2 が決める。
+- 非終端の Run がある会話での、発言の編集して再送（後ろの履歴を削る）と A/B の採用（turn を始めずに行を足す）の扱い（M4 の指摘。`chatPersistenceStoreActions.ts`）。
+- legacy の agent が出典の要る tool の前に予約する空の assistant 行の、破棄のときの扱い（M4 の指摘。`chatAssistantRowReservation.ts`）。
+- 判断記録の「会話の消去」に当たる操作は、全チャット履歴の削除（`chat_project_history_clear`。会話ごと消え、Run も cascade）と会話の削除。画面の `clearMessages` は表示を空にするだけ。
 - 台帳の `executionId`・`chatMessageId`：今は画面の auditContext から来る（`ipc.ts:1647-1648`）。main がこれを、Run の行と照合してから台帳に書く。
 - 「owner は生きているが memory に Run が無い」行：interrupted の書込みに失敗した場合や、同じ起動の中で復元した場合に生じる。main が workspace を開くたびに、自分の owner の行を memory と照らす。
 - CLI の Run の回収：`cancelled`（`resume_unsupported`）にする。`interrupted` にはしない。
@@ -441,6 +447,7 @@ SessionTasks の材料に対応して、次を受入れの条件に入れる。
 
 - F0-lite-A（この lane）：`TransportExecutionHandle`、`AgentRunStatus`、`AgentRunInteractionStatus`、`ExecutionAuthority`、`ProjectionAttachment`、`AnalysisReadBasisEntryV1`。
 - F0-lite-B（Release B の lane）：`WorkTaskStatus`、`minimal TaskContractSnapshotV1`、`AnalysisReadBasisV1`（束ねた形）。
+- F0-lite-A の型をどの PR で入れるかは DR-A3-19。
   - DR-ST-9 で、作者が書く目的と条件の欄が外れた。そのため `TaskContractSnapshotV1` は、中身を定め直す必要がある。
 - roadmap の F0-lite と、Release B の前提（`session-tasks-decisions-2026-11.md:84-85`）の「F0-lite」を、F0-lite-A に読み替える注記を、docs の PR で足す。
 
@@ -453,7 +460,7 @@ SessionTasks の材料に対応して、次を受入れの条件に入れる。
 - 判断：
   - Gate A で承認が要る書換え系の tool の承認待ちを、`approval` の Interaction として記録する。Run は `waiting_approval` になる。
   - AWA/1 の作者の出来事の更新・削除の承認にも、同じ記録を及ぼす。AWA/1 の追補の改訂は、年表の担当が DR-AWA-2（`claude/awa1-docs`）で行う。
-  - 記録するもの：承認の要求、承認、却下、live の期限切れ。中身は、対象の要約と作者の判断。Run の終端で、Interaction の `request` と `resolution` を空にする（DR-A3-7）。
+  - 記録するもの：承認の要求、承認、却下、live の期限切れ。中身は、対象の要約、対象の版（DR-A3-17）、作者の判断。Run の終端で、Interaction の `request`、`resolution`、`target_basis` を空にする（DR-A3-7）。
   - 保存した承認は、認可に使わない。
     - 再起動の後は、承認のカードを起点の会話に出し直す。
     - 作者が承認したら、Gate A の交換で main が確かめ直し、一回限りの capability を出す。
@@ -462,6 +469,204 @@ SessionTasks の材料に対応して、次を受入れの条件に入れる。
     - Interaction は `pending` のままにし、Run を `interrupted`（`approval_timeout`）にする。
     - 作者は、後から「続ける」で承認できる。そのときも、交換で確かめ直す。
   - port：A3 は、承認の Interaction の開閉を port に出す。Gate A の A2 は、承認の要求を開くときと閉じるときに、それを呼ぶ（Mastra の担当）。
+
+### DR-A3-15 承認の操作と台帳の書き足し（Native の形。2026-11-28、Mastra の担当と確認）
+
+- 確認した相手：Mastra の担当（Gate A の A2 を持つ）。承認の要求と判断の保存の中身（DR-A3-14）は変えない。
+- **承認の操作**（呼び手は A2。どれも Run の owner と version、期待する status を条件にする）：
+  - 開く：`running` → `waiting_approval` と、`pending`（kind=`approval`）の作成を同じ tx で行う。
+    - 同じ root に `pending` があれば、`AGENT_RUN_PENDING_INTERACTION_EXISTS` で拒む。
+    - 1 つの応答に承認の要る tool_use が複数あるとき、A2 は 1 件ずつ直列にする。
+  - 決める（live も再起動の後も同じ）：`pending` → `resolved`（`resolution` は `approved` か `rejected`）、`waiting_approval` → `running`。
+  - 無効にする（交換の確かめ直しに通らない）：`pending` → `superseded` か `expired`、`waiting_approval` → `running`。`resolution` は書かない。
+  - live の 30 分の期限切れ：Run を `interrupted`（`approval_timeout`）にする。`pending` は残す。
+- **claim**：
+  - `pending` が承認なら、claim は Run を `waiting_approval` にし、`pending` を消費しない。承認への回答を claim と一緒に渡したら拒む。
+    - その後は、live と同じ「決める」「無効にする」を使う。
+  - `pending` が質問で、回答があれば消費して `running`。回答が無ければ `waiting_user`（`pending` を残す）。
+  - claim の戻り値に status を入れる。
+- **呼ぶ順**（承認）：
+  - 交換の確かめ直し → 「決める」（`approved`）→ 台帳に発行を記録 → Capability を使う → 台帳に実行の状態を記録。
+  - 「決める」と発行の記録の、どちらかが失敗したら、Capability を使わない。
+- **台帳の書き足し**：`tool_call_id` の行に、次を書く。条件は台帳の追記と同じ（owner、非終端。DR-A3-16）。
+  - `mainOwnedProvenanceId`：空の行に 1 度だけ。
+  - capability の状態：前へ進むだけ（`not_issued` → `awaiting_approval` → `issued` → `consumed`。段を飛ばしてよい）。
+  - 実行の状態：`pending` から `committed` か `failed` へ 1 度だけ。
+  - `requestId` は保存しない。tool・project・`toolCallId` から決定的に再計算できる。
+- **落ちた後の再開**：
+  - `resolved`（`approved`）は、tool_result として入れない。変更系は、DR-A3-6 のとおり commit 済みかの照会だけにする。
+  - `rejected`・`superseded`・`expired` は、実行していないことが決まっているので、status と `resolution` から固定の文を組んで AI に返す。文は保存しない（文言は A2 が持つ）。
+- **版**：要求時点の対象の版は `target_basis` に持つ（DR-A3-17）。
+- **Mastra の経路**：当面 `resumable` が偽（DR-A3-8）なので、claim は使えない。`approval_timeout` で中断した Run の `pending` は、破棄か `superseded_by_new_turn` で `cancelled` になる。
+
+### DR-A3-16 段 A のレビューを受けた直し（2026-11-28）
+
+段 A の差分を Fable（read-only、effort high）が読んだ指摘への判断。保存の中身と範囲は広げない。
+
+- **終端で本文を消す**：`finalizing` の確定（回収を含む）、破棄、`superseded_by_new_turn` の同じ tx で、その Run の全 Interaction の `request` と `resolution` を空にする（DR-A3-14 の実装漏れ）。
+- **開始**：同じ会話に非終端の Run（`interrupted` を含む）があれば、開始は `AGENT_RUN_UNFINISHED_SESSION_EXISTS` で拒む。始めるときは、破棄して始める操作（`superseded_by_new_turn`）を使う。index は変えない。
+- **CHECK の範囲**：status と `terminal_reason` の対応は CHECK で固定する（DR-A3-2）。`interrupt_reason` と `not_resumable_reason` の語は CHECK に置かず、Native の型で固定する（語を足すたびの表の作り直しを避ける）。
+- **`request` の上限**：UTF-8 で 64 KiB。超えたら拒む。
+- **戻り値と拒否の理由**：状態を変える操作は、新しい version と status を返す。拒否は、行が無い／owner が違う／終端／version か status の食い違い／step の逆行を分ける。
+- **読み**：非終端の行を持つ owner の一覧、`finalizing` の一覧、Run 1 件の状態を足す。再表示と再開の読みは、PR 4・5 で足す。
+- **状態だけを動かす操作は公開しない**：Run の状態と Interaction は、同じ操作で変える（DR-A3-3）。
+- **台帳は step を使わない**：main の台帳と画面の checkpoint が同じ番号を競わないようにする。台帳の一回性は、`tool_call_id` の重複の拒否と、状態の前進で守る。`checkpoint_step` は checkpoint の書込みだけが使う。
+- **claim の再送**：今の行が、保存した結果（owner、version、status）と違えば拒む。claim は `interrupt_reason` を消す。
+- **`resumable` を偽にする操作**：偽の行の理由は上書きしない。`restored_from_copy` は写しの消去だけが書く。
+- **回収**：
+  - Native が owner の lock を取り、握ったまま 1 つの tx で行う。取れなければ何もしない。
+  - 行の `activity_at` の古さの下限は引数にする。DR-A3-5 の「24 時間」は lock が効かない場合の備えで、同期フォルダかを判定する仕組みは今は無い。判定と値は PR 4 で決める。
+  - 戻り値は、対象の Run ごとの `run_id`、version、結果にする。
+  - 生きている main が、自分の `finalizing` の 1 件に同じ判定をする操作を足す（DR-A3-11）。
+- **写し**：
+  - 変えた行が無ければ、`VACUUM` しない（全利用者の移行の時間と一時領域を増やさない）。
+  - 消去に失敗した写しは、消す。
+  - 復元では、置き換える前の staged の写しの非終端の Run を `interrupted`（`copied_snapshot`）、`resumable` 偽にする。消去に失敗したら、live を置き換えずに中止する。
+  - DB を開けないときの生の写し（forensic の控え）は消去できない。例外として受け入れる（第 5.1 節）。
+- **write clock**：`agent_runs` の 2 表も、ほかの実表と同じく対象のままにする（`messages` などと同じ既存の挙動）。
+- **入れないもの**：Interaction と台帳の照合は足さない（Gate A が交換の時点で確かめ直す）。
+
+### DR-A3-17 承認の対象の版を保存する（2026-11-28）
+
+- 利用者の回答（2026-11-28 13:03 JST、AskUserQuestion。Mastra の担当のセッション。A3 の担当は直接見ておらず、その会話記録から原文を機械的に取り出して確かめた）：
+  - 問い（見出し「承認の版」）：「AI が既存の項目（Codex の項目や出来事など）の書き換え・削除を提案し、承認待ちのままアプリの再起動や 30 分の時間切れをまたいだ場合に備えて、提案した時点の対象の版を保存しますか？ どちらでも、出し直した承認画面を見せた後に対象が変わっていれば実行しません。（A3 の次の PR の merge 前に決まれば列の追加だけで、後なら保存形式の版が 1 つ増えます。）」
+  - 選んだ「版を保存する (推奨)」の説明：「対象の種類・ID・版（版が無ければ内容の照合値）だけを承認の要求と一緒に保存します。本文は保存しません。作業が終われば消し、バックアップなどの写しでは空にします。出し直すときに提案の後の変更があれば、承認画面を出さず AI に知らせて提案し直させます。」
+  - もう一方の「保存しない」は選ばれなかった。
+- これは版の保存だけの回答で、Gate A の A2 の設計全体の承認ではない。
+- 回答の記録：contracts の `01bd9860c`（統合者の記録の問 29）。
+- **列**：`agent_run_interactions.target_basis`（nullable の JSON の配列）。
+  - 新しく作る対象の承認と、質問（`user_question`）では null。空の配列は拒む。
+  - 要素は `AnalysisReadBasisEntryV1`：`sourceKind`、`sourceId`、`version` か `contentHash` のちょうど一方。本文は入れない。
+  - 上限：1〜64 件。`sourceKind` は 64 byte、`sourceId`・`version`・`contentHash` は各 256 byte、JSON 全体は 32 KiB。
+  - 承認を開く操作の引数で受ける。
+- **読み戻し**：Run の `pending` の承認（Interaction の ID と version、`tool_call_id`、`tool_name`、`args_digest`、`target_basis`）を返す読み関数を持つ。claim の前でも読める。
+- **消去**：Run の終端と写しで、`request`・`resolution` と一緒に空にする。
+- **変更があったとき**（呼ぶ順）：作者が「続ける」→ 門 → claim（`waiting_approval`）→ A2 が `target_basis` を今の状態と照らす → 違えば承認の画面を出さず「無効にする」（`superseded`）→ `running` で、固定の文を AI に返す。Mastra の経路は当面 `resumable` が偽なので、この流れは legacy の経路だけ。
+
+### DR-A3-18 返事待ちの間にほかの手順を進める（Release B）と、PR 2 の保存の形
+
+- 利用者の回答（2026-11-28 13:35 JST、AskUserQuestion。SessionTasks の担当のセッション。A3 の担当は直接見ておらず、その会話記録から確かめた）：問い（見出し「待ちの間」）に「ほかの手順は進める」。選んだ説明は「待ちの手順を別の実行に分けて並行で進めます。保存側の決定を変える作業と確認が増えます。」
+- PR 2 の保存の形は変えない。
+  - 当たるのは部分 unique index 2 本（会話ごとの active な Run は 1 つ、root ごとの `pending` は 1 件）で、後の版で作り直し、表は作り直さない。`root_run_id` の列はすでにある。
+  - 子の実行の形（深さ、同時の数、`pending` の数）が未定のうちに緩めない。
+- Release B の起案で変える所：index 2 本の述語、開始と claim の検査、回収・claim・破棄・終端の単位（root と子）、roadmap の「root ごとの pending は最大 1 件」。status や `terminal_reason` の語を足す場合だけ、表の作り直しが要る。
+- 保存の追加（子の行と親子の紐付け）と上の決定の変更は、Release B の起案側で利用者に確認する。
+
+### DR-A3-19 段 B（N-API と型）の形
+
+- owner と lock は Native が持つ。JS から owner の文字列を受けない。
+  - workspace ごとに Native が owner を発番し、lock を握って N-API の状態に持つ。
+  - `interrupted` の行への操作（claim と門の記録、破棄、`superseded_by_new_turn`、`resumable` を偽にする操作）は、旧 owner を行から読む。
+  - 死んだ owner の `finalizing` を閉じる操作（読みと確定）も行の owner を読む。生きている owner の行は触らない（その owner の lock を取れることを確かめる）。
+- N-API は main 専用。1 つの操作に 1 つの関数を置く。引数は知らない field を拒み、戻りは JSON。
+  - 出すのは、Gate A の A2 の port と PR 4 が呼ぶ操作だけ。写しの消去と、lock の生の操作は出さない。
+  - `AGENT_RUN_*` の印は、TypeScript の union と parser で受ける。
+- F0-lite-A の型の範囲（DR-A3-13 の読み替え）：
+  - PR 2b：status の union、`AnalysisReadBasisEntryV1`、port（`AgentRunRecorder`）の型だけの file。Rust の語との一致を試験で確かめる。
+  - PR 3（R1）：`TransportExecutionHandle`、`ProjectionAttachment`。
+  - PR 4：`ExecutionAuthority`。
+
+### DR-A3-20 再確認を受けた直し（2026-11-28、merge の後に表を作り直さないために）
+
+- **語の CHECK**：`route`、Interaction の `kind` と `status`、`finalizing_target_*` の語は CHECK に置かず、Native の型で固定する。`finalizing_target_*` は「両方 NULL か両方非 NULL」だけを CHECK にする。`status` の語と、`status` と `terminal_reason` の対応の CHECK は残す（DR-A3-2）。
+- **索引**：Interaction の `run_id`、Run の `chat_session_id` と `project_id`。起動時の不変条件に含める。
+- **読み**：会話の未完了の Run（非終端は高々 1 件）。回収の対象の owner は、active の行を持つものだけ。
+- **拒否の印**：再開できない Run の claim は `AGENT_RUN_NOT_RESUMABLE`。
+- **claim の再送**：冪等の照合に旧 owner を含めない（呼び手は行から読むので、成功の後は新 owner になる）。
+- **足さないもの**：Interaction の時刻の列（保存の追加になる）。直し前の版で作った開発用の DB は収束させない（未公開の版）。
+- **PR 4・5 で足す Native の条件**：`resumable` を偽にする操作は、期待する status も条件にする（中断中と読んだ直後に再開した行へ書かないため）。
+- **値の無い列**：経路によって値が無い NOT NULL の列（model、endpoint など）は空文字にする。
+- **PR 4 に回す**：`audit_execution_ids` を書く操作。記録を旗で閉じるか、開始で古い Run を自動で破棄するか（自動の破棄は DR-A3-7 の「先に確認を出す」と食い違うので、利用者に見せる）。再送の区別。
+
+### DR-A3-21 画面の問いの回答（PR 4・5 の追加。2026-11-28）
+
+- 利用者の回答（14:49。M4 の担当のセッションの AskUserQuestion、contracts の `f35d0ccb1` の追記 24。原文を確かめた）：
+  - 破棄の前に、依頼文と途中の返答を、停止した回と同じ形で会話に保存する。残した分は、以後の文脈として AI に送る。非公開にした項目を読んでいた回は依頼文だけ。backup から戻した回は残る内容が無い。
+  - 呼び方は「この返答は途中で止まりました」「続きから再開」「破棄」。帯は会話の末尾。帯の「破棄」は確認を挟む。
+- M4 の読み（利用者に明示して伺っていない。A3 に異論はない）：新しい送信で置き換える場合も残す。会話の削除と全履歴の削除では残さない。
+- PR 2 の表の定義は変えずに足りる。PR 4・5 で要る Native の追加：中断の行に message の ID を書いてから、同じ ID で冪等に保存する操作。会話への保存と Run の置き換えは同じ tx にならないので、保存に失敗したら破棄に進まない。
+- 非公開の判定は、claim の後の選り分け（DR-A3-6）だけでなく、帯の「破棄」と、新しい送信で置き換えるときの保存の前にも呼ぶ（M4 の指摘。残す量を減らす向き）。
+  - 作品の内容を返した tool の結果を、basis ですべて確かめられない回（basis の無い結果、途中の状態が無いか書けなかった回、CLI・Codex App Server・当面の Mastra の経路）は、依頼文だけを残す。成否だけを返す書換え、画面操作、ask_user の回答は数えない。画面を見せるときに含める。
+  - system prompt に注入した Codex が非公開になった場合を判定に含めるかは、PR 4・5 で決める。
+- 返答を残せない場合（途中の状態の書込みの失敗、予約の空の行、完了の保存の途中）の扱いは PR 4・5 で決め、画面で見える差があれば利用者に返す。
+
+### DR-A3-22 段 B のレビューと、PR 4 の前に決めること（2026-11-28）
+
+N-API の owner と lock を Fable（read-only、effort high）が読んだ。merge を止める指摘は無し。
+
+- **直した**：
+  - finalizing の一覧と状態の読みに `ownedByCaller` を足す（自分の保存中の Run を、main が誤って回収しないため）。
+  - owner の Mutex を DB の操作の間は持たない。workspace を切り替えても、古い owner の操作が残る間は古い lock を握ったままにする。
+  - claim の `gate` の余分な field を拒む。
+- **PR 4 の前に決める**：
+  - workspace の切替・復元・終了で、自分の非終端の Run を中断してから lock を手放す順序（DR-A3-5）を、Native の経路で保証するか、main の責任にするか。今は main の呼び手が先に中断する前提。
+  - 他の owner の `finalizing` を閉じる操作にも、活動の古さの下限を通すか（lock が効かない場合）。
+  - claim・破棄・置き換え・承認・回答に、期待する `chatSessionId`・`projectId` の照合を足すか。同じ起動の中の止め切れていない古い実行の書込み（checkpoint と台帳は version の条件が無い）を弾くか。
+  - 回収を owner ごとの結果にするか。古さの下限の省略が「下限なし」になる形をやめるか。
+  - `resume_block_detail`（今は自由文で、上限が無く、終端でも残る）を、理由の語に限るか、上限と終端の消去を足すか。
+  - payload の型の違いの error 文には値が載るので、画面へそのまま返さない。checkpoint の digest は、保存の前の正規化で bytes が変わるので、照合に使わない。
+
+### DR-A3-23 PR 4（記録の経路）の分け方と形（2026-11-28。点検を受けて改訂）
+
+- 経緯：統合者の依頼で PR 4 に入る。Mastra の担当（Gate A の A2）は、実際の port につなぐ段で、port の操作の実体、Run の開始・終端・中断、Run の version を直列に持つ持ち主を待つ。第 1 版を Fable（read-only、effort high）が点検し（blocker 4 件）、その結果と advisor の助言を入れた。
+- 確かめた事実（Codex の read-only 調査と読み直し、基点 `ca89306d3`）：
+  - legacy の `executionId` は provider への要求ごとに新しい。assistant の message の ID と turn の ID（`operationId`）は、turn で 1 つ。
+  - main は `send_agent_message` の応答の tool_use（ID・名前・引数）を観測できる。tool の実行と結果は画面の側で、main は legacy の loop を持たない。
+  - tool の ID は応答をまたぐと重なる（Hermes は `hermes-{n}`、ID を返さない provider は空文字。`grimodex-ai/src/lib.rs`）。
+  - 手動の Stop、project の切替、workspace の切替、窓の close は同じ `stopGeneration()` を通り、呼び先は理由を区別できない。
+  - DB を写す経路は、表を名指しするか、中身を消す処理を通る。例外は、受け入れ済みの forensic の生の控えと、製品に入らない NIR-1 の memory 診断（範囲外とする）。
+  - 書込み時計の trigger は記録の 2 表にも付く。AI Audit の追記も全体の時計を進める（`grimodex-core/src/write_clock.rs`）。
+- **分け方**（どれも画面の挙動を変えない。Native の引数が変わるので、Native を先にする）：
+  - **4a**：Native と port の型の直し。呼び手なし。schema は変えない。
+  - **4b**：main の記録の持ち主の module（`electron/main/agentRunRecorder.ts`）。呼び手なし。
+  - **4c**：legacy の配線（画面からの開始と終端の通知、台帳の追記、切替と終了での中断、回収）。旗は閉じる。
+- **鍵と version の持ち主**：
+  - Run は（sender、`operationId`）で引く。assistant の message の ID は、開始のときに main が受け、`origin_assistant_message_id` に書く（再起動の後も保存先が分かる。列は足さない）。
+  - 台帳の鍵は（`executionId`、`toolCallId`）。同じ応答の中の重複と空の ID は記録できない扱いにする。
+  - 確認待ち（承認と質問）と台帳の対応（Mastra の担当の指摘）：開くときに `executionId` も受け、Native が「台帳にその対があり、その `toolCallId` の最後の行である」ことを確かめる。確認待ちがある間は、同じ `toolCallId` の追記を拒む。承認の読みは、その行の `executionId` を返す。質問の読み戻しは、画面の PR（PR 5）で足す。開くときは、台帳の行の引数の照合値（承認は tool の名前も）との一致も求める。台帳の `argsDigest` は、書込み系の 15 本（保護対象の 14 本と `propose_scene_body`）では Gate A の `agentToolInputDigest` の値、それが null の呼出し（読み取りや `ask_user`）では記録の側の正規形の digest にする。null を理由に追記を失敗させない。記録の部品は digest の関数を引数で受け取り、`ipc.ts` を import しない。列は足さない。返事待ちの間もほかを進める形（DR-A3-18）を入れる版で、`agent_run_interactions` に列を足す。
+  - Run の version は記録の持ち主が持ち、Run ごとに直列にする。Interaction の version は Gate A が持つ。
+  - Gate A へは `resolveRun({senderId, projectId, executionId})` が `recorded`（`runId`、`transact`）／`not_recording`／`unrecorded` を返す。対応は台帳の追記で作る。Gate A は `recorded` のときだけ交換を開く。
+  - `transact` は `op` の戻り（`AgentRunState` を含む型）をそのまま返す。`op` は Native の呼出し 1 回にする。承認を待たず、再入しない。失敗したら version を進めない。終端と workspace の切替の後は拒む。N-API は呼んだ時点の workspace を使うので、切替で対応を捨てる。
+- **台帳の追記**：
+  - 記録の側が行う（DR-A3-4）。Gate A は `updateToolCall` だけを呼ぶ。
+  - 置き場所は、legacy の `send_agent_message` の応答を受ける閉包（`ipc.ts`）。capability を発行する関数の中には置かない（Mastra の経路も通る）。
+  - capability の発行より前に、応答 1 つを 1 tx で追記する。
+  - 追記に失敗した応答には capability を発行せず、Run の `resumable` を偽にする。capability の無い agent の書換えを main と Native が拒むことは、Mastra の担当がコードで確かめた（正直な画面の経路）。
+  - 下位の agent（research）の呼出しは台帳に入れない。その `executionId` は `audit_execution_ids` に足す。
+- **Stop と中断**：
+  - 作者の Stop は `cancelled`（`user_stop`）。project の切替の確認で止める場合も、今の「停止」と同じ扱いにする（画面の PR で利用者に見せる）。
+  - workspace の切替・復元、quit、窓と renderer の喪失、profile の切替は `interrupted`。区別のため、`stopGeneration()` に理由の引数を足す（4c）。
+  - quit では、記録の中断を、画面の drain の後、workspace を閉じる前に行う（`will-quit` は drain より先に来る）。
+- **lock を手放す順序は main の責任**（DR-A3-22）。切替と復元では Native へ渡す前の quiesce で、自分の非終端の Run を中断する。Native には強制を足さない。漏れた行は、workspace を開くたびに、main が自分の owner の行を memory と照らして中断する（DR-A3-11a）。
+- **Native の直し（4a）**：
+  - 台帳の鍵を対にする。応答 1 つの追記。追記は active の status に限る（今は `interrupted` でも追記できる。更新は非終端なら通す）。
+  - 確認待ちを開く操作と読みで、台帳との対応を確かめる（上）。
+  - 開始に assistant の message の ID を足す。
+  - 自分の owner の終わっていない Run の一覧。
+  - `finalizing` を閉じる操作に、中断の理由の引数を足す（今は `renderer_lost` に固定）。ほかの owner の分には活動の古さの下限を通す。回収は owner ごとの結果を返し、下限を必須にする。
+  - 保存する行が無い終端（送信の前の Stop）のために、`running` から終端へ直接進む操作（`running` だけ）。
+  - 開始で記録した assistant の message の ID は、終端の準備で別の ID に変えられない。状態の遷移でも活動の時刻を更新する（lock が効かない場所で、生きた owner の回を回収しないため）。
+  - `resume_block_detail` は理由の語に限る。`mark_not_resumable` に、期待する status の条件。
+  - `audit_execution_ids` に 1 件を足す操作（version は上げない。件数の上限を置く）。
+  - 期待する `chatSessionId`・`projectId` の照合は Native に足さない。main が束縛と行で照合する（DR-A3-5）。止め切れていない古い実行は、対応に無い `executionId` として拒む。
+  - 台帳と checkpoint の大きさの上限は、PR 5 の checkpoint の上限と合わせて決める。
+  - message の ID を書いて冪等に保存する操作は、PR 5 の前に足す。
+  - payload の型の違いの error 文は画面へ返さない。checkpoint の digest は照合に使わない。
+- **終端の語**：legacy の上限のうち `limit_calls`・`limit_questions` は、表の CHECK に無い。版を上げず、`completed`（理由も `completed`）に写す。`limit_tokens` はそのまま。このため、上限の種類は Run の記録に残らない。画面の「続行」は loop の結果から決まり、Run の理由を読まないので変わらない。
+- **保存の流し直しが要る回**：`finalizing` で予定が `cancelled`、行が未完の Run は、画面が保存を流し直すまで残り、その会話の新しい Run を塞ぐ（DR-A3-11）。流し直しは、旗を開ける前（PR 5）に作る。
+- **開始の二重**：`run_id` は main が発番する。同じ turn の開始が重ねて来たら、記録の持ち主が同じ Run を返す。Native は「会話ごとに終わっていない Run は 1 つ」で二重を拒む。
+- **書込み時計**：
+  - 記録の 2 表も時計の対象のままにする（Mastra の DR-MP7-8 と同じ扱い）。除外も版上げもしない。
+  - 記録の書込みは継ぎ目（応答の直後で tool の実行の前、tool の実行の後、状態の変更）だけに置き、timer では書かない。
+  - 起こりうる影響（コードからの推測で、未測定）：NIR-1 の「監査の追記だけなら再検証しない」特例（DR-CP4-V-6）が記録の混ざる回に効かない。Impact Review の実行直前の確認が「もう一度お試しください」になる回と、Repair の控えの照合の拒否が増える。旗を開ける前に測り、扱いを持ち主と決める（統合者に共有した）。
+- **旗**：4c で main の門を置き、既定は閉じる。閉じている間は `agentRun*` を一度も呼ばず、Stop と保存の順は今のまま（試験で固定する）。開けるのは PR 5 の後で、開ける前に利用者に伺う。起動時の大きさは前後で測る。
+- **4c の前に決める**：
+  - 切替と窓の close の Stop は、今は途中の行を会話に保存する。DR-A3-2 は「中断の間は行が無い」。どちらにするかを決めて、利用者に見せる。
+  - 承認の 30 分で中断した後、画面の loop を誰が止めるか。
+  - Stop は、`begin_finalizing` より前に、承認の signal を abort する（Mastra の担当の指摘。Native では `finalizing` の間も `updateToolCall` が通るため）。記録の部品の呼び手の順序として固定する。
+  - ID を返さない provider（空の tool の ID）は、台帳の追記が必ず失敗し、その応答に書換えの権限が出なくなる。今は書換えが動くなら、旗を開けると見える退行になる。main で ID を補うか、利用者に見せるかを決める。
+- **確かめた上限**：`audit_execution_ids` の 512 件は、1 回の返答の provider の要求の最大の見積もり（親の呼出し 25 回と質問 8 回、下位の agent は呼出しごとに 13 回までで約 360）に届かない。届くようになった場合は、監査の追加の失敗で台帳の追記を落とさない形にする。
+- **PR 5 の前**：再起動の後は `executionId` との対応が無いので、`runId` から引く口が要る。
 
 ## 4. owner／lifecycle の表（GDX-PRECHECK-001）
 
@@ -533,6 +738,17 @@ SessionTasks の材料に対応して、次を受入れの条件に入れる。
 - 範囲外（受け入れる）：
   - DB の file を直接書き換えられる、手元の攻撃者。
   - 乗っ取られた画面が、読む tool の結果を偽ること。今も同じで、書換えの権限にはならない。
+  - DB を開けないときに復元の前に作る生の控え（`backups/` の `.forensic`）に、中断した実行の途中の本文が残ること（2026-11-28 に追加。下の追記）。
+
+追記（2026-11-28）：保存の範囲に、承認の対象の版（種類・ID・版か内容の照合値。本文は入れない）を足した。利用者の回答は DR-A3-17。終端で消し、写しでは空にする。
+
+追記（2026-11-28 14:32、利用者の回答。AskUserQuestion。統合者が聞き、contracts の `349ec75d5` の問 35 に記録。A3 の担当は直接見ていない）：
+
+- 問い：復元の前の控えのうち、DB が壊れて開けないときの生の写しからは、中断した実行の途中の本文を消せない。「写しでは途中の状態を空にする」の例外にするか。
+- 回答：「例外として受け入れる (Recommended)」（脅威モデルに書く。開けない DB は直せず、この控えはもともと全データの写し）。
+- 自動の削除期限は設けない。
+
+追記（2026-11-28）：書き出し・project snapshot・取り込み・sample・MCP に 2 表は含まれないことを確かめた（Codex の静的な調査）。含むのは backup 系の写し（本文を消す）、forensic の控え（上の例外）、廃止済みの Web Editor の受け取り（対象にしない）、合成の DB だけを使う診断。
 
 ## 6. PR の分け方（案）
 
@@ -540,7 +756,9 @@ SessionTasks の材料に対応して、次を受入れの条件に入れる。
    - この文書。
    - ADR 007・008 の追補。
    - roadmap の注記（F0-lite-A／B、A3 の Interaction contract の読み替え、`AgentRunStatus` の値）。
-2. **F0-lite-A の型と Native**：表・module・N-API・ADR 003 の手当て。閉じたまま、呼び手なし。schema の版を上げる。
+2. **F0-lite-A の型と Native**（閉じたまま、呼び手なし）。2 本に分ける（2026-11-28、利用者の「Mastra の道を最優先で速く」を受けた統合者の依頼。#1177 と #1207 と同じ分け方）：
+   - **2a**：表と grimodex-db の関数、版に付く台帳（D2a の分類、Drizzle parity、schema contract、writer の件数）。schema の版を上げる。
+   - **2b**：main 専用の N-API、d.ts、TypeScript の型と port の型（DR-A3-19）。grimodex-db は変えない。
 3. **R1**：4c-2 の merge の後に、Mastra の担当と範囲を合わせる。
 4. **legacy の経路の記録**：開始・終端・`finalizing`・Interaction・台帳、束縛、同じ起動の中の中断と回収。
 5. **legacy の経路の途中再開**：
@@ -548,6 +766,8 @@ SessionTasks の材料に対応して、次を受入れの条件に入れる。
    - 再表示と「続ける」「破棄」の画面。UI は Claude が持つ。
    - 画面は、第 9 節をユーザーに見せた後に作る。
 6. **Mastra の経路の接続**：Mastra の担当が持つ。A3 は port を出す。
+
+順の変更（2026-11-28、A3 の判断。統合者は順を任せた）：PR 4 を PR 3（R1。4c-2 の merge 待ち）より先にする。roadmap の「A3 は R1 と F0-lite の state contract で Blocked」は、PR 4 には当てはめない。理由：cleanup の呼び手を調べると、Stop・シーン／作品／workspace の切替・アプリの終了は同じ停止の経路を通り、画面を閉じたり隠すだけでは provider は止まらない。中断と Stop を分けるには `stopGeneration` に理由の引数を足して transport の cleanup まで渡せば足り、R1 の handle は要らない。profile の切替と画面の喪失は Main の側で扱う。R1 の「移動しても実行が続く」は PR 4 に含まれない。
 
 roadmap の A3 の出口条件との対応：
 
@@ -573,7 +793,7 @@ roadmap の A3 の出口条件との対応：
 
 - 記録：contracts の問 11〜13（`claude/nir1-contracts` の `0de2aed37`）。
 - 問 3 は条件つきの承認で、第 8 節のすり合わせが済むまでは確定扱いにしない。
-- schema の版は、CED/1 の 49 の次に空いている番号（見込みは 50）を、merge の直前に確かめて取る。
+- schema の版は、CED/1 の 49（#1215）の次の 50。
 
 - 問 1：「表示文と回答を残す (推奨)」。
 - 問 2：「再表示して答えられる (推奨)」。
@@ -781,3 +1001,20 @@ PR 5 の画面を作る前に、次をユーザーに見せる。
 - 新しい送信：「確認してから破棄 (推奨)」。
 - 3 点とも第 3 版の設計（DR-A3-6・DR-A3-7）と同じ。
 - 破棄の置き場所と文言（1）は、画面の PR の前に、改めて画面の形で見せる。
+
+### 提示（2026-11-28 20:31、利用者向けの本文。返事はまだ無い）
+
+11-27 の本文では一部しか示していなかった。11-28 の昼に「提示は PR 5 の条件」と伝えたのは、この文書の冒頭（PR 4・5）と食い違っていた。次の 15 項目を示した。
+
+- 回答済みの点（確認として再掲）：中断の帯と呼び方・置き場所・破棄の確認、期限なし。新しい送信・再生成・削除の前の確認と破棄。破棄の前に会話へ残す（非公開の項目を読んでいた回は依頼文だけ）。中断の間に変わった結果を外して知らせる。承認待ちを記録して出し直す。
+- 本文で伝えたことがある点：非公開・backup と写し・CLI・Codex App Server の回は続けられない。途中の出力は消え、送信と費用がもう一度かかる。同期フォルダでは検出が最長 24 時間遅れる。
+- 今回が初めての点（異論を待つ）：
+  1. 読んだ内容を確かめきれない回は、依頼文だけを残す（A3 の判断）。
+  2. 会話の削除と全履歴の削除では何も残さない（M4 と A3 の読み）。
+  3. 途中の状態を保存できなかった回と、当面の Mastra の経路の回は続けられない。
+  4. 接続先・model の変更や、license・AI の利用方針・送信先の制限では、再開せず理由を出す。後で再試行できる。
+  5. 実行中だった書き換えの tool は再実行せず、反映の有無を AI に伝える。`run_app_command` とレイアウトの適用は「結果が分からない」と伝える。
+  6. 承認を 30 分待つと中断になり、後から承認できる。
+  7. 失敗で終わるはずの回が保存の途中で落ちると、「途中で止まりました」と出る。
+- 案として示した点（未決定）：発言の編集して再送と A/B の採用でも、同じ確認を出す。
+- 訂正（2026-11-28、M4 の担当の指摘）：承認待ちで中断した回を再開するとカードが出直すのは、legacy の経路に限る。Mastra の経路の Run は、MP-9 と再入の実証が済むまで再開できない（DR-A3-8。実証の担当は Mastra）。次の利用者向けの本文で伝える。

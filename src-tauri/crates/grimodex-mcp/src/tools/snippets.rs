@@ -178,14 +178,18 @@ mod tests {
     use crate::db::tests::make_simple_db;
     use crate::server::GrimodexServer;
 
+    const FULL_POLICY: &str = r#"{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true,"knowledgeWrite":true}}"#;
+
     fn make_writable_server() -> GrimodexServer {
         let conn = make_simple_db();
         conn.execute(
-            "INSERT INTO projects (id, title) VALUES ('p1', 'Novel')",
-            [],
+            "INSERT INTO projects (id, title, ai_policy) VALUES ('p1', 'Novel', ?1)",
+            [FULL_POLICY],
         )
         .expect("seed MCP project");
-        let policy = grimodex_core::policy::load_policy(&conn, "p1").expect("load writable policy");
+        let policy = grimodex_core::policy::load_policy(&conn, "p1")
+            .expect("load writable policy")
+            .toggles;
         GrimodexServer::new(
             conn,
             "p1".to_string(),

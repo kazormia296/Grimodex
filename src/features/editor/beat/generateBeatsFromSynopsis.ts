@@ -3,6 +3,7 @@ import { useWorkspaceStore } from "@/features/workspace/store";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { getProject } from "@/features/project/api";
 import { streamInlineAiText } from "./streamInlineAiText";
+import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { isBeatType, type BeatType } from "./beatTypes";
 import { getPromptCatalog } from "@/prompts/index";
 import i18next from "@/lib/i18n";
@@ -66,6 +67,14 @@ export async function generateBeatsFromSynopsis(
   const treeNode = state.nodes.find((n) => n.id === sceneId);
   const synopsis = treeNode?.synopsis?.trim() ?? "";
   if (!synopsis) return;
+  // 生成したビートは場面の文書に保存されるので、本文の提案（bodyWrite）の門を通す。
+  // 読込みと生成の待ちの間にオフになり得るため、呼び出し前と保存前にも読む。
+  const stopped = () => {
+    if (!blockIfPolicyOff("bodyWrite")) return false;
+    callbacks?.onDone?.();
+    return true;
+  };
+  if (stopped()) return;
   const auditAuthority = captureAiOperationAuthority(state.projectId, sceneId);
 
   const projectTitle = useWorkspaceStore.getState().activeWorkspaceName ?? "";
@@ -82,6 +91,7 @@ export async function generateBeatsFromSynopsis(
     lang,
   ).beatGenerate.buildGenerateBeatsMessages(projectTitle, sceneTitle, synopsis);
 
+  if (stopped()) return;
   callbacks?.onStart?.();
 
   const result = await streamInlineAiText(messages, {
@@ -107,6 +117,7 @@ export async function generateBeatsFromSynopsis(
     auditAuthority,
     useTreeStore.getState().projectId,
   );
+  if (stopped()) return;
   const store = useUnplacedBeatsStore.getState();
   for (const rb of rawBeats) {
     const instructions =

@@ -72,7 +72,8 @@ function ev(p: Record<string, unknown>): Record<string, unknown> {
     endTime: p.endTime ?? null,
     startMinute: p.startMinute ?? null,
     endMinute: p.endMinute ?? null,
-    startGranularity: p.startGranularity ?? "none",
+    startGranularity:
+      p.startGranularity ?? (p.startTime != null ? "day" : "none"),
     endGranularity: p.endGranularity ?? "none",
     precision: "exact",
     kind: p.kind ?? "generic",
@@ -423,7 +424,15 @@ describe("ターン内共有キャッシュ", () => {
 
 describe("getChronicleStateTool", () => {
   it("sceneId 省略時は activeSceneId を使い構造化スナップショットを返す", async () => {
-    events.push(ev({ id: "e1", title: "戴冠", ordinal: "a1" }));
+    events.push(
+      ev({
+        id: "e1",
+        title: "戴冠",
+        ordinal: "a1",
+        startTime: 1,
+        startGranularity: "day",
+      }),
+    );
     sceneEvents.push({ sceneId: "s1", eventId: "e1" });
     codexEntries.push({ id: "c1", name: "アリス" });
 

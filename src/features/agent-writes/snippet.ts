@@ -1,6 +1,7 @@
 import i18next from "i18next";
 import { invoke } from "@/lib/tauri";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { AiPolicyWriteBlockedError } from "@/features/ai-policy/writeBlockedError";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
@@ -54,7 +55,7 @@ export async function agentCreateSnippet(
   >,
 ): Promise<Snippet> {
   if (blockIfPolicyOff("knowledgeWrite")) {
-    throw new Error("knowledgeWrite policy is off");
+    throw new AiPolicyWriteBlockedError("knowledgeWrite");
   }
   if (input.requestId.trim().length === 0) {
     throw new Error("requestId must be a non-empty string");

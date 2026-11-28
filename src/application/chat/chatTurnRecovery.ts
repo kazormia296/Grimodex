@@ -12,6 +12,14 @@ import {
 import type { ResolvedChatTurnRoute } from "@/features/chat/turn/resolveTurnRoute";
 import type { LayerBreakdown } from "@/features/chat/contextBuilder";
 import type { TurnControl } from "@/features/chat/turn/turnCoordinator";
+import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
+import { buildInputTokenDriftMetadata } from "@/features/ai-usage/inputTokenDrift";
+import type {
+  InputTokenDriftTotals,
+  InputTokenEstimatorFamily,
+  InputTokenRouteSnapshot,
+} from "@/features/ai-usage/inputTokenDrift";
+import { useAiSettingsStore } from "@/features/chat/store";
 import {
   ChatTurnPersistenceError,
   createRetryableCompletedTurnPersistence,
@@ -28,9 +36,14 @@ export function createTurnRecovery(input: {
   content: string;
   chatApi: Pick<
     ChatApi,
-    "addMessage" | "getSessionForProject" | "saveMessagePrompt"
+    | "addMessage"
+    | "generateSessionTitle"
+    | "getSessionForProject"
+    | "saveMessagePrompt"
+    | "updateSessionTitleIfAutomatic"
   >;
   get: ChatStoreActionPorts["get"];
+  set: ChatStoreActionPorts["set"];
   isCapturedWorkspaceCurrent: () => boolean;
   isCapturedProjectCurrent: () => boolean;
   isCurrentTurn: () => boolean;
@@ -59,9 +72,46 @@ export function createTurnRecovery(input: {
   i18next: { t: (key: string) => string };
   debugLog: {
     error: (scope: string, operation: string, detail: string) => void;
+    warn: (scope: string, operation: string, detail: string) => void;
   };
   errorDetail: (error: unknown) => string;
 }): {
+  createAgentTurnPersistence: (input: {
+    sessionId: string | null;
+    userMetadata?: string;
+    promptSnapshot: string;
+    layers: LayerBreakdown[];
+    totalTokens: number | null;
+    model: string | null;
+    route: ResolvedChatTurnRoute | null;
+    assistantRow: AssistantRowReservation;
+    lastMessage: ChatMessage | undefined;
+    agentModel: string | undefined;
+    agentTokensIn: number | null;
+    agentTokensOut: number | null;
+    metadata: string;
+    outputTruncated: boolean;
+    commitAssistantReplacement: () => Promise<void>;
+    finalize: () => Promise<void>;
+  }) => ReturnType<typeof createRetryableCompletedTurnPersistence>;
+  finalizeAgentTurn: (input: {
+    sessionId: string | null;
+    lastMessage: ChatMessage | undefined;
+    previousMessages: readonly ChatMessage[];
+    content: string;
+    model: string | undefined;
+    provider: string | null | undefined;
+    tokensIn: number | null;
+    tokensOut: number | null;
+    cacheTotals: InputTokenDriftTotals;
+    cost: number | null;
+    messageId: string;
+    usageRoute: InputTokenRouteSnapshot | null;
+    estimatorFamily: InputTokenEstimatorFamily;
+    language: string;
+    contextPlanDigest: string | null;
+    titleLanguage: string;
+  }) => void;
   persistCompletedTurn: (input: {
     retry: () => Promise<void>;
     sessionId: string;
@@ -462,6 +512,142 @@ export function createTurnRecovery(input: {
   };
 
   return {
+    createAgentTurnPersistence(turn) {
+      return createRetryableCompletedTurnPersistence({
+        persistUser: async () => {
+          if (!turn.sessionId) return;
+          await chatApi.addMessage(turn.sessionId, "user", content, {
+            id: userMessage.id,
+            createdAt: userMessage.createdAt,
+            recordTimelapse: false,
+            ...(turn.userMetadata ? { metadata: turn.userMetadata } : {}),
+          });
+          if (turn.promptSnapshot) {
+            // Cache/plain のうち最後の Agent iteration が実際に送った
+            // system representation を、user行の確定後に保存する。
+            void chatApi
+              .saveMessagePrompt(userMessage.id, {
+                systemPrompt: turn.promptSnapshot,
+                layers: turn.layers,
+                totalTokens: turn.totalTokens,
+                model: turn.model || null,
+                provider: turn.route?.provider ?? null,
+                contextWindow: turn.route?.contextWindow ?? null,
+              })
+              .catch((error) =>
+                input.debugLog.warn(
+                  "ChatStore",
+                  "saveMessagePrompt",
+                  input.errorDetail(error),
+                ),
+              );
+          }
+        },
+        ...(turn.sessionId &&
+        turn.lastMessage?.role === "assistant" &&
+        (turn.lastMessage.content ||
+          turn.assistantRow.reserved ||
+          turn.outputTruncated)
+          ? {
+              persistAssistant: async () => {
+                await turn.assistantRow.persist(
+                  turn.sessionId!,
+                  turn.lastMessage?.content ?? "",
+                  {
+                    model: turn.agentModel,
+                    tokensIn: turn.agentTokensIn ?? undefined,
+                    tokensOut: turn.agentTokensOut ?? undefined,
+                    metadata: turn.metadata,
+                  },
+                );
+                await turn.commitAssistantReplacement();
+              },
+            }
+          : {}),
+        finalize: turn.finalize,
+      });
+    },
+
+    finalizeAgentTurn(turn) {
+      if (
+        !turn.sessionId ||
+        turn.lastMessage?.role !== "assistant" ||
+        !turn.lastMessage.content
+      ) {
+        return;
+      }
+      // N4: エージェントターンの usage を台帳にも記録
+      // (cost は OpenRouter 実値)。
+      void recordAiUsage({
+        surface: "agent",
+        model: turn.model,
+        provider: turn.provider,
+        projectId,
+        tokensIn: turn.tokensIn,
+        tokensOut: turn.tokensOut,
+        cacheReadTokens: turn.cacheTotals.cacheReadTokens,
+        cacheWriteTokens: turn.cacheTotals.cacheWriteTokens,
+        costUsd: turn.cost,
+        traceId: turn.messageId,
+        refId: turn.messageId,
+        metadata: turn.usageRoute
+          ? buildInputTokenDriftMetadata({
+              scope: "agent-parent",
+              projectId,
+              route: turn.usageRoute,
+              estimatorFamily: turn.estimatorFamily,
+              language: turn.language,
+              contextPlanDigest: turn.contextPlanDigest,
+              totals: turn.cacheTotals,
+            })
+          : null,
+      });
+
+      const firstAgentResponse =
+        turn.previousMessages.filter((message) => message.role === "assistant")
+          .length === 0;
+      const currentSession = get().sessions.find(
+        (session) => session.id === turn.sessionId,
+      );
+      if (!firstAgentResponse || currentSession?.titleManual !== 0) return;
+      const titleModel = useAiSettingsStore.getState().settings?.model ?? "";
+      const titleGeneration = chatApi
+        .generateSessionTitle(
+          content,
+          turn.lastMessage.content,
+          titleModel,
+          turn.titleLanguage,
+          projectId,
+        )
+        .then(async (title) => {
+          if (!title) title = content.slice(0, 30);
+          const updated = await chatApi.updateSessionTitleIfAutomatic(
+            turn.sessionId!,
+            title,
+          );
+          if (!updated) return;
+          if (
+            (await hasManualSessionTitle(turn.sessionId!, projectId)) ||
+            hasManualSessionTitleInStore(turn.sessionId!)
+          ) {
+            return;
+          }
+          input.set((state) => ({
+            sessions: state.sessions.map((session) =>
+              session.id === turn.sessionId ? { ...session, title } : session,
+            ),
+          }));
+        })
+        .catch((error) => {
+          const detail = input.errorDetail(error);
+          const log = /IPC_\w+_CANCELLED/.test(detail)
+            ? input.debugLog.warn // a lifecycle switch cancelled it
+            : input.debugLog.error;
+          log("ChatStore", "agent title generation", detail);
+        });
+      void runtime.trackTurn(titleGeneration);
+    },
+
     persistCompletedTurn,
     preserveFailedAnchoredTurn,
     hasManualSessionTitleInStore,

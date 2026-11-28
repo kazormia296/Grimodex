@@ -552,6 +552,14 @@ GDV/1が許さないもの: この確認は PUB-G・Graph の公開・新しい 
 - K3/2R-1（`nir1-d2a-graph-unrestricted-proposal/1#caller-profile-egress`）。確認により、K3/2の「区分の構成」の表のGraphの行（unrestrictedはGraphを出さず `profile-not-restricted`）は、draftの§3.1の改訂後の文で読む。K3/2の :151、:162（Negative (3)のGraphの部分と(7)）、:161、:170-174、:176、:229、:303、:325、:439、:449とT-1（:206、:242）の読み替えはdraftの§3.2のとおり（実装のPRで新しいdraftRef側から文書を改訂する）。実装計画と実行計画のPUB-Gの行の「A3＋B＋C＋D2a」は「A3＋B＋C」と読む（D2aはlocal生成〔PUB-L〕とD-finalの前提として残る）。
 - 台帳・計画文書への注記のうち、DSN §4.2・§4.3・§1.2・§3.3の改訂、K3/2の本文の読み替えの写し、PUB-Gの前提一覧（`pubg-prereq-inventory-2026-11-03.md`）の付け直しは、実装のPRか、前提一覧の更新のPRで行う（この記録のPRでは行わない）。
 
+2026-11-28補足（CED/2）: 次の1行が、ユーザーの構造化質問（AskUserQuestion）への回答で記録された。行の確認の日時は2026-11-28 11:13（JST。正確な受信時刻は会話記録のtimestamp）。質問と回答の原文は確認の記録による（`claude/nir1-contracts` の commit `1bd600052` の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-22-chronicle-scene-review-apply.md` の確認164〜166。この枝はmasterにmergeしないのでhashで引く）。確認166の問いは、draftRefとcontractIdとdraftのSHA-256を名指し（Confirmation protocolの (2)）、選択肢は「確認する (Recommended)」「空の死亡も日で切り替える」「まだ確認しない」の3つで、回答の逐語は「確認する (Recommended)」で、明示の確認である。規則の中の選択は確認165で伺い、問2（不明の死亡の仮の日で「存命」と「不明」を切り替える）と問3（「不明」でも現在地の年齢を渡す）は推奨と違う選択で、draftはその選択のとおりに起案されている。確認された版は branch `claude/ced1-switch` の commit `8693ec31666466d66dc339645b657eba587dfb4b` の [CED/2のdraft](nir1-chronicle-event-date-required-proposal-2-draft.md) で、`sha256sum` が下の値と一致することを確かめた。draftの「Status: draft。未確認」の行はbytesを変えないためにそのまま残し、確認状態は本台帳で表す。CED/1-1とCSR/1-6の行は消さず、並べる。
+
+| # | draftRef#contractId（略称） | 取り込んだdraft | SHA-256 |
+| - | --------------------------- | --------------- | ------- |
+| CED/2-1 | `nir1-chronicle-event-date-required-proposal/2#chronicle-event-date-required`（CED/2。人物の生死の導出で、確度が「不明」の死亡がある人物を、仮の日以後の場面では「存命」でなく生死「不明」と渡す。CED/1-1への加算） | [nir1-chronicle-event-date-required-proposal-2-draft.md](nir1-chronicle-event-date-required-proposal-2-draft.md) | `e2b0d449df2d36f368cb5804f3e855146f6beb75ca9b0509aba3b3789526a42d` |
+
+承認の範囲と効力: 範囲の正本は、draftの§2〜§4（規則、残る制限、脅威モデル）である。この確認は、PUB-Gの公開、凍結、閾値・Gold・評価の規則の変更、新しい送信先、保存する列・表の追加を許可しない。
+
 ### R0 security contract proposal (draft)
 
 `draftRef`: R0でmerge済みのproposal/3五つのcontract rowと、PR #579で記録したOption Bのtyped rowは、それぞれのscopeだけを記録する。typed rowはexact user confirmationにより明示批准済み・契約として有効である。`graph-limited-binding` のproposal/5も、既存proposal/3の確認済みscopeを置き換えず、容量境界のmaterial deltaとして同じexact user confirmationにより明示確認済み・契約として有効である。2026-10-12には、`graph-limited-binding` のproposal/6（proposal/5の資源の値と受入れだけの改訂）と、新しい七つ目の `nir1-defensive-resource-limits` rowも、それぞれのexact user confirmationにより明示確認済み・契約として有効になった。proposal/5の節は確認時点の文面に戻した履歴で、資源の値はproposal/6の節が置き換える。これはレビューとユーザー確認のためのboundedな提案であり、新しいauthority、保存表、IPC、policy、runtime、consumer、activationを追加しない。L0〜L5の `nir1-product-tm/1` の範囲は変更しない。六つ目のrowは各contractIdのscopeだけを確認し、downstream threat modelはdraftのままとする。trusted／untrusted actor、攻撃範囲、防御、保存・保持、データ分類、endpoint、acceptance conditionのmaterial changeは再確認を要する。以下の「確認後に開くlane」は実装着手を意味せず、runtime／consumer activationは別途未完了のままとする。

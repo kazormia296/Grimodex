@@ -1,4 +1,6 @@
 import type { AiPolicyToggles } from "@/features/ai-policy/types";
+import { DEFAULT_AI_POLICY } from "@/features/ai-policy/types";
+import { getAiPolicyClassification } from "@/features/ai-policy/parse";
 import type { PanelId } from "@/features/layout/layoutStore";
 
 export type TourStepKey =
@@ -166,4 +168,11 @@ export function getTourSteps(
     if (step.key === "export" && !includeExport) return false;
     return !step.requires || toggles[step.requires];
   });
+}
+
+export function getSampleTourPolicyToggles(
+  raw: string | null | undefined,
+): AiPolicyToggles {
+  const policy = getAiPolicyClassification(raw);
+  return policy.state === "valid" ? policy.toggles : DEFAULT_AI_POLICY.toggles;
 }

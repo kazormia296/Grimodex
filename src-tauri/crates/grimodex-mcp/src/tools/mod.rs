@@ -11,3 +11,6 @@ pub mod snippets;
 pub mod stats;
 pub mod timeline;
 pub mod tree;
+
+#[cfg(test)]
+mod policy_gate_tests;

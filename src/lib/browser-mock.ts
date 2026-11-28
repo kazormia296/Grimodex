@@ -152,6 +152,8 @@ type BrowserPlotBranchTransition = {
 // src/db/schema.contract.test.ts. BrowserMock uses every other canonical
 // CREATE statement so browser editing exercises the same renderer schema.
 const RUST_ONLY_BROWSER_TABLES = new Set([
+  "agent_run_interactions",
+  "agent_runs",
   "fts_meta",
   "codex_fts",
   "codex_fts_en",
@@ -170,6 +172,8 @@ const RUST_ONLY_BROWSER_TABLES = new Set([
   "identity_lineage_mappings",
   "identity_lineage_operations",
   "identity_lineage_reference_assignments",
+  // CED/1 I5: the date migration's record of repaired events is Native-owned.
+  "chronicle_date_migration_events",
   // SDEF/1 MD5: the project Scene Scope default is Native-owned (typed commands only).
   "narrative_scope_project_defaults",
   // MP-7 persistence stays Native-owned; the renderer receives it through typed commands.

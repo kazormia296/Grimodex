@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { expandPreset } from "@/features/ai-policy/preset";
-import { getTourSteps } from "./tourSteps";
+import { getSampleTourPolicyToggles, getTourSteps } from "./tourSteps";
 
 describe("SampleTour step order", () => {
   it("starts with workspace/project guidance and ends with export before completion", () => {
@@ -41,5 +41,19 @@ describe("SampleTour step order", () => {
 
     expect(keys).not.toContain("export");
     expect(keys.at(-1)).toBe("end");
+  });
+});
+
+describe("SampleTour AI policy fallback", () => {
+  it.each([undefined, null, "", "not-json"])(
+    "keeps every AI step for missing or invalid global policy %s",
+    (raw) => {
+      expect(getSampleTourPolicyToggles(raw)).toEqual(expandPreset("full"));
+    },
+  );
+
+  it("uses a valid global default policy", () => {
+    const raw = JSON.stringify({ preset: "off", toggles: expandPreset("off") });
+    expect(getSampleTourPolicyToggles(raw)).toEqual(expandPreset("off"));
   });
 });

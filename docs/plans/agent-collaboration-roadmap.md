@@ -459,6 +459,7 @@ Session-local statusだけで十分なら、従来のfull SessionTasks設計を�
 **State:** Blocked。前提は[Write-Safety Roadmap](agent-auto-write-safety-roadmap.md)のGate A（A1・A2の承認境界）、Release AのA3（durable interaction。その前提のR1・F0-liteを含む）、
 Mastra移行のMP-6（write toolとcapability）・MP-9（履歴の持ち主と保存の移動）。
 Decision Gate Aは待たない（DR-ST-6）。判断の経緯と要件の振り分けは[SessionTasksの判断記録](session-tasks-decisions-2026-11.md)。
+設計の起案（未確認）は[Release Bの設計](release-b-session-tasks-design.md)。実装の担当は起案の後に決める（DR-ST-11）。
 
 ## Product promise
 
@@ -485,9 +486,9 @@ Project Task昇格には明示authorityが必要である。
 
 - 承認した範囲での連続実行は、ADR 008の`mutate / task-scope`（承認済みTask Grantの範囲内なら確認なしで実行）を使い、
   別の承認の仕組みを作らない。MP-6でMastraの承認を「止めて、人が押したら再開する」部品として使う案は候補で、
-  mockで確かめてから採る（DR-ST-4）。
+  mockで確かめてから採る（DR-ST-4）。（2026-11-28 追記：この候補は採らないと決まった。承認は作者の出来事の承認と同じmainの仕組み。判断記録の第9節）
 - 親turnのtool回数の上限（modelの文脈の窓で10〜25回）は撤廃する。tool結果のtoken予算（`limit_tokens`）は残す。
-  条件は、停止が効く経路から外すことと、予算や文脈で止まったときに成果を消さない扱いを決めること。
+  条件は、停止が効く経路から外すことと、予算や文脈で止まったときに成果を消さない扱いを決めること。（2026-11-28 追記：予算や文脈の超過では、要約して自動で続ける。判断記録のDR-ST-12）
   子の予算、画面操作と質問の回数の上限は対象外（DR-ST-5）。
 
 ## UI

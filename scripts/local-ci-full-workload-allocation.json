@@ -117,7 +117,7 @@
     },
     {
       "path": "src/db/generated/schema-contract.json",
-      "sha256": "6728dba2e680800cb57488224268569945f7ef458d1f29710e0bde73060a4c2c"
+      "sha256": "c2b034af2bba78286f42fb3f04edc3342e2d9a8b13d93e5045f91fa25fb3d27d"
     },
     {
       "path": "docs/pr610-full-workload-risk.md",

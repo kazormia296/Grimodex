@@ -1010,6 +1010,11 @@ fn renderer_cause_kind(origin: NarrativeChangeOrigin) -> NarrativeChangeCauseKin
     }
 }
 
+pub(crate) fn is_forward_chronicle_edit(context: Option<&RendererCanonicalWriteContext>) -> bool {
+    context.is_none_or(|context| matches!(context.origin,
+        NarrativeChangeOrigin::Human | NarrativeChangeOrigin::AiApply | NarrativeChangeOrigin::Import))
+}
+
 fn is_renderer_replay(context: Option<&RendererCanonicalWriteContext>) -> bool {
     context.is_some_and(|context| {
         matches!(
@@ -1066,6 +1071,7 @@ fn append_agent_forward_change_result_in_tx(
     canonical_event: &AppendChangeEvent,
     narrative_events: Option<Vec<NarrativeChangeEventInput>>,
     renderer_context: Option<&RendererCanonicalWriteContext>,
+    author_paths: Option<&[String]>,
 ) -> anyhow::Result<AppendCanonicalNarrativeChangeResult> {
     let mut events = match narrative_events {
         Some(events) => events,
@@ -1081,9 +1087,11 @@ fn append_agent_forward_change_result_in_tx(
         }
     };
     normalize_foreshadow_feed_events_in_tx(conn, project_id, &mut events)?;
+    let affected_authority_paths = || author_paths.map(<[String]>::to_vec)
+        .unwrap_or_else(|| authority_paths_for_canonical_event(canonical_event));
     let canonical_event = if let Some(context) = renderer_context {
         validate_renderer_authority_context(context)?;
-        let affected_authority_paths = authority_paths_for_canonical_event(canonical_event);
+        let affected_authority_paths = affected_authority_paths();
         if context.authority_route == "interactive-agent-command" {
             record_agent_field_authority(
                 conn,
@@ -1104,7 +1112,7 @@ fn append_agent_forward_change_result_in_tx(
         // capability context. It still participates in field ownership: the
         // preflight above protects human/locked fields and successful MCP
         // writes must establish AI ownership for their changed paths.
-        let affected_authority_paths = authority_paths_for_canonical_event(canonical_event);
+        let affected_authority_paths = affected_authority_paths();
         record_agent_field_authority(conn, project_id, canonical_event, &affected_authority_paths)?;
         if matches!(
             canonical_event.op_type.as_str(),
@@ -1195,6 +1203,7 @@ fn append_agent_forward_change_in_tx(
         canonical_event,
         narrative_events,
         renderer_context,
+        None,
     )?
     .narrative
     .transaction_id)
@@ -3717,6 +3726,7 @@ fn agent_codex_update_internal(
                 &canonical_event,
                 Some(narrative_events),
                 renderer_context.as_ref(),
+                None,
             )?;
             if append_body_snapshot {
                 crate::timelapse::append_timelapse_body_snapshots_in_tx(
@@ -6156,6 +6166,15 @@ pub struct AgentEventParticipantsPayload {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentSceneEventExpected {
+    /// `null` は「関係が無いはず」。欄の欠落は受けない（書き忘れを「無し」と読まない）。
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub link_incarnation: Option<String>,
+    pub event_version: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSceneEventPayload {
     /// Request-owned idempotency key. The association has only a natural
@@ -6167,6 +6186,8 @@ pub struct AgentSceneEventPayload {
     pub surface: Option<String>,
     pub scene_id: String,
     pub event_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected: Option<AgentSceneEventExpected>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -6182,6 +6203,14 @@ pub struct AgentSceneEventLinkBatchPayload {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentEventRelationExpected {
+    pub related: bool,
+    pub cause_version: i64,
+    pub effect_version: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentEventRelationPayload {
     pub request_id: String,
@@ -6191,6 +6220,8 @@ pub struct AgentEventRelationPayload {
     pub surface: Option<String>,
     pub cause_event_id: String,
     pub effect_event_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected: Option<AgentEventRelationExpected>,
 }
 
 /// Full self-contained snapshot of an event row + its participants, scene
@@ -8158,6 +8189,7 @@ fn agent_event_update_with_request_and_authority_impl(
         end_minute: Option<i64>,
         start_granularity: String,
         end_granularity: String,
+        precision: String,
     }
 
     let request_hash = request_id
@@ -8201,7 +8233,7 @@ fn agent_event_update_with_request_and_authority_impl(
             let current: Option<CurrentChronicleRange> = conn
                 .query_row(
                     "SELECT version, start_time, end_time, start_minute, end_minute,
-                            start_granularity, end_granularity
+                            start_granularity, end_granularity, precision
                      FROM events WHERE id = ?1 AND project_id = ?2",
                     rusqlite::params![payload.event_id, payload.project_id],
                     |row| {
@@ -8213,6 +8245,7 @@ fn agent_event_update_with_request_and_authority_impl(
                             end_minute: row.get(4)?,
                             start_granularity: row.get(5)?,
                             end_granularity: row.get(6)?,
+                            precision: row.get(7)?,
                         })
                     },
                 )
@@ -8225,6 +8258,7 @@ fn agent_event_update_with_request_and_authority_impl(
                 end_minute: current_end_minute,
                 start_granularity: current_start_granularity,
                 end_granularity: current_end_granularity,
+                precision: current_precision,
             }) = current
             else {
                 anyhow::bail!(
@@ -8270,7 +8304,18 @@ fn agent_event_update_with_request_and_authority_impl(
                 || merged_end.day != current_end_time
                 || merged_end.minute != current_end_minute
                 || merged_end.granularity != current_end_granularity;
-            let (canonical_start, canonical_end) = if touches_chronicle_date {
+            let repair = if is_forward_chronicle_edit(renderer_context.as_ref()) {
+                crate::chronicle_date_migration::date_repair_if_needed(
+                    conn, &payload.project_id, &payload.event_id, touches_chronicle_date,
+                    merged_start, payload.precision.as_deref(), &current_precision,
+                )?
+            } else {
+                None
+            };
+            let (canonical_start, canonical_end) = if let Some(repair) = repair {
+                let range = repair.range(merged_end);
+                (range.start, range.end)
+            } else if touches_chronicle_date {
                 require_event_date(merged_start.day, merged_start.granularity)?;
                 let start = normalize_chronicle_timestamp(merged_start);
                 let end = normalize_chronicle_timestamp(merged_end);
@@ -8411,7 +8456,7 @@ fn agent_event_update_with_request_and_authority_impl(
                 param_idx += 1;
                 fields.push("locationCodexId");
             }
-            if touches_chronicle_date {
+            if touches_chronicle_date || repair.is_some() {
                 if canonical_start.day != current_start_time {
                     if let Some(v) = canonical_start.day {
                         sets.push(format!("start_time = ?{param_idx}"));
@@ -8454,24 +8499,24 @@ fn agent_event_update_with_request_and_authority_impl(
                 }
             }
             if payload.start_granularity.is_some()
-                || start_granularity != current_start_granularity
+                || canonical_start.granularity != current_start_granularity
             {
                 sets.push(format!("start_granularity = ?{param_idx}"));
-                params.push(Box::new(start_granularity.to_string()));
+                params.push(Box::new(canonical_start.granularity.to_string()));
                 param_idx += 1;
                 fields.push("startGranularity");
             }
             if payload.end_granularity.is_some()
-                || end_granularity != current_end_granularity
+                || canonical_end.granularity != current_end_granularity
             {
                 sets.push(format!("end_granularity = ?{param_idx}"));
-                params.push(Box::new(end_granularity.to_string()));
+                params.push(Box::new(canonical_end.granularity.to_string()));
                 param_idx += 1;
                 fields.push("endGranularity");
             }
-            if let Some(ref v) = payload.precision {
+            if let Some(v) = repair.and_then(|repair| repair.precision()).or(payload.precision.as_deref()) {
                 sets.push(format!("precision = ?{param_idx}"));
-                params.push(Box::new(v.clone()));
+                params.push(Box::new(v.to_owned()));
                 param_idx += 1;
                 fields.push("precision");
             }
@@ -8490,11 +8535,7 @@ fn agent_event_update_with_request_and_authority_impl(
                 fields.push("revealSceneId");
             }
 
-            if payload.surface.as_deref() == Some("mcp") && fields.is_empty() {
-                anyhow::bail!("MCP event update must change at least one field");
-            }
-
-            let authority_paths = fields
+            let mut authority_paths = fields
                 .iter()
                 .map(|field| {
                     authority_path_for_field("event", field, EVENT_AUTHORITY_FIELDS)
@@ -8506,6 +8547,16 @@ fn agent_event_update_with_request_and_authority_impl(
                         })
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
+            if repair.is_some() {
+                authority_paths.retain(|path| !crate::narrative_extraction::TEMPORAL_FIELD_PATHS.contains(&path.as_str()));
+            }
+            if payload.surface.as_deref() == Some("mcp") && authority_paths.is_empty()
+                && !(repair.is_some() && (payload.precision.is_some() || payload.start_granularity.is_some()
+                    || payload.end_granularity.is_some() || payload.start_time.is_some() || payload.end_time.is_some()
+                    || payload.start_minute.is_some() || payload.end_minute.is_some())) {
+                anyhow::bail!("MCP event update must change at least one field");
+            }
+
             preflight_agent_field_authority(
                 conn,
                 &payload.project_id,
@@ -8568,7 +8619,7 @@ fn agent_event_update_with_request_and_authority_impl(
                 payload: json!({ "fields": fields }).to_string(),
                 timestamp,
             };
-            append_agent_forward_change_in_tx(
+            append_agent_forward_change_result_in_tx(
                 conn,
                 &payload.project_id,
                 &payload.session_id,
@@ -8578,16 +8629,45 @@ fn agent_event_update_with_request_and_authority_impl(
                 &canonical_event,
                 None,
                 renderer_context.as_ref(),
+                repair.map(|_| authority_paths.as_slice()),
             )?;
 
-            record_manual_event_fields(
-                conn,
-                &payload.project_id,
-                &payload.event_id,
-                payload.surface.as_deref(),
-                EVENT_AUTHORITY_FIELDS,
-                &now,
-            )?;
+            if let Some(repair) = repair {
+                repair.record_authority(conn, &payload.project_id, &payload.event_id, &now)?;
+            }
+            if payload.surface.as_deref() == Some("manual") {
+                // Keep existing manual ownership behavior outside generated or explicitly locked dates.
+                let mut protected = std::collections::HashSet::new();
+                if repair.is_none() {
+                    let mut stmt = conn.prepare(
+                        "SELECT field_path FROM narrative_field_authority WHERE project_id = ?1
+                         AND entity_kind = 'event' AND entity_id = ?2 AND (owner_kind = 'system' OR explicit_lock = 1)",
+                    )?;
+                    protected = stmt.query_map(rusqlite::params![payload.project_id, payload.event_id],
+                        |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<_>>()?;
+                }
+                let manual_paths: Vec<_> = EVENT_AUTHORITY_FIELDS.iter().copied()
+                    .filter(|path| {
+                        if !crate::narrative_extraction::TEMPORAL_FIELD_PATHS.contains(path) {
+                            return true;
+                        }
+                        if repair.is_some() {
+                            return false;
+                        }
+                        if !protected.contains(*path) {
+                            return true;
+                        }
+                        match *path {
+                            "/startGranularity" => canonical_start.granularity != current_start_granularity,
+                            "/endGranularity" => canonical_end.granularity != current_end_granularity,
+                            "/precision" => payload.precision.as_ref().is_some_and(|p| p != &current_precision),
+                            _ => authority_paths.iter().any(|changed| changed.as_str() == *path),
+                        }
+                    })
+                    .collect();
+                record_manual_event_fields(conn, &payload.project_id, &payload.event_id,
+                    payload.surface.as_deref(), &manual_paths, &now)?;
+            }
 
             let response = AgentWriteResult {
                 entity_id: payload.event_id.clone(),
@@ -9305,6 +9385,20 @@ pub fn agent_scene_event_mutate_with_authority_impl(
                 );
             }
 
+            if let Some(expected) = payload.expected.as_ref() {
+                if expected.event_version != event_version
+                    || expected.link_incarnation.as_deref() != existing_token.as_deref()
+                {
+                    anyhow::bail!(
+                        "event '{}' version conflict: expected version {}, found {}; scene link as expected: {}",
+                        payload.event_id,
+                        expected.event_version,
+                        event_version,
+                        expected.link_incarnation.as_deref() == existing_token.as_deref()
+                    );
+                }
+            }
+
             let authority_paths = vec!["/sceneIds".to_string()];
             preflight_agent_field_authority(
                 conn,
@@ -9748,18 +9842,20 @@ pub fn agent_event_relation_mutate_with_authority_impl(
                         payload.project_id
                     )
                 })?;
-            let effect_ok: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM events WHERE id = ?1 AND project_id = ?2",
-                rusqlite::params![payload.effect_event_id, payload.project_id],
-                |r| r.get(0),
-            )?;
-            if effect_ok == 0 {
-                anyhow::bail!(
-                    "effect event '{}' not found in project '{}'",
-                    payload.effect_event_id,
-                    payload.project_id
-                );
-            }
+            let effect_version: i64 = conn
+                .query_row(
+                    "SELECT version FROM events WHERE id = ?1 AND project_id = ?2",
+                    rusqlite::params![payload.effect_event_id, payload.project_id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "effect event '{}' not found in project '{}'",
+                        payload.effect_event_id,
+                        payload.project_id
+                    )
+                })?;
 
             let existed: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM event_relations
@@ -9781,6 +9877,23 @@ pub fn agent_event_relation_mutate_with_authority_impl(
                 anyhow::bail!(
                     "AGENT_EVENT_RELATION_IDEMPOTENCY_CONFLICT: association state changed after original request"
                 );
+            }
+
+            if let Some(expected) = payload.expected.as_ref() {
+                if expected.cause_version != cause_version
+                    || expected.effect_version != effect_version
+                    || expected.related != (existed > 0)
+                {
+                    anyhow::bail!(
+                        "event relation version conflict: expected cause/effect versions {}/{}, related {}; found {}/{}, related {}",
+                        expected.cause_version,
+                        expected.effect_version,
+                        expected.related,
+                        cause_version,
+                        effect_version,
+                        existed > 0
+                    );
+                }
             }
 
             let authority_paths = vec!["/relations".to_string()];
@@ -14487,6 +14600,7 @@ mod tests {
             surface: None,
             cause_event_id: cause.to_string(),
             effect_event_id: effect.to_string(),
+            expected: None,
         }
     }
 
@@ -14498,6 +14612,7 @@ mod tests {
             surface: None,
             scene_id: scene_id.to_string(),
             event_id: event_id.to_string(),
+            expected: None,
         }
     }
 
@@ -14641,6 +14756,29 @@ mod tests {
             "effectEventId": "effect"
         }))
         .is_err());
+
+        let scene: AgentSceneEventPayload = serde_json::from_value(json!({
+            "requestId": "scene",
+            "projectId": "project",
+            "sessionId": "session",
+            "sceneId": "scene-id",
+            "eventId": "event"
+        }))
+        .expect("scene expected state is optional");
+        assert!(scene.expected.is_none());
+        let relation: AgentEventRelationPayload = serde_json::from_value(json!({
+            "requestId": "relation",
+            "projectId": "project",
+            "sessionId": "session",
+            "causeEventId": "cause",
+            "effectEventId": "effect",
+            "expected": { "related": true, "causeVersion": 3, "effectVersion": 4 }
+        }))
+        .expect("relation expected uses camelCase fields");
+        let relation_expected = relation.expected.expect("expected state");
+        assert!(relation_expected.related);
+        assert_eq!(relation_expected.cause_version, 3);
+        assert_eq!(relation_expected.effect_version, 4);
 
         let db = test_db();
         let project_id = insert_project(&db);
@@ -15104,6 +15242,348 @@ mod tests {
         assert!(error
             .to_string()
             .contains("AGENT_EVENT_RELATION_IDEMPOTENCY_CONFLICT"));
+    }
+
+    #[test]
+    fn scene_event_expected_rejects_a_relinked_incarnation() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let scene_id = insert_scene(&db, &project_id);
+        let (event_id, _) = create_event(&db, &project_id, "relinked scene", vec![], vec![]);
+        let version = event_version(&db, &event_id);
+        let mutate = |request_id: &str, link: bool| {
+            let mut payload = scene_payload(&project_id, &scene_id, &event_id);
+            payload.request_id = request_id.to_string();
+            agent_scene_event_mutate_impl(&db, payload, link).expect("seed scene link state");
+        };
+        mutate("scene-relink-first", true);
+        let first = scene_link_token(&db, &event_id, &scene_id).expect("first incarnation");
+        mutate("scene-relink-remove", false);
+        mutate("scene-relink-second", true);
+        let second = scene_link_token(&db, &event_id, &scene_id).expect("second incarnation");
+        assert_ne!(first, second);
+
+        let changes_before = table_count(&db, "change_events");
+        let mut unstamp = scene_payload(&project_id, &scene_id, &event_id);
+        unstamp.expected = Some(AgentSceneEventExpected {
+            link_incarnation: Some(first),
+            event_version: version,
+        });
+        let error = agent_scene_event_mutate_impl(&db, unstamp, false)
+            .expect_err("a re-created link is not the approved one");
+        assert!(error.to_string().contains("version conflict"), "{error:#}");
+        assert!(!error.to_string().contains(&second), "{error:#}");
+        assert_eq!(scene_link_token(&db, &event_id, &scene_id), Some(second));
+        assert_eq!(table_count(&db, "change_events"), changes_before);
+    }
+
+    #[test]
+    fn scene_event_retry_with_a_different_expected_state_is_an_idempotency_conflict() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let scene_id = insert_scene(&db, &project_id);
+        let (event_id, _) = create_event(&db, &project_id, "retried scene", vec![], vec![]);
+        let version = event_version(&db, &event_id);
+        let mut stamp = scene_payload(&project_id, &scene_id, &event_id);
+        stamp.request_id = "scene-expected-retry".to_string();
+        stamp.expected = Some(AgentSceneEventExpected {
+            link_incarnation: None,
+            event_version: version,
+        });
+        agent_scene_event_mutate_impl(&db, stamp.clone(), true).expect("first request");
+        let changes_before = table_count(&db, "change_events");
+
+        stamp.expected = None;
+        let error = agent_scene_event_mutate_impl(&db, stamp, true)
+            .expect_err("the expected state is part of the request");
+        assert!(
+            error
+                .to_string()
+                .contains("AGENT_SCENE_EVENT_IDEMPOTENCY_CONFLICT"),
+            "{error:#}"
+        );
+        assert_eq!(table_count(&db, "change_events"), changes_before);
+    }
+
+    #[test]
+    fn association_expected_state_rejects_missing_and_unknown_fields() {
+        let parse_scene = |expected: serde_json::Value| {
+            serde_json::from_value::<AgentSceneEventExpected>(expected)
+        };
+        assert!(parse_scene(json!({ "linkIncarnation": null, "eventVersion": 1 })).is_ok());
+        assert!(parse_scene(json!({})).is_err());
+        assert!(parse_scene(json!({ "eventVersion": 1 })).is_err());
+        assert!(parse_scene(
+            json!({ "linkIncarnation": null, "eventVersion": 1, "sceneVersion": 1 })
+        )
+        .is_err());
+
+        let parse_relation = |expected: serde_json::Value| {
+            serde_json::from_value::<AgentEventRelationExpected>(expected)
+        };
+        assert!(
+            parse_relation(json!({ "related": false, "causeVersion": 1, "effectVersion": 1 }))
+                .is_ok()
+        );
+        assert!(parse_relation(json!({})).is_err());
+        assert!(parse_relation(json!({ "causeVersion": 1, "effectVersion": 1 })).is_err());
+        assert!(parse_relation(
+            json!({ "related": false, "causeVersion": 1, "effectVersion": 1, "x": 1 })
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn scene_event_expected_treats_the_empty_legacy_incarnation_as_linked() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let scene_id = insert_scene(&db, &project_id);
+        // 識別子を持つ前の行は change feed の履歴も持たないので、writer を通さずに置く。
+        let event_id = "legacy-linked-event".to_string();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO events (id, project_id, title, ordinal, created_at, updated_at)
+                 VALUES (?1, ?2, 'Legacy link', 'a0', datetime('now'), datetime('now'))",
+                rusqlite::params![event_id, project_id],
+            )?;
+            conn.execute(
+                "INSERT INTO scene_events (scene_id, event_id) VALUES (?1, ?2)",
+                rusqlite::params![scene_id, event_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed a link without an incarnation");
+        let version = event_version(&db, &event_id);
+        assert_eq!(
+            scene_link_token(&db, &event_id, &scene_id),
+            Some(String::new())
+        );
+        let unstamp = |link_incarnation: Option<String>| {
+            let mut payload = scene_payload(&project_id, &scene_id, &event_id);
+            payload.expected = Some(AgentSceneEventExpected {
+                link_incarnation,
+                event_version: version,
+            });
+            agent_scene_event_mutate_impl(&db, payload, false)
+        };
+
+        let error = unstamp(None).expect_err("an empty incarnation is still a link");
+        assert!(error.to_string().contains("version conflict"), "{error:#}");
+        assert_eq!(
+            scene_link_token(&db, &event_id, &scene_id),
+            Some(String::new())
+        );
+        unstamp(Some(String::new())).expect("the empty incarnation matches itself");
+        assert_eq!(scene_link_token(&db, &event_id, &scene_id), None);
+    }
+
+    #[test]
+    fn scene_event_expected_state_matches_stamp_unstamp_and_replay() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let scene_id = insert_scene(&db, &project_id);
+        let (event_id, _) = create_event(&db, &project_id, "expected scene", vec![], vec![]);
+        let version = event_version(&db, &event_id);
+
+        let mut stamp = scene_payload(&project_id, &scene_id, &event_id);
+        stamp.request_id = "scene-expected-stamp".to_string();
+        stamp.expected = Some(AgentSceneEventExpected {
+            link_incarnation: None,
+            event_version: version,
+        });
+        let changes_before = table_count(&db, "change_events");
+        let stamped = agent_scene_event_mutate_impl(&db, stamp.clone(), true)
+            .expect("matching expected state stamps scene");
+        let incarnation = scene_link_token(&db, &event_id, &scene_id).expect("stamped link");
+        assert_eq!(table_count(&db, "change_events"), changes_before + 1);
+        assert_eq!(
+            agent_scene_event_mutate_impl(&db, stamp, true).expect("stale expected stamp retry"),
+            stamped
+        );
+        assert_eq!(table_count(&db, "change_events"), changes_before + 1);
+
+        let mut unstamp = scene_payload(&project_id, &scene_id, &event_id);
+        unstamp.request_id = "scene-expected-unstamp".to_string();
+        unstamp.expected = Some(AgentSceneEventExpected {
+            link_incarnation: Some(incarnation),
+            event_version: version,
+        });
+        let unstamp_changes_before = table_count(&db, "change_events");
+        let unstamped = agent_scene_event_mutate_impl(&db, unstamp.clone(), false)
+            .expect("matching expected state un-stamps scene");
+        assert_eq!(scene_link_token(&db, &event_id, &scene_id), None);
+        assert_eq!(
+            agent_scene_event_mutate_impl(&db, unstamp, false)
+                .expect("stale expected unstamp retry"),
+            unstamped
+        );
+        assert_eq!(
+            table_count(&db, "change_events"),
+            unstamp_changes_before + 1
+        );
+    }
+
+    #[test]
+    fn scene_event_expected_mismatches_reject_without_mutation() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let scene_id = insert_scene(&db, &project_id);
+        let (event_id, _) = create_event(&db, &project_id, "expected scene", vec![], vec![]);
+        let version = event_version(&db, &event_id);
+        let assert_rejected_without_mutation = |payload: AgentSceneEventPayload, link: bool| {
+            let link_before = scene_link_token(&db, &event_id, &scene_id);
+            let changes_before = table_count(&db, "change_events");
+            let journals_before = table_count(&db, "undo_journal");
+            let error = agent_scene_event_mutate_impl(&db, payload, link)
+                .expect_err("expected state mismatch rejects");
+            assert!(error.to_string().contains("version conflict"), "{error:#}");
+            assert_eq!(scene_link_token(&db, &event_id, &scene_id), link_before);
+            assert_eq!(table_count(&db, "change_events"), changes_before);
+            assert_eq!(table_count(&db, "undo_journal"), journals_before);
+            assert_eq!(event_version(&db, &event_id), version);
+        };
+
+        let mut stale_stamp = scene_payload(&project_id, &scene_id, &event_id);
+        stale_stamp.expected = Some(AgentSceneEventExpected {
+            link_incarnation: None,
+            event_version: version + 1,
+        });
+        assert_rejected_without_mutation(stale_stamp, true);
+
+        let mut seed_link = scene_payload(&project_id, &scene_id, &event_id);
+        seed_link.request_id = "scene-expected-seed-link".to_string();
+        agent_scene_event_mutate_impl(&db, seed_link, true).expect("seed scene link");
+        let incarnation = scene_link_token(&db, &event_id, &scene_id).expect("seed incarnation");
+
+        let mut changed_stamp = scene_payload(&project_id, &scene_id, &event_id);
+        changed_stamp.expected = Some(AgentSceneEventExpected {
+            link_incarnation: None,
+            event_version: version,
+        });
+        assert_rejected_without_mutation(changed_stamp, true);
+
+        let mut stale_unstamp = scene_payload(&project_id, &scene_id, &event_id);
+        stale_unstamp.expected = Some(AgentSceneEventExpected {
+            link_incarnation: Some(incarnation.clone()),
+            event_version: version + 1,
+        });
+        assert_rejected_without_mutation(stale_unstamp, false);
+
+        let mut seed_unlink = scene_payload(&project_id, &scene_id, &event_id);
+        seed_unlink.request_id = "scene-expected-seed-unlink".to_string();
+        agent_scene_event_mutate_impl(&db, seed_unlink, false).expect("seed absent scene link");
+        let mut changed_unstamp = scene_payload(&project_id, &scene_id, &event_id);
+        changed_unstamp.expected = Some(AgentSceneEventExpected {
+            link_incarnation: Some(incarnation),
+            event_version: version,
+        });
+        assert_rejected_without_mutation(changed_unstamp, false);
+    }
+
+    #[test]
+    fn event_relation_expected_state_matches_add_remove_and_replay() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (cause, _) = create_event(&db, &project_id, "expected cause", vec![], vec![]);
+        let (effect, _) = create_event(&db, &project_id, "expected effect", vec![], vec![]);
+        let cause_version = event_version(&db, &cause);
+        let effect_version = event_version(&db, &effect);
+
+        let mut add = relation_payload(&project_id, &cause, &effect);
+        add.request_id = "relation-expected-add".to_string();
+        add.expected = Some(AgentEventRelationExpected {
+            related: false,
+            cause_version,
+            effect_version,
+        });
+        let changes_before = table_count(&db, "change_events");
+        let added = agent_event_relation_mutate_impl(&db, add.clone(), true)
+            .expect("matching expected state adds relation");
+        assert_eq!(relation_count(&db, &cause, &effect), 1);
+        assert_eq!(table_count(&db, "change_events"), changes_before + 1);
+        assert_eq!(
+            agent_event_relation_mutate_impl(&db, add, true).expect("stale expected add retry"),
+            added
+        );
+        assert_eq!(table_count(&db, "change_events"), changes_before + 1);
+
+        let mut remove = relation_payload(&project_id, &cause, &effect);
+        remove.request_id = "relation-expected-remove".to_string();
+        remove.expected = Some(AgentEventRelationExpected {
+            related: true,
+            cause_version,
+            effect_version,
+        });
+        let removed = agent_event_relation_mutate_impl(&db, remove.clone(), false)
+            .expect("matching expected state removes relation");
+        assert_eq!(relation_count(&db, &cause, &effect), 0);
+        assert_eq!(
+            agent_event_relation_mutate_impl(&db, remove, false)
+                .expect("stale expected remove retry"),
+            removed
+        );
+        assert_eq!(table_count(&db, "change_events"), changes_before + 2);
+    }
+
+    #[test]
+    fn event_relation_expected_mismatches_reject_without_mutation() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (cause, _) = create_event(&db, &project_id, "expected cause", vec![], vec![]);
+        let (effect, _) = create_event(&db, &project_id, "expected effect", vec![], vec![]);
+        let cause_version = event_version(&db, &cause);
+        let effect_version = event_version(&db, &effect);
+        let assert_rejected_without_mutation = |payload: AgentEventRelationPayload, add: bool| {
+            let related_before = relation_count(&db, &cause, &effect);
+            let changes_before = table_count(&db, "change_events");
+            let journals_before = table_count(&db, "undo_journal");
+            let error = agent_event_relation_mutate_impl(&db, payload, add)
+                .expect_err("expected relation mismatch rejects");
+            assert!(error.to_string().contains("version conflict"), "{error:#}");
+            assert_eq!(relation_count(&db, &cause, &effect), related_before);
+            assert_eq!(table_count(&db, "change_events"), changes_before);
+            assert_eq!(table_count(&db, "undo_journal"), journals_before);
+            assert_eq!(event_version(&db, &cause), cause_version);
+            assert_eq!(event_version(&db, &effect), effect_version);
+        };
+
+        let mut stale_add = relation_payload(&project_id, &cause, &effect);
+        stale_add.expected = Some(AgentEventRelationExpected {
+            related: false,
+            cause_version: cause_version + 1,
+            effect_version,
+        });
+        assert_rejected_without_mutation(stale_add, true);
+
+        let mut seed_add = relation_payload(&project_id, &cause, &effect);
+        seed_add.request_id = "relation-expected-seed-add".to_string();
+        agent_event_relation_mutate_impl(&db, seed_add, true).expect("seed relation");
+        let mut changed_add = relation_payload(&project_id, &cause, &effect);
+        changed_add.expected = Some(AgentEventRelationExpected {
+            related: false,
+            cause_version,
+            effect_version,
+        });
+        assert_rejected_without_mutation(changed_add, true);
+
+        let mut stale_remove = relation_payload(&project_id, &cause, &effect);
+        stale_remove.expected = Some(AgentEventRelationExpected {
+            related: true,
+            cause_version,
+            effect_version: effect_version + 1,
+        });
+        assert_rejected_without_mutation(stale_remove, false);
+
+        let mut seed_remove = relation_payload(&project_id, &cause, &effect);
+        seed_remove.request_id = "relation-expected-seed-remove".to_string();
+        agent_event_relation_mutate_impl(&db, seed_remove, false).expect("seed absent relation");
+        let mut changed_remove = relation_payload(&project_id, &cause, &effect);
+        changed_remove.expected = Some(AgentEventRelationExpected {
+            related: true,
+            cause_version,
+            effect_version,
+        });
+        assert_rejected_without_mutation(changed_remove, false);
     }
 
     #[test]
@@ -16293,15 +16773,160 @@ mod tests {
             grimodex_core::chronicle_time::CHRONICLE_EVENT_DATE_REQUIRED
         );
         patch.start_time = None;
-        patch.title = Some("edited".into());
         patch.precision = Some("unknown".into());
+        assert_eq!(
+            agent_event_update_impl(&db, patch.clone()).unwrap_err().to_string(),
+            grimodex_core::chronicle_time::CHRONICLE_EVENT_DATE_REQUIRED
+        );
+        patch.title = Some("edited".into());
+        patch.precision = Some("exact".into());
         let updated = agent_event_update_impl(&db, patch).unwrap();
         let journal = updated["undoJournalId"].as_str().unwrap();
-        for (direction, title) in [("undo", "legacy"), ("redo", "edited")] {
+        for (direction, title, start) in [("undo", "legacy", None), ("redo", "edited", Some(0))] {
             agent_undo_journal_impl(&db, undo_payload(&project, journal, direction)).unwrap();
             assert_eq!(event_title(&db, &id).as_deref(), Some(title));
-            assert_eq!(event_start(&db, &id), None);
+            assert_eq!(event_start(&db, &id), start);
         }
+    }
+
+    #[test]
+    fn n4a_typed_writers_preserve_locked_ownership_and_clear_orphan_end() {
+        for surface in ["manual", "in-app-agent", "mcp"] {
+            let db = test_db();
+            let project = insert_project(&db);
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO events (id, project_id, title, end_time, end_granularity, version)
+                     VALUES ('legacy', ?1, 'before', 99, 'day', 1)", [&project],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_field_authority
+                     (project_id, entity_kind, entity_id, field_path, owner_kind, explicit_lock, version, updated_at)
+                     VALUES (?1, 'event', 'legacy', '/startTime', 'human', 1, 7, 'locked'),
+                            (?1, 'event', 'legacy', '/precision', 'human', 0, 3, 'old')", [&project],
+                )?;
+                Ok(())
+            }).unwrap();
+            seed_mcp_event_authority(&db, &project, "legacy", &["/title"]);
+            let mut patch = empty_update(&project, "legacy");
+            patch.surface = Some(surface.into());
+            patch.title = Some("after".into());
+            if surface == "mcp" {
+                patch.precision = Some("exact".into());
+                agent_event_update_with_request_impl(&db, patch, Some("update")).unwrap();
+            } else {
+                let mut context = renderer_agent_context("update", "event-update");
+                if surface == "manual" {
+                    context.origin = NarrativeChangeOrigin::Human;
+                    context.authority_route = "human-direct".into();
+                    context.caller = "human-ui".into();
+                    context.controls = renderer_authority_fields("human-direct", "human-ui").2;
+                    context.provenance = None;
+                }
+                agent_event_update_with_authority_impl(&db, patch, context).unwrap();
+            }
+            if surface == "manual" {
+                let mut later = empty_update(&project, "legacy");
+                later.base_version = 2;
+                later.surface = Some("manual".into());
+                later.note = Some("another edit".into());
+                agent_event_update_impl(&db, later).unwrap();
+            }
+            db.with_conn(|conn| {
+                let updated: bool = conn.query_row(
+                    "SELECT title = 'after' AND version = ?1 AND start_time = 0 AND start_minute IS NULL
+                        AND start_granularity = 'day' AND end_time IS NULL AND end_minute IS NULL
+                        AND end_granularity = 'none' AND precision = 'unknown' FROM events WHERE id = 'legacy'",
+                    [if surface == "manual" { 3 } else { 2 }], |r| r.get(0),
+                )?;
+                assert!(updated, "{surface}");
+                for path in crate::narrative_extraction::TEMPORAL_FIELD_PATHS {
+                    let (owner, locked, version, when): (String, bool, i64, String) = conn.query_row(
+                        "SELECT owner_kind, explicit_lock, version, updated_at FROM narrative_field_authority
+                          WHERE project_id = ?1 AND entity_kind = 'event' AND entity_id = 'legacy' AND field_path = ?2",
+                        rusqlite::params![project, path], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                    )?;
+                    if *path == "/startTime" {
+                        assert_eq!((owner.as_str(), locked, version, when.as_str()), ("human", true, 7, "locked"));
+                    } else {
+                        assert_eq!((owner.as_str(), locked), ("system", false), "{surface} {path}");
+                    }
+                }
+                Ok(())
+            }).unwrap();
+        }
+    }
+
+    #[test]
+    fn n4a_title_edit_repairs_only_start_granularity() {
+        for (minute, granularity, locked) in [(None, "day", false), (Some(0), "time", true)] {
+            let db = test_db();
+            let project = insert_project(&db);
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO events (id, project_id, title, version, start_time, start_minute,
+                         start_granularity, end_time, end_minute, end_granularity, precision)
+                     VALUES ('legacy', ?1, 'before', 1, 2, ?2, 'none', 5, 45, 'time', 'approx')",
+                    rusqlite::params![project, minute],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_field_authority (project_id, entity_kind, entity_id,
+                         field_path, owner_kind, explicit_lock, version, updated_at)
+                     VALUES (?1, 'event', 'legacy', '/startGranularity', 'human', ?2, 7, 'old')",
+                    rusqlite::params![project, locked],
+                )?;
+                Ok(())
+            }).unwrap();
+            let mut patch = empty_update(&project, "legacy");
+            patch.title = Some("after".into());
+            agent_event_update_impl(&db, patch).unwrap();
+            db.with_conn(|conn| {
+                let repaired: bool = conn.query_row(
+                    "SELECT title = 'after' AND version = 2 AND start_time = 2 AND start_minute IS ?1
+                        AND start_granularity = ?2 AND end_time = 5 AND end_minute = 45
+                        AND end_granularity = 'time' AND precision = 'approx' FROM events WHERE id = 'legacy'",
+                    rusqlite::params![minute, granularity], |r| r.get(0),
+                )?;
+                assert!(repaired);
+                let (owner, lock, version, when): (String, bool, i64, String) = conn.query_row(
+                    "SELECT owner_kind, explicit_lock, version, updated_at FROM narrative_field_authority
+                      WHERE entity_id = 'legacy' AND field_path = '/startGranularity'",
+                    [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )?;
+                if locked {
+                    assert_eq!((owner.as_str(), lock, version, when.as_str()), ("human", true, 7, "old"));
+                } else {
+                    assert_eq!((owner.as_str(), lock, version), ("system", false, 8));
+                }
+                let system_fields: i64 = conn.query_row(
+                    "SELECT count(*) FROM narrative_field_authority WHERE entity_id = 'legacy' AND owner_kind = 'system'",
+                    [], |r| r.get(0),
+                )?;
+                assert_eq!(system_fields, if locked { 0 } else { 1 });
+                Ok(())
+            }).unwrap();
+        }
+    }
+
+    #[test]
+    fn n4a_association_writes_leave_undated_events_alone() {
+        let db = test_db();
+        let project = insert_project(&db);
+        let codex = insert_codex(&db, &project, "Participant");
+        let scene = insert_scene(&db, &project);
+        db.with_conn(|conn| {
+            conn.execute("INSERT INTO events (id, project_id, title, version)
+                          VALUES ('left', ?1, 'left', 1), ('right', ?1, 'right', 1)", [&project])?;
+            Ok(())
+        }).unwrap();
+        agent_event_set_participants_impl(&db, AgentEventParticipantsPayload {
+            project_id: project.clone(), session_id: "session".into(), surface: None,
+            event_id: "left".into(), base_version: 1, codex_entry_ids: vec![codex], participant_roles: None,
+        }).unwrap();
+        agent_scene_event_mutate_impl(&db, scene_payload(&project, &scene, "left"), true).unwrap();
+        agent_event_relation_mutate_impl(&db, relation_payload(&project, "left", "right"), true).unwrap();
+        assert_eq!(event_start(&db, "left"), None);
+        assert_eq!(event_start(&db, "right"), None);
     }
 
     #[test]

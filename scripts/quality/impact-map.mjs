@@ -572,15 +572,6 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
       [
         "node",
         "--test",
-        // CP-4 S2: the documents fixed before the first Graph observation
-        // (K2/4 addenda, observation prep, (b) traces, K6/4 procedure draft).
-        "scripts/quality/nir1-graph/observation-prep.test.mjs",
-        // CP-4 S1g-B: the SP/1 seed pin addendum.
-        "scripts/quality/nir1-graph/seed-pin-addendum.test.mjs",
-      ],
-      [
-        "node",
-        "--test",
         "scripts/quality/nir1-packing/contract.test.mjs",
         "scripts/quality/nir1-packing/runner.test.mjs",
         "scripts/quality/nir1-packing/scorer.test.mjs",
@@ -1064,6 +1055,18 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "scripts/product-journey-impact.test.mjs",
         "electron/scripts/product-journey-shards.test.mjs",
       ],
+      [
+        "node",
+        "--test",
+        // Keep this command last, and keep this suite last in allSuites: the
+        // ancestor check below fails whenever master has moved past the head,
+        // and the runner skips every command after a failed one.
+        // CP-4 S2: the documents fixed before the first Graph observation
+        // (K2/4 addenda, observation prep, (b) traces, K6/4 procedure draft).
+        "scripts/quality/nir1-graph/observation-prep.test.mjs",
+        // CP-4 S1g-B: the SP/1 seed pin addendum.
+        "scripts/quality/nir1-graph/seed-pin-addendum.test.mjs",
+      ],
     ],
   },
   "nir1-capacity-diagnostics": {
@@ -1458,10 +1461,8 @@ export function selectImpact(map, changedPaths, options = {}) {
   });
   const suiteIds = allSelected
     ? [...map.allSuites]
-    : unique(
-        matchedRules.flatMap((rule) =>
-          rule.suites.filter((suite) => suite !== "all"),
-        ),
+    : map.allSuites.filter(
+        (suite) => matchedRules.some((rule) => rule.suites.includes(suite)),
       );
   const requirementIds = allSelected
     ? allRequirementIds

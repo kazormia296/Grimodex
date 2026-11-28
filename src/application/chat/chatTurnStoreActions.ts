@@ -359,13 +359,13 @@ function createChatTurnStoreActions(
           ) === turnRouteAuthorityKey
         );
       };
-      const capturedTurnAuthorityIsCurrent = (): boolean => {
-        return (
-          capturedWorkspaceIsCurrent() &&
-          capturedProjectIsCurrent() &&
-          capturedChatAuthorityIsCurrent()
-        );
-      };
+      let mastraTurnAdmitted = false;
+      const capturedTurnAuthorityIsCurrent = (): boolean =>
+        mastraTurnAdmitted && transportStarted
+          ? !shouldAbortTurn()
+          : capturedWorkspaceIsCurrent() &&
+            capturedProjectIsCurrent() &&
+            capturedChatAuthorityIsCurrent();
       let replacementCommitted = false;
       const commitAssistantReplacement = async (): Promise<void> => {
         if (
@@ -397,14 +397,24 @@ function createChatTurnStoreActions(
         }
       };
       const shouldAbortTurn = (): boolean =>
-        sendControl.aborted ||
-        !isCurrentTurn() ||
-        (!transportStarted && !canScheduleQuiescenceMutation()) ||
-        !capturedWorkspaceIsCurrent() ||
-        !capturedProjectIsCurrent() ||
-        !capturedChatAuthorityIsCurrent() ||
-        isAiFeatureBlockedByPolicy("chat") ||
-        isWriteRestrictedByLicense();
+        mastraTurnAdmitted && transportStarted
+          ? turnRuntime.shouldAbortMastraTurn({
+              explicitlyAborted: sendControl.aborted,
+              isCurrentTurn: isCurrentTurn(),
+              workspaceIsCurrent: capturedWorkspaceIsCurrent(),
+              projectIsCurrent: capturedProjectIsCurrent(),
+              chatPolicyAllows: !isAiFeatureBlockedByPolicy("chat"),
+              licenseAllows: !isWriteRestrictedByLicense(),
+              quiescenceAllowsMutation: canScheduleQuiescenceMutation(),
+            })
+          : sendControl.aborted ||
+            !isCurrentTurn() ||
+            (!transportStarted && !canScheduleQuiescenceMutation()) ||
+            !capturedWorkspaceIsCurrent() ||
+            !capturedProjectIsCurrent() ||
+            !capturedChatAuthorityIsCurrent() ||
+            isAiFeatureBlockedByPolicy("chat") ||
+            isWriteRestrictedByLicense();
       const assertTurnAuthority = (): void => {
         if (shouldAbortTurn()) {
           // Emit the specific user-facing reason once at the transport boundary.
@@ -597,6 +607,21 @@ function createChatTurnStoreActions(
         }
       }
       if (cancelBeforeTransport()) return;
+      const mastraTurnAttempt = useAgentPath
+        ? await turnRuntime.tryMastraTurn({
+            turnId: sendTurnId,
+            provider: turnRoute?.provider,
+            chatSessionId: sessionIdForPersist,
+            projectId: turnProjectId,
+            activeSceneId,
+            tools: turnAgentToolsSnapshot,
+            userMessage: userMsg,
+            toolProtocol: turnRoute?.toolProtocol,
+            publicWebSearch: publicWebSearchPath,
+            cancelBeforeTransport,
+          })
+        : null;
+      mastraTurnAdmitted = Boolean(mastraTurnAttempt);
       // Scope changes clear the live session list while the captured turn still
       // owns its persisted session and may need to finish its first title.
       const recovery = createTurnRecovery({
@@ -608,6 +633,7 @@ function createChatTurnStoreActions(
         content,
         chatApi,
         get,
+        set,
         getSessionId: () => sessionIdForPersist,
         isCapturedWorkspaceCurrent: capturedWorkspaceIsCurrent,
         isCapturedProjectCurrent: capturedProjectIsCurrent,
@@ -692,6 +718,7 @@ function createChatTurnStoreActions(
             errorDetail,
           });
         try {
+          if (await mastraTurnAttempt?.preflight) return;
           const projectCtx = await fetchRequiredProjectContext(turnProjectId);
           if (cancelBeforeTransport()) return;
 
@@ -965,140 +992,211 @@ function createChatTurnStoreActions(
           });
           let agentLoopResult!: Awaited<ReturnType<typeof runAgentLoop>>;
           try {
-            agentLoopResult = await runAgentLoop({
-              messages: agentMsgs,
-              tools: agentTools,
-              tokenBudget,
-              maxToolCalls: parentMaxToolCalls,
-              shouldAbort: shouldAbortTurn,
-              callLimitMessage: agentControl.callLimitMessage,
-              tokenBudgetMessage: agentControl.tokenBudgetMessage,
-              userQuestionLimitMessage: agentControl.userQuestionLimitMessage,
-              sendToLLM: async (msgs, tools) => {
-                assertTurnAuthority();
-                await captureTurn.retirePriorCapture(sessionIdForPersist);
-                if (cancelBeforeTransport()) {
-                  throw new Error("CHAT_TURN_CANCELLED_BEFORE_TRANSPORT");
-                }
-                const finalized = turnRoute
-                  ? finalizeChatTurnPayload({
-                      route: turnRoute,
-                      fallbackSystemPrompt: systemPromptForAgent,
-                      cacheSegments: systemCacheSegmentsForAgent,
-                      volatileTail: systemVolatileTailForAgent,
-                      messages: msgs,
-                      tools,
-                      webSearch: webSearchConfig,
-                    })
-                  : null;
-                if (finalized) {
-                  sentSystemPromptForAgent =
-                    materializeSystemDeliverySnapshot(finalized);
-                  sentAgentContextTokenCount = finalized.usage.inputTokens;
-                  set({
-                    contextTokenCount: finalized.usage.inputTokens,
-                    contextWindowUsage: contextWindowUsageFromTurnPayloadUsage(
-                      finalized.usage,
-                    ),
-                    contextWindowSize: finalized.route.contextWindow,
-                    contextModel: finalized.route.model,
-                    contextProvider: finalized.route.provider,
-                    contextRouteAuthorityKey:
-                      resolvedChatTurnRouteAuthorityKey(turnRoute),
-                    ...(finalized.cacheDowngradeReason === "budget"
-                      ? { cacheInvalidatedReason: "budget" as const }
-                      : {}),
-                  });
-                }
-                captureTurn.notifyAccepted(options?._onAccepted);
-                assertTurnAuthority();
-                turnCoordinator.transition(sendControl, "agent-running");
-                transportStarted = true;
-                sendControl.transportStarted = true;
-                const executionId = crypto.randomUUID();
-                const response = await chatApi.sendAgentMessage(
-                  msgs,
-                  tools,
-                  {
-                    projectId: turnProjectId,
-                    pathId: "chat_agent_main",
-                    operationId: sendTurnId,
-                    executionId,
-                    parentExecutionId: parentAuditExecutionId,
-                    chatMessageId: assistantMsg.id,
+            const mastraResult = mastraTurnAttempt
+              ? await mastraTurnAttempt.run({
+                  turnId: sendTurnId,
+                  chatSessionId: sessionIdForPersist,
+                  projectId: turnProjectId,
+                  currentSceneId: effectiveSceneId,
+                  chatMessageId: assistantMsg.id,
+                  assistantMessage: assistantMsg,
+                  messages: agentMsgs,
+                  route: turnRoute,
+                  systemCacheSegments: systemCacheSegmentsForAgent ?? null,
+                  systemVolatileTail: systemVolatileTailForAgent ?? null,
+                  fullyInjectedIds,
+                  tokenBudget,
+                  maxToolCalls: parentMaxToolCalls,
+                  contextWindow: effectiveContextWindow,
+                  language: projectCtxLang === "en" ? "en" : "ja",
+                  callLimitMessage: agentControl.callLimitMessage,
+                  tokenBudgetMessage: agentControl.tokenBudgetMessage,
+                  userQuestionLimitMessage:
+                    agentControl.userQuestionLimitMessage,
+                  fallbackSystem: systemPromptForAgent,
+                  tools: agentTools,
+                  set,
+                  userQuestionRuntime,
+                  dismissNote: agentControl.userDismissMessage,
+                  assertAuthority: assertTurnAuthority,
+                  isCurrentTurn,
+                  isAborted: () => sendControl.aborted,
+                  onSendAccepted: () => {
+                    transportStarted = true;
+                    sendControl.transportStarted = true;
+                    sentSystemPromptForAgent = systemPromptForAgent;
+                    captureTurn.notifyAccepted(options?._onAccepted);
                   },
-                  agentThinkingParams,
-                  finalized
-                    ? finalized.transport.systemCacheSegments
-                    : systemCacheSegmentsForAgent,
-                  agentApiVariant,
-                  webSearchConfig,
-                  finalized
-                    ? finalized.transport.systemVolatileTail
-                    : systemVolatileTailForAgent,
-                  turnRoute?.model ??
-                    (xprov
-                      ? xprov.model
-                      : (agentRole?.model ?? chatModelOverride ?? null)),
-                  turnRoute
-                    ? turnRoute.providerOverride
-                    : (xprov?.provider ?? agentRole?.provider ?? null),
-                  turnRoute
-                    ? turnRoute.endpointId
-                    : (xprov?.endpointId ?? agentRole?.endpointId ?? null),
-                  turnRoute?.outputBudget.requestMaxOutputTokens ?? null,
-                  turnRoute?.provider ?? null,
-                  turnRoute?.resolvedEndpointId ?? null,
-                  turnRoute?.toolProtocol ?? null,
-                  turnRoute?.resolvedOllamaEndpoint ?? null,
-                  sendControl.abortController.signal,
-                );
-                parentAuditExecutionId = executionId;
-                parentInputTokenDrift = accumulateInputTokenDrift(
-                  parentInputTokenDrift,
-                  currentProvider,
-                  {
-                    estimatedInputTokens: finalized?.usage.inputTokens ?? null,
-                    safetyMarginTokens:
-                      finalized?.usage.safetyMarginTokens ?? null,
-                    inputTokens: response.inputTokens,
-                    cacheReadTokens: response.cacheReadTokens,
-                    cacheWriteTokens: response.cacheWriteTokens,
+                  onResponseText: (text) => {
+                    observedResponseText = text;
+                    assistantRow.observeText(text);
+                    set((state) => ({
+                      messages: state.messages.map((message) =>
+                        message.id === assistantMsg.id
+                          ? { ...message, content: text }
+                          : message,
+                      ),
+                    }));
                   },
-                );
-                return response;
-              },
-              executeTool: withUiOperationLimit(guardedExecuteTool),
-              onProgress: (progress) => {
-                if (isCurrentTurn() && !sendControl.aborted) {
-                  set({ agentProgress: progress });
-                }
-              },
-              onToolComplete: (record) => {
-                toolContext.attachUsedIds(record);
-                if (!isCurrentTurn() || sendControl.aborted) return;
-                accToolCalls.push(record);
-                set((s) => {
-                  const msgs = [...s.messages];
-                  const index = msgs.findIndex(
-                    (message) => message.id === assistantMsg.id,
-                  );
-                  const assistant = index >= 0 ? msgs[index] : undefined;
-                  if (assistant?.role === "assistant") {
-                    msgs[index] = {
-                      ...assistant,
-                      metadata: JSON.stringify({ tool_calls: accToolCalls }),
-                    };
+                  updateContextUsage: (usage) => {
+                    sentAgentContextTokenCount = usage.inputTokens;
+                    set({
+                      contextTokenCount: usage.inputTokens,
+                      contextWindowUsage: { ...usage, estimated: false },
+                      contextWindowSize: usage.contextWindow,
+                      contextModel: turnRoute?.model ?? null,
+                      contextProvider: turnRoute?.provider ?? null,
+                      contextRouteAuthorityKey:
+                        resolvedChatTurnRouteAuthorityKey(turnRoute),
+                    });
+                  },
+                  cancelBeforeTransport,
+                  onLegacyFallback: () => {
+                    mastraTurnAdmitted = false;
+                  },
+                  transitionAgentRunning: () =>
+                    turnCoordinator.transition(sendControl, "agent-running"),
+                })
+              : null;
+            if (mastraResult?.kind === "cancelled") return;
+            if (mastraResult?.kind === "completed") {
+              agentLoopResult = mastraResult.result;
+            } else {
+              agentLoopResult = await runAgentLoop({
+                messages: agentMsgs,
+                tools: agentTools,
+                tokenBudget,
+                maxToolCalls: parentMaxToolCalls,
+                shouldAbort: shouldAbortTurn,
+                callLimitMessage: agentControl.callLimitMessage,
+                tokenBudgetMessage: agentControl.tokenBudgetMessage,
+                userQuestionLimitMessage: agentControl.userQuestionLimitMessage,
+                sendToLLM: async (msgs, tools) => {
+                  assertTurnAuthority();
+                  await captureTurn.retirePriorCapture(sessionIdForPersist);
+                  if (cancelBeforeTransport()) {
+                    throw new Error("CHAT_TURN_CANCELLED_BEFORE_TRANSPORT");
                   }
-                  return { messages: msgs };
-                });
-              },
-              onTextChunk: (text) => {
-                assistantRow.observeText(text);
-                if (!isCurrentTurn() || sendControl.aborted) return;
-                agentTextBatcher.push(text);
-              },
-            });
+                  const finalized = turnRoute
+                    ? finalizeChatTurnPayload({
+                        route: turnRoute,
+                        fallbackSystemPrompt: systemPromptForAgent,
+                        cacheSegments: systemCacheSegmentsForAgent,
+                        volatileTail: systemVolatileTailForAgent,
+                        messages: msgs,
+                        tools,
+                        webSearch: webSearchConfig,
+                      })
+                    : null;
+                  if (finalized) {
+                    sentSystemPromptForAgent =
+                      materializeSystemDeliverySnapshot(finalized);
+                    sentAgentContextTokenCount = finalized.usage.inputTokens;
+                    set({
+                      contextTokenCount: finalized.usage.inputTokens,
+                      contextWindowUsage:
+                        contextWindowUsageFromTurnPayloadUsage(finalized.usage),
+                      contextWindowSize: finalized.route.contextWindow,
+                      contextModel: finalized.route.model,
+                      contextProvider: finalized.route.provider,
+                      contextRouteAuthorityKey:
+                        resolvedChatTurnRouteAuthorityKey(turnRoute),
+                      ...(finalized.cacheDowngradeReason === "budget"
+                        ? { cacheInvalidatedReason: "budget" as const }
+                        : {}),
+                    });
+                  }
+                  captureTurn.notifyAccepted(options?._onAccepted);
+                  assertTurnAuthority();
+                  turnCoordinator.transition(sendControl, "agent-running");
+                  transportStarted = true;
+                  sendControl.transportStarted = true;
+                  const executionId = crypto.randomUUID();
+                  const response = await chatApi.sendAgentMessage(
+                    msgs,
+                    tools,
+                    {
+                      projectId: turnProjectId,
+                      pathId: "chat_agent_main",
+                      operationId: sendTurnId,
+                      executionId,
+                      parentExecutionId: parentAuditExecutionId,
+                      chatMessageId: assistantMsg.id,
+                    },
+                    agentThinkingParams,
+                    finalized
+                      ? finalized.transport.systemCacheSegments
+                      : systemCacheSegmentsForAgent,
+                    agentApiVariant,
+                    webSearchConfig,
+                    finalized
+                      ? finalized.transport.systemVolatileTail
+                      : systemVolatileTailForAgent,
+                    turnRoute?.model ??
+                      (xprov
+                        ? xprov.model
+                        : (agentRole?.model ?? chatModelOverride ?? null)),
+                    turnRoute
+                      ? turnRoute.providerOverride
+                      : (xprov?.provider ?? agentRole?.provider ?? null),
+                    turnRoute
+                      ? turnRoute.endpointId
+                      : (xprov?.endpointId ?? agentRole?.endpointId ?? null),
+                    turnRoute?.outputBudget.requestMaxOutputTokens ?? null,
+                    turnRoute?.provider ?? null,
+                    turnRoute?.resolvedEndpointId ?? null,
+                    turnRoute?.toolProtocol ?? null,
+                    turnRoute?.resolvedOllamaEndpoint ?? null,
+                    sendControl.abortController.signal,
+                  );
+                  parentAuditExecutionId = executionId;
+                  parentInputTokenDrift = accumulateInputTokenDrift(
+                    parentInputTokenDrift,
+                    currentProvider,
+                    {
+                      estimatedInputTokens:
+                        finalized?.usage.inputTokens ?? null,
+                      safetyMarginTokens:
+                        finalized?.usage.safetyMarginTokens ?? null,
+                      inputTokens: response.inputTokens,
+                      cacheReadTokens: response.cacheReadTokens,
+                      cacheWriteTokens: response.cacheWriteTokens,
+                    },
+                  );
+                  return response;
+                },
+                executeTool: withUiOperationLimit(guardedExecuteTool),
+                onProgress: (progress) => {
+                  if (isCurrentTurn() && !sendControl.aborted) {
+                    set({ agentProgress: progress });
+                  }
+                },
+                onToolComplete: (record) => {
+                  toolContext.attachUsedIds(record);
+                  if (!isCurrentTurn() || sendControl.aborted) return;
+                  accToolCalls.push(record);
+                  set((s) => {
+                    const msgs = [...s.messages];
+                    const index = msgs.findIndex(
+                      (message) => message.id === assistantMsg.id,
+                    );
+                    const assistant = index >= 0 ? msgs[index] : undefined;
+                    if (assistant?.role === "assistant") {
+                      msgs[index] = {
+                        ...assistant,
+                        metadata: JSON.stringify({ tool_calls: accToolCalls }),
+                      };
+                    }
+                    return { messages: msgs };
+                  });
+                },
+                onTextChunk: (text) => {
+                  assistantRow.observeText(text);
+                  if (!isCurrentTurn() || sendControl.aborted) return;
+                  agentTextBatcher.push(text);
+                },
+              });
+            }
           } finally {
             agentTextBatcher.flush();
             agentTextBatcher.dispose();
@@ -1199,140 +1297,41 @@ function createChatTurnStoreActions(
                   metadata: finalAgentMetadata,
                 }
               : undefined;
-          const persistAgentTurn = createRetryableCompletedTurnPersistence({
-            persistUser: async () => {
-              if (!sessionIdForPersist) return;
-              await chatApi.addMessage(sessionIdForPersist, "user", content, {
-                id: userMsg.id,
-                createdAt: userMsg.createdAt,
-                recordTimelapse: false,
-                ...(userMetadata ? { metadata: userMetadata } : {}),
-              });
-              // Cache/plain のうち最後の Agent iteration が実際に送った
-              // system representation を、user行の確定後に保存する。
-              if (promptSnapshot) {
-                void chatApi
-                  .saveMessagePrompt(userMsg.id, {
-                    systemPrompt: promptSnapshot,
-                    layers: sentAgentContextLayers,
-                    totalTokens: sentAgentContextTokenCount,
-                    model: currentModel || null,
-                    provider: turnRoute?.provider ?? null,
-                    contextWindow: turnRoute?.contextWindow ?? null,
-                  })
-                  .catch((e) =>
-                    debugLog.warn(
-                      "ChatStore",
-                      "saveMessagePrompt",
-                      errorDetail(e),
-                    ),
-                  );
-              }
-            },
-            ...(sessionIdForPersist &&
-            lastMsg?.role === "assistant" &&
-            (lastMsg.content || assistantRow.reserved || outputTruncated)
-              ? {
-                  persistAssistant: async () => {
-                    await assistantRow.persist(
-                      sessionIdForPersist,
-                      lastMsg?.content ?? "",
-                      {
-                        model: agentModel,
-                        tokensIn: agentTokensIn ?? undefined,
-                        tokensOut: agentTokensOut ?? undefined,
-                        metadata: finalAgentMetadata,
-                      },
-                    );
-                    await commitAssistantReplacement();
-                  },
-                }
-              : {}),
-            finalize: async () => {
-              if (
-                !sessionIdForPersist ||
-                lastMsg?.role !== "assistant" ||
-                !lastMsg.content
-              ) {
-                return;
-              }
-              // N4: エージェントターンの usage を台帳にも記録
-              // (cost は OpenRouter 実値)。
-              void recordAiUsage({
-                surface: "agent",
+          const persistAgentTurn = recovery.createAgentTurnPersistence({
+            sessionId: sessionIdForPersist,
+            userMetadata,
+            promptSnapshot,
+            layers: sentAgentContextLayers,
+            totalTokens: sentAgentContextTokenCount,
+            model: currentModel || null,
+            route: turnRoute,
+            assistantRow,
+            lastMessage: lastMsg,
+            agentModel,
+            agentTokensIn,
+            agentTokensOut,
+            metadata: finalAgentMetadata,
+            outputTruncated,
+            commitAssistantReplacement,
+            finalize: async () =>
+              recovery.finalizeAgentTurn({
+                sessionId: sessionIdForPersist,
+                lastMessage: lastMsg,
+                previousMessages: prevMessages,
+                content,
                 model: agentModel,
                 provider: currentProvider,
-                projectId: turnProjectId,
                 tokensIn: agentTokensIn,
                 tokensOut: agentTokensOut,
-                cacheReadTokens: parentInputTokenDrift.cacheReadTokens,
-                cacheWriteTokens: parentInputTokenDrift.cacheWriteTokens,
-                costUsd: cost,
-                traceId: assistantMsg.id,
-                refId: assistantMsg.id,
-                metadata: agentUsageRoute
-                  ? buildInputTokenDriftMetadata({
-                      scope: "agent-parent",
-                      projectId: turnProjectId,
-                      route: agentUsageRoute,
-                      estimatorFamily: tokenEstimatorFamily,
-                      language: projectCtxLang,
-                      contextPlanDigest: agentContextPlanDigest,
-                      totals: parentInputTokenDrift,
-                    })
-                  : null,
-              });
-
-              const isFirstAgentResponse =
-                prevMessages.filter((m) => m.role === "assistant").length === 0;
-              const currentSession = get().sessions.find(
-                (s) => s.id === sessionIdForPersist,
-              );
-              if (isFirstAgentResponse && currentSession?.titleManual === 0) {
-                const titleModel =
-                  useAiSettingsStore.getState().settings?.model ?? "";
-                const titleGeneration = chatApi
-                  .generateSessionTitle(
-                    content,
-                    lastMsg.content,
-                    titleModel,
-                    projectCtx?.language ?? "ja",
-                    turnProjectId,
-                  )
-                  .then(async (title) => {
-                    if (!title) {
-                      title = content.slice(0, 30);
-                    }
-                    const updated = await chatApi.updateSessionTitleIfAutomatic(
-                      sessionIdForPersist,
-                      title,
-                    );
-                    if (!updated) return;
-                    if (
-                      (await hasManualSessionTitle(
-                        sessionIdForPersist,
-                        turnProjectId,
-                      )) ||
-                      hasManualSessionTitleInStore(sessionIdForPersist)
-                    ) {
-                      return;
-                    }
-                    set((state) => ({
-                      sessions: state.sessions.map((s) =>
-                        s.id === sessionIdForPersist ? { ...s, title } : s,
-                      ),
-                    }));
-                  })
-                  .catch((e) => {
-                    const detail = errorDetail(e);
-                    const log = /IPC_\w+_CANCELLED/.test(detail)
-                      ? debugLog.warn // a lifecycle switch cancelled it
-                      : debugLog.error;
-                    log("ChatStore", "agent title generation", detail);
-                  });
-                void turnRuntime.trackTurn(titleGeneration);
-              }
-            },
+                cacheTotals: parentInputTokenDrift,
+                cost,
+                messageId: assistantMsg.id,
+                usageRoute: agentUsageRoute,
+                estimatorFamily: tokenEstimatorFamily,
+                language: projectCtxLang,
+                contextPlanDigest: agentContextPlanDigest,
+                titleLanguage: projectCtx?.language ?? "ja",
+              }),
           });
           await persistCompletedTurn({
             retry: persistAgentTurn,

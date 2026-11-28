@@ -44,7 +44,14 @@ export const INITIAL_JS_GRAPH_BUDGET = {
   // 後からユーザーに伺い「この緩和でよい」の回答を得た（2026-11-27）。次に使い切ったら、緩める前に伺う。
   // #1190 の Markdown 変換を小さい共有 module に分けたが、toolExecutors も初期 graph にあり実測 raw は 3,909,936。
   // 旧実効上限 3,908,943 を 993 byte 超えるため、測定値＋256 byte の 3,910,192 を新上限とする。
-  allowance: { rawBytes: 106_692, gzipBytes: 38_912 },
+  // 2026-11-27（CED/1 の切り替え）：raw allowance を 106,692 → 109,988（+3,296）、absoluteMax を 3,910,192 → 3,913,488 に、
+  // gzip allowance を 38,912 → 39,716（+804）、absoluteMax を 1,234,100 → 1,234,916 に上げた。年表の出来事の前後を日時で
+  // 比べる本体（chronicleOrder、2,396 byte）が、AI の文脈を組む処理（初期 graph）から同期で使われ、初期 graph に入るため。
+  // 残りは呼び手の chatStore（+430）など。年表のまとめを動的 import にする形を試したが、別の経路からも初期 graph に読まれて
+  // いて raw +1,119 に増えたので採らなかった。実測 raw 3,913,232・gzip 1,234,660（ローカル。master の CI の実測 3,909,936 と
+  // ローカルの値が一致する build）に 256 byte を足して新上限とする。上の「次に使い切ったら、緩める前に伺う」に沿って、
+  // 緩める前にユーザーに伺い「最小限ゆるめる」の回答を得た（2026-11-27）。次に使い切ったら、また緩める前に伺う。
+  allowance: { rawBytes: 109_988, gzipBytes: 39_716 },
   // raw は 4_250_000 から 700 byte だけ上げた。チャット入力の書きかけを session／project の
   // 削除と一緒に消す処理（chatInputDraftPurge.ts）が初期 graph の store に入るため
   // （実測 raw 4,249,993 → 4,250,669 で +676、gzip 1,342,871 → 1,343,227 で +356）。
@@ -90,7 +97,7 @@ export const INITIAL_JS_GRAPH_BUDGET = {
   // 上限は旧上限より raw 379,400／gzip 123,200 低い。allowance は raw 32,768 → 98,304、
   // gzip 16,384 → 36,864 に広げた。機能を足すたびに数百 byte ずつ上限を上げる運用を
   // やめるためで、広げても実効の上限（baseline＋allowance）は旧上限よりずっと低い。
-  absoluteMax: { rawBytes: 3_910_192, gzipBytes: 1_234_100 },
+  absoluteMax: { rawBytes: 3_913_488, gzipBytes: 1_234_916 },
 };
 // 既定フォント (Noto Serif JP / M PLUS 1) の CSS を含む。可変フォントに移行したため、
 // 従来の「japanese 全体を 1 face」から「約 120 の unicode-range slice」になり CSS は

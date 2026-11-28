@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 48,
+  "schemaVersion": 50,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -171,6 +171,369 @@
       ],
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE ab_comparisons ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, surface TEXT NOT NULL, prompt TEXT NOT NULL, model_a TEXT, model_b TEXT, prompt_variant_a TEXT, prompt_variant_b TEXT, response_a TEXT NOT NULL, response_b TEXT NOT NULL, chosen TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')) )"
+    },
+    "agent_run_interactions": {
+      "kind": "table",
+      "columns": {
+        "args_digest": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "chat_session_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "interaction_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "kind": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "request": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "resolution": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "root_run_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "run_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "status": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_basis": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "tool_call_id": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "tool_name": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 12,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "agent_runs",
+          "from": "run_id",
+          "to": "run_id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE agent_run_interactions ( interaction_id TEXT PRIMARY KEY NOT NULL, run_id TEXT NOT NULL REFERENCES agent_runs(run_id) ON DELETE CASCADE, root_run_id TEXT NOT NULL, chat_session_id TEXT NOT NULL, kind TEXT NOT NULL, tool_call_id TEXT NOT NULL, tool_name TEXT NOT NULL, args_digest TEXT NOT NULL, request TEXT NOT NULL, resolution TEXT, target_basis TEXT CHECK(target_basis IS NULL OR (json_valid(target_basis) AND json_type(target_basis)='array')), status TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 0 CHECK(version >= 0) )"
+    },
+    "agent_runs": {
+      "kind": "table",
+      "columns": {
+        "activity_at": {
+          "ordinal": 22,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "datetime('now')",
+          "primaryKey": 0
+        },
+        "audit_execution_ids": {
+          "ordinal": 25,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'[]'",
+          "primaryKey": 0
+        },
+        "chat_session_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "checkpoint": {
+          "ordinal": 28,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "checkpoint_digest": {
+          "ordinal": 30,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "checkpoint_step": {
+          "ordinal": 29,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "continuation_of": {
+          "ordinal": 26,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 23,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "datetime('now')",
+          "primaryKey": 0
+        },
+        "endpoint_hash": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "execution_owner": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "finalizing_target_reason": {
+          "ordinal": 20,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "finalizing_target_status": {
+          "ordinal": 19,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "interrupt_reason": {
+          "ordinal": 13,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "model_id": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "model_provider_id": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "not_resumable_reason": {
+          "ordinal": 15,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "origin_assistant_message_id": {
+          "ordinal": 21,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "origin_user_message_id": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "resumable": {
+          "ordinal": 14,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "1",
+          "primaryKey": 0
+        },
+        "resume_block_detail": {
+          "ordinal": 17,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "resume_blocked_at": {
+          "ordinal": 18,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "root_run_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "route": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "run_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "status": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "task_id": {
+          "ordinal": 27,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "terminal_reason": {
+          "ordinal": 12,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "tool_call_ledger": {
+          "ordinal": 31,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'[]'",
+          "primaryKey": 0
+        },
+        "turn_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 24,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "datetime('now')",
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 16,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "chat_sessions",
+          "from": "chat_session_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE agent_runs ( run_id TEXT PRIMARY KEY NOT NULL, root_run_id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, chat_session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE, turn_id TEXT NOT NULL, route TEXT NOT NULL, origin_user_message_id TEXT NOT NULL, model_provider_id TEXT NOT NULL, model_id TEXT NOT NULL, endpoint_hash TEXT NOT NULL, execution_owner TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('running','waiting_user','waiting_approval','finalizing','interrupted','completed','failed','cancelled','discarded')), terminal_reason TEXT, interrupt_reason TEXT, resumable INTEGER NOT NULL DEFAULT 1 CHECK(resumable IN (0,1)), not_resumable_reason TEXT, version INTEGER NOT NULL DEFAULT 0 CHECK(version >= 0), resume_block_detail TEXT, resume_blocked_at TEXT, finalizing_target_status TEXT, finalizing_target_reason TEXT, origin_assistant_message_id TEXT, activity_at TEXT NOT NULL DEFAULT (datetime('now')), created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), audit_execution_ids TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(audit_execution_ids) AND json_type(audit_execution_ids) = 'array'), continuation_of TEXT, task_id TEXT, checkpoint TEXT, checkpoint_step INTEGER NOT NULL DEFAULT 0 CHECK(checkpoint_step >= 0), checkpoint_digest TEXT, tool_call_ledger TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(tool_call_ledger) AND json_type(tool_call_ledger) = 'array'), CHECK ((resumable = 1 AND not_resumable_reason IS NULL) OR (resumable = 0 AND not_resumable_reason IS NOT NULL)), CHECK ( (status = 'completed' AND terminal_reason IS NOT NULL AND terminal_reason IN ('completed','limit_tokens','output_truncated','context_window_exceeded')) OR (status = 'failed' AND terminal_reason IS NOT NULL AND terminal_reason IN ('provider_error','record_failed','timeout')) OR (status = 'cancelled' AND terminal_reason IS NOT NULL AND terminal_reason IN ('user_stop','policy_revoked','license_restricted','permission_denied','authority_lost','resume_unsupported')) OR (status = 'discarded' AND terminal_reason IS NOT NULL AND terminal_reason IN ('discarded_by_author','superseded_by_new_turn')) OR (status NOT IN ('completed','failed','cancelled','discarded') AND terminal_reason IS NULL) ), CHECK (status != 'finalizing' OR (finalizing_target_status IS NOT NULL AND finalizing_target_reason IS NOT NULL AND origin_assistant_message_id IS NOT NULL)), CHECK ((finalizing_target_status IS NULL) = (finalizing_target_reason IS NULL)) )"
     },
     "ai_audit_events": {
       "kind": "table",
@@ -1503,6 +1866,46 @@
       ],
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE chat_summary_messages ( summary_id TEXT NOT NULL REFERENCES chat_summaries(id) ON DELETE CASCADE, message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE, PRIMARY KEY (summary_id, message_id) )"
+    },
+    "chronicle_date_migration_events": {
+      "kind": "table",
+      "columns": {
+        "event_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "project_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "recorded_at": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE chronicle_date_migration_events ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, event_id TEXT NOT NULL, recorded_at TEXT NOT NULL, PRIMARY KEY(project_id, event_id) )"
     },
     "codex_chunks": {
       "kind": "table",
@@ -15254,6 +15657,82 @@
       ],
       "createSql": "CREATE INDEX idx_ab_comparisons_project_created ON ab_comparisons(project_id, created_at)"
     },
+    "idx_agent_run_interactions_one_pending_root": {
+      "table": "agent_run_interactions",
+      "unique": true,
+      "partial": true,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "root_run_id"
+        }
+      ],
+      "createSql": "CREATE UNIQUE INDEX idx_agent_run_interactions_one_pending_root ON agent_run_interactions(root_run_id) WHERE status = 'pending'"
+    },
+    "idx_agent_run_interactions_run_id": {
+      "table": "agent_run_interactions",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "run_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_agent_run_interactions_run_id ON agent_run_interactions(run_id)"
+    },
+    "idx_agent_runs_chat_session_id": {
+      "table": "agent_runs",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "chat_session_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_agent_runs_chat_session_id ON agent_runs(chat_session_id)"
+    },
+    "idx_agent_runs_one_active_session": {
+      "table": "agent_runs",
+      "unique": true,
+      "partial": true,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "chat_session_id"
+        }
+      ],
+      "createSql": "CREATE UNIQUE INDEX idx_agent_runs_one_active_session ON agent_runs(chat_session_id) WHERE status IN ('running','waiting_user','waiting_approval','finalizing')"
+    },
+    "idx_agent_runs_owner_status": {
+      "table": "agent_runs",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "execution_owner"
+        },
+        {
+          "ordinal": 1,
+          "column": "status"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_agent_runs_owner_status ON agent_runs(execution_owner,status)"
+    },
+    "idx_agent_runs_project_id": {
+      "table": "agent_runs",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_agent_runs_project_id ON agent_runs(project_id)"
+    },
     "idx_ai_audit_scope_execution": {
       "table": "ai_audit_events",
       "unique": false,
@@ -18906,6 +19385,12 @@
     "grimodex_clock_ab_comparisons_ad": "CREATE TRIGGER \"grimodex_clock_ab_comparisons_ad\" AFTER DELETE ON \"ab_comparisons\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_ab_comparisons_ai": "CREATE TRIGGER \"grimodex_clock_ab_comparisons_ai\" AFTER INSERT ON \"ab_comparisons\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_ab_comparisons_au": "CREATE TRIGGER \"grimodex_clock_ab_comparisons_au\" AFTER UPDATE ON \"ab_comparisons\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_agent_run_interactions_ad": "CREATE TRIGGER \"grimodex_clock_agent_run_interactions_ad\" AFTER DELETE ON \"agent_run_interactions\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_agent_run_interactions_ai": "CREATE TRIGGER \"grimodex_clock_agent_run_interactions_ai\" AFTER INSERT ON \"agent_run_interactions\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_agent_run_interactions_au": "CREATE TRIGGER \"grimodex_clock_agent_run_interactions_au\" AFTER UPDATE ON \"agent_run_interactions\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_agent_runs_ad": "CREATE TRIGGER \"grimodex_clock_agent_runs_ad\" AFTER DELETE ON \"agent_runs\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_agent_runs_ai": "CREATE TRIGGER \"grimodex_clock_agent_runs_ai\" AFTER INSERT ON \"agent_runs\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_agent_runs_au": "CREATE TRIGGER \"grimodex_clock_agent_runs_au\" AFTER UPDATE ON \"agent_runs\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_ai_audit_events_ad": "CREATE TRIGGER \"grimodex_clock_ai_audit_events_ad\" AFTER DELETE ON \"ai_audit_events\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; INSERT INTO grimodex_write_clock(name, seq) SELECT 'ai_audit_events!mutate', seq FROM grimodex_write_clock WHERE name = '*' ON CONFLICT(name) DO UPDATE SET seq = excluded.seq; END",
     "grimodex_clock_ai_audit_events_ai": "CREATE TRIGGER \"grimodex_clock_ai_audit_events_ai\" AFTER INSERT ON \"ai_audit_events\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; INSERT INTO grimodex_write_clock(name, seq) SELECT 'ai_audit_events', seq FROM grimodex_write_clock WHERE name = '*' ON CONFLICT(name) DO UPDATE SET seq = excluded.seq; END",
     "grimodex_clock_ai_audit_events_au": "CREATE TRIGGER \"grimodex_clock_ai_audit_events_au\" AFTER UPDATE ON \"ai_audit_events\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; INSERT INTO grimodex_write_clock(name, seq) SELECT 'ai_audit_events!mutate', seq FROM grimodex_write_clock WHERE name = '*' ON CONFLICT(name) DO UPDATE SET seq = excluded.seq; END",
@@ -18945,6 +19430,9 @@
     "grimodex_clock_chat_summary_messages_ad": "CREATE TRIGGER \"grimodex_clock_chat_summary_messages_ad\" AFTER DELETE ON \"chat_summary_messages\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_chat_summary_messages_ai": "CREATE TRIGGER \"grimodex_clock_chat_summary_messages_ai\" AFTER INSERT ON \"chat_summary_messages\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_chat_summary_messages_au": "CREATE TRIGGER \"grimodex_clock_chat_summary_messages_au\" AFTER UPDATE ON \"chat_summary_messages\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_chronicle_date_migration_events_ad": "CREATE TRIGGER \"grimodex_clock_chronicle_date_migration_events_ad\" AFTER DELETE ON \"chronicle_date_migration_events\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_chronicle_date_migration_events_ai": "CREATE TRIGGER \"grimodex_clock_chronicle_date_migration_events_ai\" AFTER INSERT ON \"chronicle_date_migration_events\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_chronicle_date_migration_events_au": "CREATE TRIGGER \"grimodex_clock_chronicle_date_migration_events_au\" AFTER UPDATE ON \"chronicle_date_migration_events\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_codex_chunks_ad": "CREATE TRIGGER \"grimodex_clock_codex_chunks_ad\" AFTER DELETE ON \"codex_chunks\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_codex_chunks_ai": "CREATE TRIGGER \"grimodex_clock_codex_chunks_ai\" AFTER INSERT ON \"codex_chunks\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_codex_chunks_au": "CREATE TRIGGER \"grimodex_clock_codex_chunks_au\" AFTER UPDATE ON \"codex_chunks\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",

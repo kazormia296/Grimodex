@@ -247,17 +247,22 @@ fn deeply_nested_json_denies_instead_of_overflowing() {
     );
 }
 
-/// The check is independent of the existing parser: input the existing parser
-/// turns into full, this check denies, and the existing parser is untouched.
+/// The NIR-1 send check and shared policy parser both deny invalid writes.
 #[test]
-fn the_existing_parser_still_falls_back_to_full_where_this_check_denies() {
+fn both_policy_checks_deny_invalid_values_for_writing() {
     for raw in [
         "not-json",
         r#"{"preset":"bogus","toggles":{"chat":false}}"#,
         "[]",
     ] {
-        let legacy = crate::policy::parse_policy_json(raw).expect("legacy parser");
-        assert!(legacy.chat && legacy.body_write && legacy.analysis, "{raw}");
+        let policy = crate::policy::parse_policy_json(raw);
+        assert_eq!(policy.state, crate::policy::AiPolicyState::Invalid, "{raw}");
+        assert!(
+            !policy.toggles.body_write
+                && !policy.toggles.structure_write
+                && !policy.toggles.knowledge_write,
+            "shared parser allowed a write for {raw}"
+        );
         assert!(
             !decide(Some(raw), Nir1LocalSendPurpose::Writing).is_allowed(),
             "{raw}"

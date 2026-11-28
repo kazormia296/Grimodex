@@ -569,6 +569,33 @@ export interface CancelCurrentChatInputReceipt {
 }
 
 export interface NapiBackendLike {
+  // Main-only AgentRun storage (DR-A3-19). These methods return JSON strings.
+  agentRunStart?(payload: unknown): Promise<string>;
+  agentRunStartSuperseding?(payload: unknown): Promise<string>;
+  agentRunInterrupt?(payload: unknown): Promise<string>;
+  agentRunBeginFinalizing?(payload: unknown): Promise<string>;
+  agentRunFinishFinalizing?(payload: unknown): Promise<string>;
+  agentRunFinishWithoutMessages?(payload: unknown): Promise<string>;
+  agentRunDiscard?(payload: unknown): Promise<string>;
+  agentRunClaim?(payload: unknown): Promise<string>;
+  agentRunAppendToolCalls?(payload: unknown): Promise<string>;
+  agentRunAddAuditExecutionId?(payload: unknown): Promise<string>;
+  agentRunUpdateToolCall?(payload: unknown): Promise<string>;
+  agentRunWriteCheckpoint?(payload: unknown): Promise<string>;
+  agentRunMarkNotResumable?(payload: unknown): Promise<string>;
+  agentRunTouchActivity?(payload: unknown): Promise<string>;
+  agentRunOpenQuestion?(payload: unknown): Promise<string>;
+  agentRunAnswer?(payload: unknown): Promise<string>;
+  agentRunOpenApproval?(payload: unknown): Promise<string>;
+  agentRunDecideApproval?(payload: unknown): Promise<string>;
+  agentRunInvalidateApproval?(payload: unknown): Promise<string>;
+  agentRunGetPendingApproval?(payload: unknown): Promise<string>;
+  agentRunRecover?(payload: unknown): Promise<string>;
+  agentRunRecoverFinalizing?(payload: unknown): Promise<string>;
+  agentRunListOwned?(payload: unknown): Promise<string>;
+  agentRunListFinalizing?(payload: unknown): Promise<string>;
+  agentRunGetStatus?(payload: unknown): Promise<string>;
+  agentRunGetUnfinishedForSession?(payload: unknown): Promise<string>;
   /** Main-only D2a startup barrier; never registered in renderer IPC. */
   initializeProfileEgress?(): Promise<string>;
   /** Main-only registration of a main-issued caller identity. */

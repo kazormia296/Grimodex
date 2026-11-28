@@ -1,4 +1,5 @@
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { AiPolicyWriteBlockedError } from "@/features/ai-policy/writeBlockedError";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { applyAiTreePlan } from "@/features/tree/aiScaffold/applyPlan";
@@ -24,13 +25,16 @@ export async function agentApplyTreePlan(
   } = {},
 ): Promise<ApplyResult> {
   if (blockIfPolicyOff("structureWrite")) {
-    throw new Error("structureWrite policy is off");
+    throw new AiPolicyWriteBlockedError("structureWrite");
   }
   const hasSynopsis = plan.ops.some(
     (o) => o.op === "create" && o.synopsis != null && o.synopsis.trim() !== "",
   );
   if (hasSynopsis && blockIfPolicyOff("bodyWrite")) {
-    throw new Error("bodyWrite policy is off (synopsis generation requested)");
+    throw new AiPolicyWriteBlockedError(
+      "bodyWrite",
+      "bodyWrite policy is off (synopsis generation requested)",
+    );
   }
 
   const projectId = getCurrentProjectId();

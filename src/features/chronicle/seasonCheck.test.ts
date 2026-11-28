@@ -25,6 +25,17 @@ const calendar: ChronicleCalendar = {
   ],
 };
 
+type CheckEvent = SeasonCheckInput["events"][number];
+
+function ev(
+  id: string,
+  startTime: number | null,
+  precision: CheckEvent["precision"] = "exact",
+  startGranularity: CheckEvent["startGranularity"] = "day",
+): CheckEvent {
+  return { id, startTime, precision, startGranularity };
+}
+
 function input(over: Partial<SeasonCheckInput>): SeasonCheckInput {
   return {
     events: [],
@@ -39,7 +50,7 @@ describe("findSeasonConflicts", () => {
   it("冬の出来事のシーンに『蝉』→ 矛盾(冬 vs 夏)", () => {
     const conflicts = findSeasonConflicts(
       input({
-        events: [{ id: "e1", startTime: 300 }], // 300 → 冬
+        events: [ev("e1", 300)], // 300 → 冬
         links: [{ sceneId: "s1", eventId: "e1" }],
         sceneTexts: new Map([["s1", "真夜中に蝉が鳴いていた"]]),
       }),
@@ -56,7 +67,7 @@ describe("findSeasonConflicts", () => {
   it("季節が一致すれば矛盾なし", () => {
     const conflicts = findSeasonConflicts(
       input({
-        events: [{ id: "e1", startTime: 300 }], // 冬
+        events: [ev("e1", 300)], // 冬
         links: [{ sceneId: "s1", eventId: "e1" }],
         sceneTexts: new Map([["s1", "雪が静かに降っていた"]]),
       }),
@@ -64,10 +75,31 @@ describe("findSeasonConflicts", () => {
     expect(conflicts).toHaveLength(0);
   });
 
+  it("unknown と日時なしを除外し、approx と exact は検査する", () => {
+    const eventIds = ["unknown", "undated", "approx", "exact"];
+    const conflicts = findSeasonConflicts(
+      input({
+        events: [
+          ev("unknown", 300, "unknown"),
+          ev("undated", 300, "exact", "none"),
+          ev("approx", 300, "approx"),
+          ev("exact", 300),
+        ],
+        links: eventIds.map((eventId) => ({ sceneId: eventId, eventId })),
+        sceneTexts: new Map(eventIds.map((sceneId) => [sceneId, "蝉"])),
+      }),
+    );
+
+    expect(conflicts.map((conflict) => conflict.eventId)).toEqual([
+      "approx",
+      "exact",
+    ]);
+  });
+
   it("startTime 無しはスキップ（false-positive を出さない）", () => {
     const conflicts = findSeasonConflicts(
       input({
-        events: [{ id: "e1", startTime: null }],
+        events: [ev("e1", null)],
         links: [{ sceneId: "s1", eventId: "e1" }],
         sceneTexts: new Map([["s1", "蝉が鳴く"]]),
       }),
@@ -78,7 +110,7 @@ describe("findSeasonConflicts", () => {
   it("本文未取得(sceneTexts に無い)はスキップ", () => {
     const conflicts = findSeasonConflicts(
       input({
-        events: [{ id: "e1", startTime: 300 }],
+        events: [ev("e1", 300)],
         links: [{ sceneId: "s1", eventId: "e1" }],
         sceneTexts: new Map(),
       }),
@@ -90,7 +122,7 @@ describe("findSeasonConflicts", () => {
     const conflicts = findSeasonConflicts(
       input({
         calendar: { daysPerYear: 360, seasonBoundaries: [] },
-        events: [{ id: "e1", startTime: 300 }],
+        events: [ev("e1", 300)],
         links: [{ sceneId: "s1", eventId: "e1" }],
         sceneTexts: new Map([["s1", "蝉"]]),
       }),
@@ -101,10 +133,7 @@ describe("findSeasonConflicts", () => {
   it("conflictingEventIds は矛盾 event の集合", () => {
     const conflicts = findSeasonConflicts(
       input({
-        events: [
-          { id: "e1", startTime: 300 },
-          { id: "e2", startTime: 100 }, // 夏
-        ],
+        events: [ev("e1", 300), ev("e2", 100)], // e2 は夏
         links: [
           { sceneId: "s1", eventId: "e1" },
           { sceneId: "s2", eventId: "e2" },
@@ -123,7 +152,7 @@ describe("findSeasonConflicts", () => {
   it("自季節を含む回想シーン(両季節)は矛盾にしない", () => {
     const conflicts = findSeasonConflicts(
       input({
-        events: [{ id: "e1", startTime: 300 }], // 冬
+        events: [ev("e1", 300)], // 冬
         links: [{ sceneId: "s1", eventId: "e1" }],
         // 冬(自季節)が出ている上での蝉(夏)は回想/比喩 → 矛盾にしない。
         sceneTexts: new Map([
@@ -161,7 +190,7 @@ describe("collectLoadedSceneTexts (batch degradation)", () => {
     // 欠損シーンを空扱いにしても、取得済み s1 の矛盾は引き続き検出される。
     const conflicts = findSeasonConflicts(
       input({
-        events: [{ id: "e1", startTime: 300 }], // 冬
+        events: [ev("e1", 300)], // 冬
         links: [{ sceneId: "s1", eventId: "e1" }],
         sceneTexts,
       }),

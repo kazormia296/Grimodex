@@ -292,12 +292,50 @@ pub(crate) fn collect_event_chronicle_snapshot(
     serde_json::from_str(&raw).map_err(Into::into)
 }
 
+impl TemporalChronicleMetadataPatchPayload {
+    fn matches_dates(&self, snapshot: &Value) -> bool {
+        snapshot["startTime"].as_i64() == self.start_time
+            && snapshot["startMinute"].as_i64() == self.start_minute
+            && snapshot["startGranularity"].as_str() == Some(self.start_granularity.as_str())
+            && snapshot["endTime"].as_i64() == self.end_time
+            && snapshot["endMinute"].as_i64() == self.end_minute
+            && snapshot["endGranularity"].as_str() == Some(self.end_granularity.as_str())
+    }
+
+    /// Only an exact retransmission of an undated range can generate system-owned fields.
+    pub(super) fn needs_system_date(
+        &self,
+        conn: &Connection,
+        project: &str,
+    ) -> anyhow::Result<bool> {
+        if require_event_date(self.start_time, &self.start_granularity).is_ok() {
+            return Ok(false);
+        }
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE project_id = ?1 AND id = ?2 AND version = ?3)",
+            params![project, self.target_id, self.base_version], |row| row.get(0),
+        )?;
+        if !exists {
+            return Ok(false);
+        }
+        let snapshot = collect_event_chronicle_snapshot(conn, &self.target_id)?;
+        if !self.matches_dates(&snapshot) {
+            return Ok(false);
+        }
+        if snapshot["precision"].as_str() != Some(self.precision.as_str()) {
+            require_event_date(self.start_time, &self.start_granularity)?;
+        }
+        Ok(true)
+    }
+}
+
 /// Patch one Event's Chronicle range (exact-after replace) under `events.version` OCC.
 pub(crate) fn apply_event_metadata_patch_in_tx(
     conn: &Connection,
     project_id: &str,
     payload: &TemporalChronicleMetadataPatchPayload,
     now: &str,
+    repair: Option<crate::chronicle_date_migration::DateRepair>,
 ) -> anyhow::Result<TemporalPatchTxResult> {
     let live_version: Option<i64> = conn
         .query_row(
@@ -322,15 +360,32 @@ pub(crate) fn apply_event_metadata_patch_in_tx(
         );
     }
     let before_snapshot = collect_event_chronicle_snapshot(conn, &payload.target_id)?;
-    if before_snapshot["startTime"].as_i64() != payload.start_time
-        || before_snapshot["startMinute"].as_i64() != payload.start_minute
-        || before_snapshot["startGranularity"].as_str() != Some(payload.start_granularity.as_str())
-        || before_snapshot["endTime"].as_i64() != payload.end_time
-        || before_snapshot["endMinute"].as_i64() != payload.end_minute
-        || before_snapshot["endGranularity"].as_str() != Some(payload.end_granularity.as_str())
-    {
+    let mut patch = payload.clone();
+    if let Some(repair) = repair {
+        anyhow::ensure!(
+            payload.matches_dates(&before_snapshot)
+                && before_snapshot["precision"].as_str() == Some(payload.precision.as_str()),
+            "event date changed after provisional placement"
+        );
+        let range = repair.range(ChronicleTimestamp {
+            day: payload.end_time,
+            minute: payload.end_minute,
+            granularity: &payload.end_granularity,
+        });
+        patch.start_time = range.start.day;
+        patch.start_minute = range.start.minute;
+        patch.start_granularity = range.start.granularity.into();
+        patch.end_time = range.end.day;
+        patch.end_minute = range.end.minute;
+        patch.end_granularity = range.end.granularity.into();
+        if let Some(precision) = repair.precision() {
+            patch.precision = precision.into();
+        }
+    } else {
         require_event_date(payload.start_time, &payload.start_granularity)?;
-        validate_range(payload)?;
+        if !payload.matches_dates(&before_snapshot) {
+            validate_range(payload)?;
+        }
     }
     let next_version = live_version
         .checked_add(1)
@@ -348,13 +403,13 @@ pub(crate) fn apply_event_metadata_patch_in_tx(
                 updated_at = ?9
           WHERE id = ?10 AND version = ?11",
         params![
-            payload.start_time,
-            payload.start_minute,
-            payload.start_granularity,
-            payload.end_time,
-            payload.end_minute,
-            payload.end_granularity,
-            payload.precision,
+            patch.start_time,
+            patch.start_minute,
+            patch.start_granularity,
+            patch.end_time,
+            patch.end_minute,
+            patch.end_granularity,
+            patch.precision,
             next_version,
             now,
             payload.target_id,

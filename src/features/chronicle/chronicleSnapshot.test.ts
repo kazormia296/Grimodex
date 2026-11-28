@@ -6,7 +6,7 @@ import {
   assembleChronicleSnapshotText,
   type ChronicleSnapshotInput,
 } from "./chronicleSnapshot";
-import type { ChronicleAnchor, SceneChronicle } from "./resolveSceneAnchor";
+import type { ChronicleAnchor } from "./resolveSceneAnchor";
 import type { EventRow, EventRelationRow } from "./api";
 import type { ChronicleCalendar } from "./chronicleTime";
 import { countTokens } from "@/features/chat/contextBuilder";
@@ -25,7 +25,8 @@ function mkEvent(p: Partial<EventRow> & { id: string }): EventRow {
     endTime: p.endTime ?? null,
     startMinute: p.startMinute ?? null,
     endMinute: p.endMinute ?? null,
-    startGranularity: p.startGranularity ?? "none",
+    startGranularity:
+      p.startGranularity ?? (p.startTime == null ? "none" : "day"),
     endGranularity: p.endGranularity ?? "none",
     precision: p.precision ?? "exact",
     kind: p.kind ?? "generic",
@@ -53,6 +54,7 @@ function input(
 ): ChronicleSnapshotInput {
   return {
     anchor: over.anchor,
+    sceneId: over.sceneId,
     events: over.events ?? [],
     participants: over.participants ?? [],
     relations: over.relations ?? [],
@@ -69,7 +71,7 @@ const stamped = (
   startTime: number | null,
   precision: ChronicleAnchor["precision"] = "exact",
   startMinute: number | null = null,
-  startGranularity: string = "none",
+  startGranularity: string = startTime == null ? "none" : "day",
 ): ChronicleAnchor => ({
   ordinal,
   startTime,
@@ -214,28 +216,61 @@ describe("deriveChronicleSnapshot — character state", () => {
   });
 });
 
+it("C5: unknown births stay unknown; uncertain deaths make status unknown", () => {
+  const birth = mkEvent({
+    id: "birth",
+    kind: "birth",
+    primaryCodexId: "c1",
+    startTime: 0,
+  });
+  const death = mkEvent({
+    id: "death",
+    kind: "death",
+    primaryCodexId: "c1",
+    startTime: 360,
+    precision: "unknown",
+  });
+  const state = (events: EventRow[]) =>
+    deriveChronicleSnapshot(
+      input({
+        anchor: stamped("a0", 360),
+        calendar: CAL,
+        characterIds: ["c1"],
+        events,
+      }),
+    ).characters[0];
+  expect(state([birth, death])).toMatchObject({ status: "unknown", age: 1 });
+  expect(state([{ ...birth, precision: "unknown" }, death])).toMatchObject({
+    status: "unknown",
+    age: null,
+  });
+});
+
 describe("deriveChronicleSnapshot — location", () => {
-  it("最後に判明する居場所: location 付き event のうち ordinal<=anchor の最新", () => {
+  it("最後に判明する居場所: location 付き event のうち 日時が現在地以前・同時 の最新", () => {
     const snap = deriveChronicleSnapshot(
       input({
-        anchor: stamped("a5", null),
+        anchor: stamped("a5", 5),
         events: [
           mkEvent({
             id: "e1",
             primaryCodexId: "c1",
             locationCodexId: "loc1",
+            startTime: 1,
             ordinal: "a1",
           }),
           mkEvent({
             id: "e2",
             primaryCodexId: "c1",
             locationCodexId: "loc2",
+            startTime: 4,
             ordinal: "a4",
           }),
           mkEvent({
             id: "e3",
             primaryCodexId: "c1",
             locationCodexId: "loc3",
+            startTime: 8,
             ordinal: "a8",
           }), // anchor 超
         ],
@@ -254,12 +289,13 @@ describe("deriveChronicleSnapshot — location", () => {
   it("participant としての関与でも居場所を拾う", () => {
     const snap = deriveChronicleSnapshot(
       input({
-        anchor: stamped("a5", null),
+        anchor: stamped("a5", 5),
         events: [
           mkEvent({
             id: "e1",
             primaryCodexId: "cOther",
             locationCodexId: "loc1",
+            startTime: 2,
             ordinal: "a2",
           }),
         ],
@@ -276,10 +312,10 @@ describe("deriveChronicleSnapshot — location", () => {
 });
 
 describe("deriveChronicleSnapshot — recent events", () => {
-  it("ordinal<=anchor 降順 K=8、birth/death は除外（state へ畳む）", () => {
+  it("日時が現在地以前・同時 降順 K=8、birth/death は除外（state へ畳む）", () => {
     const events = [
-      mkEvent({ id: "g1", title: "戴冠", ordinal: "a1" }),
-      mkEvent({ id: "g2", title: "戦争", ordinal: "a3" }),
+      mkEvent({ id: "g1", title: "戴冠", startTime: 1, ordinal: "a1" }),
+      mkEvent({ id: "g2", title: "戦争", startTime: 3, ordinal: "a3" }),
       mkEvent({
         id: "b1",
         title: "誕生",
@@ -288,20 +324,20 @@ describe("deriveChronicleSnapshot — recent events", () => {
         startTime: 0,
         ordinal: "a2",
       }),
-      mkEvent({ id: "future", title: "未来", ordinal: "a9" }),
+      mkEvent({ id: "future", title: "未来", startTime: 9, ordinal: "a9" }),
     ];
     const snap = deriveChronicleSnapshot(
-      input({ anchor: stamped("a5", null), events, characterIds: [] }),
+      input({ anchor: stamped("a5", 5), events, characterIds: [] }),
     );
     expect(snap.recentEvents.map((e) => e.title)).toEqual(["戦争", "戴冠"]);
   });
 
   it("K=8 で打ち切る", () => {
     const events = Array.from({ length: 12 }, (_, i) =>
-      mkEvent({ id: `e${i}`, title: `E${i}`, ordinal: `a${i}` }),
+      mkEvent({ id: `e${i}`, title: `E${i}`, startTime: i, ordinal: `a${i}` }),
     );
     const snap = deriveChronicleSnapshot(
-      input({ anchor: stamped("a9", null), events, characterIds: [] }),
+      input({ anchor: stamped("a9", 9), events, characterIds: [] }),
     );
     expect(snap.recentEvents.length).toBe(8);
   });
@@ -325,11 +361,10 @@ describe("deriveChronicleSnapshot — relTime（アンカーからの相対時�
         characterIds: [],
       }),
     );
-    // ordinal 降順: nodate(a3), long(a2), same(a1)
+    // 日付なしは不明。同日を先に並べる。
     expect(snap.recentEvents.map((e) => e.relTime)).toEqual([
-      null,
-      "約20年前",
       "同日",
+      "約20年前",
     ]);
   });
 
@@ -345,7 +380,7 @@ describe("deriveChronicleSnapshot — relTime（アンカーからの相対時�
     expect(snap.recentEvents[0].relTime).toBeNull();
   });
 
-  it("アンカーに startTime が無ければ relTime=null", () => {
+  it("アンカーに startTime が無ければ 直近の出来事は空", () => {
     const snap = deriveChronicleSnapshot(
       input({
         anchor: stamped("a9", null),
@@ -354,7 +389,7 @@ describe("deriveChronicleSnapshot — relTime（アンカーからの相対時�
         characterIds: [],
       }),
     );
-    expect(snap.recentEvents[0].relTime).toBeNull();
+    expect(snap.recentEvents).toEqual([]);
   });
 
   it("precision approx / 粗い粒度は「約」付き日表記", () => {
@@ -394,17 +429,39 @@ describe("deriveChronicleSnapshot — relTime（アンカーからの相対時�
   });
 });
 
-describe("deriveChronicleSnapshot — unresolved causal (ordinal)", () => {
+describe("deriveChronicleSnapshot — unresolved causal", () => {
   it("原因<=anchor かつ 結果>anchor の因果のみ拾う", () => {
     const events = [
-      mkEvent({ id: "cause", title: "毒を盛る", ordinal: "a2" }),
-      mkEvent({ id: "effect", title: "王の死", ordinal: "a8" }),
-      mkEvent({ id: "done", title: "既済因果結果", ordinal: "a3" }),
-      mkEvent({ id: "doneCause", title: "既済因果原因", ordinal: "a1" }),
+      mkEvent({
+        id: "cause",
+        title: "毒を盛る",
+        precision: "approx",
+        startTime: 2,
+        ordinal: "a2",
+      }),
+      mkEvent({
+        id: "effect",
+        title: "王の死",
+        precision: "unknown",
+        startTime: 8,
+        ordinal: "a8",
+      }),
+      mkEvent({
+        id: "done",
+        title: "既済因果結果",
+        startTime: 3,
+        ordinal: "a3",
+      }),
+      mkEvent({
+        id: "doneCause",
+        title: "既済因果原因",
+        startTime: 1,
+        ordinal: "a1",
+      }),
     ];
     const snap = deriveChronicleSnapshot(
       input({
-        anchor: stamped("a5", null),
+        anchor: stamped("a5", 5),
         events,
         relations: [
           { causeId: "cause", effectId: "effect" }, // a2<=a5, a8>a5 → 未回収
@@ -414,16 +471,27 @@ describe("deriveChronicleSnapshot — unresolved causal (ordinal)", () => {
       }),
     );
     expect(snap.unresolvedCausal).toEqual([
-      { causeTitle: "毒を盛る", effectTitle: "王の死" },
+      {
+        causeTitle: "毒を盛る",
+        effectTitle: "王の死",
+        causePrecision: "approx",
+        effectPrecision: "unknown",
+      },
     ]);
+    expect(renderChronicleSnapshot(snap, "ja")).toContain(
+      "「毒を盛る（日付はおおよそ）」→ いずれ「王の死（日付は不確実）」",
+    );
+    expect(renderChronicleSnapshot(snap, "en")).toContain(
+      '"毒を盛る (date approximate)" → will lead to "王の死 (date uncertain)"',
+    );
   });
 });
 
 describe("deriveChronicleSnapshot — offpage (D1)", () => {
-  it("未 stamp event を kind 優先・ordinal 降順で最大3件", () => {
+  it("未 stamp event を kind 優先・日付降順で最大3件", () => {
     const events = [
-      mkEvent({ id: "on", title: "オンページ", ordinal: "a1" }),
-      mkEvent({ id: "off1", title: "古い戦争", ordinal: "a2" }),
+      mkEvent({ id: "on", title: "オンページ", startTime: 1, ordinal: "a1" }),
+      mkEvent({ id: "off1", title: "古い戦争", startTime: 2, ordinal: "a2" }),
       mkEvent({
         id: "off2",
         title: "ある誕生",
@@ -432,18 +500,18 @@ describe("deriveChronicleSnapshot — offpage (D1)", () => {
         startTime: 0,
         ordinal: "a3",
       }),
-      mkEvent({ id: "off3", title: "別の事件", ordinal: "a4" }),
-      mkEvent({ id: "off4", title: "さらに事件", ordinal: "a0" }),
+      mkEvent({ id: "off3", title: "別の事件", startTime: 4, ordinal: "a4" }),
+      mkEvent({ id: "off4", title: "さらに事件", startTime: 0, ordinal: "a0" }),
     ];
     const snap = deriveChronicleSnapshot(
       input({
-        anchor: stamped("a5", null),
+        anchor: stamped("a5", 5),
         events,
         sceneEvents: [{ sceneId: "s1", eventId: "on" }], // on のみ stamp 済
         characterIds: [],
       }),
     );
-    // birth(off2) 優先 → 残りは ordinal 降順(off3 a4, off1 a2) で計3件
+    // birth(off2) 優先 → 残りは 日付降順(off3 a4, off1 a2) で計3件
     expect(snap.offpage.map((e) => e.title)).toEqual([
       "ある誕生",
       "別の事件",
@@ -465,8 +533,8 @@ describe("deriveChronicleSnapshot — none mode", () => {
           source: "none",
         },
         events: [
-          mkEvent({ id: "e1", title: "背景A", ordinal: "a1" }),
-          mkEvent({ id: "e2", title: "背景B", ordinal: "a2" }),
+          mkEvent({ id: "e1", title: "背景A", startTime: 1, ordinal: "a1" }),
+          mkEvent({ id: "e2", title: "背景B", startTime: 2, ordinal: "a2" }),
         ],
         sceneEvents: [],
         characterIds: [],
@@ -503,6 +571,62 @@ const CAL_MONTHS: ChronicleCalendar = {
   })),
   weekdayNames: ["日", "月", "火", "水", "木", "金", "土"],
 };
+
+it("K4a: month and year spans overlap the anchor, and a linked later event counts as current", () => {
+  const anchor = stamped("a0", 10);
+  const events = [
+    mkEvent({
+      id: "month",
+      startTime: 29,
+      startGranularity: "month",
+      primaryCodexId: "m",
+    }),
+    mkEvent({
+      id: "year",
+      startTime: 359,
+      startGranularity: "year",
+      primaryCodexId: "y",
+    }),
+    mkEvent({
+      id: "linked",
+      startTime: 60,
+      primaryCodexId: "l",
+      locationCodexId: "place",
+    }),
+    mkEvent({ id: "later", startTime: 61 }),
+    mkEvent({ id: "undated" }),
+  ];
+  const args = input({
+    anchor,
+    events,
+    calendar: CAL_MONTHS,
+    sceneId: "s",
+    sceneEvents: [{ sceneId: "s", eventId: "linked" }],
+    characterIds: ["l"],
+    codexNames: new Map([["place", "城"]]),
+    relations: [
+      { causeId: "linked", effectId: "later" },
+      { causeId: "month", effectId: "linked" },
+      { causeId: "month", effectId: "undated" },
+    ],
+  });
+  const snapshot = deriveChronicleSnapshot(args);
+  expect(snapshot.recentEvents.map((e) => e.eventId)).toEqual([
+    "year",
+    "month",
+  ]);
+  expect(snapshot.offpage.map((e) => e.eventId)).toEqual(["year", "month"]);
+  expect(snapshot.characters[0].location).toBe("城");
+  expect(pickSnapshotCharacters(args)).toEqual(["l", "y", "m"]);
+  expect(snapshot.unresolvedCausal).toEqual([
+    {
+      causeTitle: "linked",
+      effectTitle: "later",
+      causePrecision: "exact",
+      effectPrecision: "exact",
+    },
+  ]);
+});
 
 describe("deriveChronicleSnapshot — formattedDate", () => {
   it("暦＋粒度(time)＋startTime が揃うと整形済み日付を出す（ja）", () => {
@@ -607,12 +731,14 @@ describe("renderChronicleSnapshot", () => {
   it("renders reveal guidance first and keeps the marker in both languages", () => {
     const snap = deriveChronicleSnapshot(
       input({
-        anchor: stamped("a1", null),
+        anchor: stamped("a1", 1),
         events: [
           mkEvent({
             id: "secret-event",
             title: "毒殺の真相",
             note: "王宮で起きた",
+            precision: "unknown",
+            startTime: 0,
             ordinal: "a0",
             revealSceneId: "s2",
           }),
@@ -637,14 +763,14 @@ describe("renderChronicleSnapshot", () => {
       "まだ明かされていない出来事は、本文で、読者が知っていることとして書かない。",
     );
     expect(ja).toContain(
-      "- 毒殺の真相（王宮で起きた）（読者にはまだ明かされていない）",
+      "- 毒殺の真相（王宮で起きた）（日付は不確実）（読者にはまだ明かされていない）",
     );
     const en = renderChronicleSnapshot(snap, "en");
     expect(en).toContain(
       "Do not write events not yet revealed to readers as if readers already knew them.",
     );
     expect(en).toContain(
-      "- 毒殺の真相（王宮で起きた） (not yet revealed to readers)",
+      "- 毒殺の真相（王宮で起きた） (date uncertain) (not yet revealed to readers)",
     );
   });
 
@@ -660,7 +786,7 @@ describe("renderChronicleSnapshot", () => {
             startTime: 0,
             ordinal: "a0",
           }),
-          mkEvent({ id: "g", title: "戴冠式", ordinal: "a3" }),
+          mkEvent({ id: "g", title: "戴冠式", startTime: 3, ordinal: "a3" }),
         ],
         calendar: CAL,
         characterIds: ["c1"],
@@ -714,7 +840,9 @@ describe("renderChronicleSnapshot", () => {
           precision: null,
           source: "none",
         },
-        events: [mkEvent({ id: "e1", title: "古の大戦", ordinal: "a1" })],
+        events: [
+          mkEvent({ id: "e1", title: "古の大戦", startTime: 1, ordinal: "a1" }),
+        ],
         characterIds: [],
       }),
     );
@@ -725,8 +853,15 @@ describe("renderChronicleSnapshot", () => {
   it("英語 lang でも描画できる", () => {
     const snap = deriveChronicleSnapshot(
       input({
-        anchor: stamped("a5", null),
-        events: [mkEvent({ id: "g", title: "Coronation", ordinal: "a1" })],
+        anchor: stamped("a5", 5),
+        events: [
+          mkEvent({
+            id: "g",
+            title: "Coronation",
+            startTime: 1,
+            ordinal: "a1",
+          }),
+        ],
         characterIds: [],
       }),
     );
@@ -740,6 +875,7 @@ describe("renderChronicleSnapshot", () => {
         id: `e${i}`,
         title: `非常に長い出来事のタイトル番号${i}`.repeat(3),
         note: "詳細な脚注テキスト".repeat(20),
+        startTime: i,
         ordinal: `a${i}`,
       }),
     );
@@ -799,7 +935,9 @@ describe("renderChronicleSnapshot", () => {
         ordinal: `a${i}`,
         startTime: 100 + i, // アンカー 7200 から見て 約20年前
         startGranularity: "day",
-        ...(i === 7 ? { revealSceneId: "s2" } : {}),
+        ...(i === 7
+          ? { revealSceneId: "s2", precision: "approx" as const }
+          : {}),
       }),
     );
     const snap = deriveChronicleSnapshot(
@@ -826,7 +964,9 @@ describe("renderChronicleSnapshot", () => {
     expect(text).not.toContain("詳細な脚注テキスト");
     // relTime は残る（note より生存優先度が高い）
     expect(text).toContain("約20年前");
-    expect(text).toContain("（読者にはまだ明かされていない）");
+    expect(text).toContain(
+      "（約20年前）（日付はおおよそ）（読者にはまだ明かされていない）",
+    );
   });
 });
 
@@ -834,17 +974,19 @@ describe("chronicle reveal marks in snapshots", () => {
   it("marks included event rows, leaves causal titles alone, and omits unavailable scenes", () => {
     const snap = deriveChronicleSnapshot(
       input({
-        anchor: stamped("a0", null),
+        anchor: stamped("a0", 0),
         events: [
           mkEvent({
             id: "recent",
             title: "過去の出来事",
+            startTime: 0,
             ordinal: "a0",
             revealSceneId: "s2",
           }),
           mkEvent({
             id: "background",
             title: "本文未描写",
+            startTime: 0,
             ordinal: "a0",
             kind: "birth",
             revealSceneId: "archived",
@@ -852,6 +994,7 @@ describe("chronicle reveal marks in snapshots", () => {
           mkEvent({
             id: "future",
             title: "未来の出来事",
+            startTime: 1,
             ordinal: "a1",
             revealSceneId: "s2",
           }),
@@ -880,7 +1023,12 @@ describe("chronicle reveal marks in snapshots", () => {
     });
     expect(Object.hasOwn(snap.offpage[0] ?? {}, "revealScene")).toBe(false);
     expect(snap.unresolvedCausal).toEqual([
-      { causeTitle: "過去の出来事", effectTitle: "未来の出来事" },
+      {
+        causeTitle: "過去の出来事",
+        effectTitle: "未来の出来事",
+        causePrecision: "exact",
+        effectPrecision: "exact",
+      },
     ]);
     expect(JSON.stringify(snap.offpage[0])).not.toContain("revealScene");
   });
@@ -897,7 +1045,14 @@ describe("pickSnapshotCharacters", () => {
         precision: null,
         source: "none",
       },
-      events: [mkEvent({ id: "e1", primaryCodexId: "c1", ordinal: "a1" })],
+      events: [
+        mkEvent({
+          id: "e1",
+          primaryCodexId: "c1",
+          startTime: 1,
+          ordinal: "a1",
+        }),
+      ],
       participants: [],
       sceneCodexIds: ["sceneChar"],
     });
@@ -906,10 +1061,20 @@ describe("pickSnapshotCharacters", () => {
 
   it("sceneCodexIds ＋ 直近イベントの primary/participant を集める", () => {
     const ids = pickSnapshotCharacters({
-      anchor: stamped("a5", null),
+      anchor: stamped("a5", 5),
       events: [
-        mkEvent({ id: "e1", primaryCodexId: "c1", ordinal: "a2" }),
-        mkEvent({ id: "future", primaryCodexId: "cFuture", ordinal: "a9" }),
+        mkEvent({
+          id: "e1",
+          primaryCodexId: "c1",
+          startTime: 2,
+          ordinal: "a2",
+        }),
+        mkEvent({
+          id: "future",
+          primaryCodexId: "cFuture",
+          startTime: 9,
+          ordinal: "a9",
+        }),
       ],
       participants: [{ eventId: "e1", codexEntryId: "c2", role: null }],
       sceneCodexIds: ["sceneChar"],
@@ -920,8 +1085,15 @@ describe("pickSnapshotCharacters", () => {
 
   it("@mention された人物は recent/scene に居なくても必ず含める", () => {
     const ids = pickSnapshotCharacters({
-      anchor: stamped("a5", null),
-      events: [mkEvent({ id: "e1", primaryCodexId: "c1", ordinal: "a2" })],
+      anchor: stamped("a5", 5),
+      events: [
+        mkEvent({
+          id: "e1",
+          primaryCodexId: "c1",
+          startTime: 2,
+          ordinal: "a2",
+        }),
+      ],
       participants: [],
       sceneCodexIds: [],
       mentionedCodexIds: ["mentioned"],
@@ -931,7 +1103,7 @@ describe("pickSnapshotCharacters", () => {
 
   it("@mention 人物は cap が一杯でも優先的に残る（最優先 seed）", () => {
     const ids = pickSnapshotCharacters({
-      anchor: stamped("a5", null),
+      anchor: stamped("a5", 5),
       events: [],
       participants: [],
       sceneCodexIds: ["s1", "s2"],
@@ -966,7 +1138,7 @@ describe("assembleChronicleSnapshotText", () => {
     const text = assembleChronicleSnapshotText({
       sceneId: "s1",
       events: [
-        mkEvent({ id: "e1", title: "戴冠式", ordinal: "a3" }),
+        mkEvent({ id: "e1", title: "戴冠式", startTime: 3, ordinal: "a3" }),
         mkEvent({
           id: "b",
           kind: "birth",
@@ -990,10 +1162,11 @@ describe("assembleChronicleSnapshotText", () => {
 
   it("secret イベントは reveal シーンの位置に関係なく出る", () => {
     const events = [
-      mkEvent({ id: "e1", title: "戴冠式", ordinal: "a2" }),
+      mkEvent({ id: "e1", title: "戴冠式", startTime: 2, ordinal: "a2" }),
       mkEvent({
         id: "sec",
         title: "毒殺の真相",
+        startTime: 1,
         ordinal: "a1",
         secret: true,
         revealSceneId: "s2",
@@ -1036,18 +1209,16 @@ describe("assembleChronicleSnapshotText", () => {
     expect(text).toBeUndefined();
   });
 
-  it("scene-own: sceneChronicle の暦日付で source=scene の時刻行(formattedDate)を出す", () => {
-    const sceneChronicle = new Map<string, SceneChronicle>([
-      [
-        "s1",
-        {
-          startTime: 96212,
-          startMinute: 540,
-          startGranularity: "time",
-          precision: "exact",
-        },
-      ],
-    ]);
+  it("scene-own: 場面の日付で source=scene の時刻行(formattedDate)を出す", () => {
+    const nodes = [
+      {
+        id: "s1",
+        chronicleStartTime: 96212,
+        chronicleStartMinute: 540,
+        chronicleStartGranularity: "time",
+        chroniclePrecision: "exact",
+      },
+    ];
     const text = assembleChronicleSnapshotText({
       sceneId: "s1",
       events: [
@@ -1059,25 +1230,23 @@ describe("assembleChronicleSnapshotText", () => {
       calendar: CAL_MONTHS,
       readingOrder: new Map([["s1", 0]]),
       codexNames: new Map(),
-      sceneChronicle,
+      nodes,
       lang: "ja",
     });
     expect(text).toContain("作中時刻: 1267年4月3日 09:00");
-    expect(text).toContain("邂逅"); // synthetic ordinal 経由で recent も出る
+    expect(text).toContain("邂逅"); // 場面の日付より前の出来事
   });
 
   it("events 0件でも現在シーンに暦日付があれば注入する（source=scene）", () => {
-    const sceneChronicle = new Map<string, SceneChronicle>([
-      [
-        "s1",
-        {
-          startTime: 96212,
-          startMinute: null,
-          startGranularity: "day",
-          precision: "exact",
-        },
-      ],
-    ]);
+    const nodes = [
+      {
+        id: "s1",
+        chronicleStartTime: 96212,
+        chronicleStartMinute: null,
+        chronicleStartGranularity: "day",
+        chroniclePrecision: "exact",
+      },
+    ];
     const text = assembleChronicleSnapshotText({
       sceneId: "s1",
       events: [],
@@ -1087,28 +1256,25 @@ describe("assembleChronicleSnapshotText", () => {
       calendar: CAL_MONTHS,
       readingOrder: new Map([["s1", 0]]),
       codexNames: new Map(),
-      sceneChronicle,
+      nodes,
       lang: "ja",
     });
     expect(text).toBeDefined();
     expect(text).toContain("作中時刻: 1267年4月3日");
   });
 
-  it("暦日付が全 event より前のシーン: 時刻行は出るが未来の出来事は背景に漏らさない（source=scene, synthetic ordinal=''）", () => {
-    // scene の startTime(0) が全 event(>=96000)より前 → syntheticOrdinal="".
+  it("暦日付が全 event より前のシーン: 時刻行は出るが未来の出来事は背景に漏らさない（source=scene）", () => {
     // recent/offpage/causal は空（まだ何も起きていない＝正しい）が、時刻行は注入される。
     // 未来の出来事を offpage に出すと「既に起きた背景」と誤読させる spoiler になるため出さない。
-    const sceneChronicle = new Map<string, SceneChronicle>([
-      [
-        "s1",
-        {
-          startTime: 0,
-          startMinute: null,
-          startGranularity: "day",
-          precision: "exact",
-        },
-      ],
-    ]);
+    const nodes = [
+      {
+        id: "s1",
+        chronicleStartTime: 0,
+        chronicleStartMinute: null,
+        chronicleStartGranularity: "day",
+        chroniclePrecision: "exact",
+      },
+    ];
     const text = assembleChronicleSnapshotText({
       sceneId: "s1",
       events: [
@@ -1131,7 +1297,7 @@ describe("assembleChronicleSnapshotText", () => {
       calendar: CAL_MONTHS,
       readingOrder: new Map([["s1", 0]]),
       codexNames: new Map(),
-      sceneChronicle,
+      nodes,
       lang: "ja",
     });
     expect(text).toBeDefined();

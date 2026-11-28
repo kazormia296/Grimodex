@@ -63,6 +63,7 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { DEFAULT_AI_SETTINGS } from "@/features/chat/types";
 import { generateBeatAlternative } from "./generateBeatAlternative";
+import { seedWritableProject } from "@/test-utils/writableProject";
 
 function emit(event: string, payload: unknown) {
   listeners.get(event)?.({
@@ -155,6 +156,7 @@ describe("generateBeatAlternative", () => {
     });
     useCodexStore.setState({ entries: [] });
     useAiSettingsStore.setState({ settings: null });
+    seedWritableProject();
   });
 
   it("ストリーム完了後に snippetStore.create が呼ばれる", async () => {

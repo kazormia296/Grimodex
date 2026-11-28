@@ -3751,7 +3751,6 @@ impl Database {
         // default to a populated table, so rebuild the SCHEMA 21 parent while
         // preserving its child events and deterministic transaction identity.
         Self::migrate_narrative_change_transactions_v22(&conn)?;
-        Self::backfill_narrative_change_object_heads(&conn)?;
 
         // SCHEMA_VERSION 23: Gate C2-01 Semantic Build Graph persistence.
         // ADR 005 fixes the contract this schema implements: Dependency Edge,
@@ -4396,24 +4395,6 @@ impl Database {
         Self::repair_narrative_v2_monotonicity_trigger(&conn)?;
         Self::repair_timelapse_creation_baseline_triggers(&conn)?;
 
-        // Epoch markers used to advance the durable Project object head with
-        // their synthetic reset state; the writer no longer does, and any
-        // head still pointing at a marker event is deleted so the next real
-        // Project mutation chains from genuine domain state instead of
-        // reporting a discontinuity against the sentinel.
-        conn.execute(
-            "DELETE FROM narrative_change_object_heads
-              WHERE EXISTS (
-                    SELECT 1
-                      FROM narrative_change_events e
-                     WHERE e.project_id = narrative_change_object_heads.project_id
-                       AND e.id = narrative_change_object_heads.event_id
-                       AND json_extract(e.object_key_json, '$.kind') = 'project'
-                       AND json_extract(e.structural_impact_json, '$.event')
-                               IN ('project-restored', 'semantic-epoch-reset'))",
-            [],
-        )?;
-
         // New Run columns: run_kind distinguishes cursor-bound Runs (the
         // Freshness evaluator) from non-cursor-bound Runs (interpretation,
         // Semantic Index rebuild, manual rebuild, backfill); the Cursor
@@ -4646,6 +4627,26 @@ impl Database {
         // `user_version` remains unchanged until the checkpoint below.
         conn.execute_batch("SAVEPOINT narrative_c2_schema_32")?;
         let c2zb_result = (|| -> anyhow::Result<()> {
+            // Keep reconstructed heads and their migration-specific pruning atomic.
+            Self::backfill_narrative_change_object_heads(&conn)?;
+            // Epoch markers used to advance the durable Project object head with
+            // their synthetic reset state; the writer no longer does, and any
+            // head still pointing at a marker event is deleted so the next real
+            // Project mutation chains from genuine domain state instead of
+            // reporting a discontinuity against the sentinel.
+            conn.execute(
+                "DELETE FROM narrative_change_object_heads
+                  WHERE EXISTS (
+                        SELECT 1
+                          FROM narrative_change_events e
+                         WHERE e.project_id = narrative_change_object_heads.project_id
+                           AND e.id = narrative_change_object_heads.event_id
+                           AND json_extract(e.object_key_json, '$.kind') = 'project'
+                           AND json_extract(e.structural_impact_json, '$.event')
+                                   IN ('project-restored', 'semantic-epoch-reset'))",
+                [],
+            )?;
+
             // A1 owns the SCHEMA 36 boundary. A schema-35 user_version is the
             // durable marker for the ordinary pre-A1 upgrade path; current /
             // post-A1 workspaces retain fail-closed missing-row semantics.
@@ -4856,6 +4857,97 @@ impl Database {
                     BEFORE UPDATE ON identity_correction_applications BEGIN
                         SELECT RAISE(ABORT, 'ERM_IDENTITY_CORRECTION_APPLICATION_IMMUTABLE');
                     END;",
+            )?;
+            // The marker covers the entire workspace, including an empty or new one.
+            if !grimodex_core::workspace_schema::has_chronicle_date_migration_marker(&conn)? {
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS chronicle_date_migration_events (
+                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        event_id TEXT NOT NULL,
+                        recorded_at TEXT NOT NULL,
+                        PRIMARY KEY(project_id, event_id)
+                    );",
+                )?;
+                let report = crate::chronicle_date_migration::fill_missing_chronicle_dates(&conn)?;
+                crate::chronicle_date_migration::record_date_changes(&conn, &report)?;
+                conn.execute(
+                    "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+                     VALUES (?1, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                    [grimodex_core::workspace_schema::CHRONICLE_DATE_MIGRATION_ID],
+                )?;
+            }
+            crate::chronicle_date_migration::prune_stale_heads(&conn)?;
+            // SCHEMA 50 / DR-A3-1: replay the idempotent DDL here for a
+            // current-version workspace with missing AgentRun schema objects too.
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS agent_runs (
+                        run_id TEXT PRIMARY KEY NOT NULL,
+                        root_run_id TEXT NOT NULL,
+                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        chat_session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                        turn_id TEXT NOT NULL,
+                        route TEXT NOT NULL,
+                        origin_user_message_id TEXT NOT NULL,
+                        model_provider_id TEXT NOT NULL,
+                        model_id TEXT NOT NULL,
+                        endpoint_hash TEXT NOT NULL,
+                        execution_owner TEXT NOT NULL,
+                        status TEXT NOT NULL CHECK(status IN ('running','waiting_user','waiting_approval','finalizing','interrupted','completed','failed','cancelled','discarded')),
+                        terminal_reason TEXT,
+                        interrupt_reason TEXT,
+                        resumable INTEGER NOT NULL DEFAULT 1 CHECK(resumable IN (0,1)),
+                        not_resumable_reason TEXT,
+                        version INTEGER NOT NULL DEFAULT 0 CHECK(version >= 0),
+                        resume_block_detail TEXT,
+                        resume_blocked_at TEXT,
+                        finalizing_target_status TEXT,
+                        finalizing_target_reason TEXT,
+                        origin_assistant_message_id TEXT,
+                        activity_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        audit_execution_ids TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(audit_execution_ids) AND json_type(audit_execution_ids) = 'array'),
+                        continuation_of TEXT,
+                        task_id TEXT,
+                        checkpoint TEXT,
+                        checkpoint_step INTEGER NOT NULL DEFAULT 0 CHECK(checkpoint_step >= 0),
+                        checkpoint_digest TEXT,
+                        tool_call_ledger TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(tool_call_ledger) AND json_type(tool_call_ledger) = 'array'),
+                        CHECK ((resumable = 1 AND not_resumable_reason IS NULL) OR
+                               (resumable = 0 AND not_resumable_reason IS NOT NULL)),
+                        CHECK (
+                            (status = 'completed' AND terminal_reason IS NOT NULL AND terminal_reason IN ('completed','limit_tokens','output_truncated','context_window_exceeded')) OR
+                            (status = 'failed' AND terminal_reason IS NOT NULL AND terminal_reason IN ('provider_error','record_failed','timeout')) OR
+                            (status = 'cancelled' AND terminal_reason IS NOT NULL AND terminal_reason IN ('user_stop','policy_revoked','license_restricted','permission_denied','authority_lost','resume_unsupported')) OR
+                            (status = 'discarded' AND terminal_reason IS NOT NULL AND terminal_reason IN ('discarded_by_author','superseded_by_new_turn')) OR
+                            (status NOT IN ('completed','failed','cancelled','discarded') AND terminal_reason IS NULL)
+                        ),
+                        CHECK (status != 'finalizing' OR (finalizing_target_status IS NOT NULL AND finalizing_target_reason IS NOT NULL AND origin_assistant_message_id IS NOT NULL)),
+                        CHECK ((finalizing_target_status IS NULL) = (finalizing_target_reason IS NULL))
+                    );
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_runs_one_active_session ON agent_runs(chat_session_id)
+                        WHERE status IN ('running','waiting_user','waiting_approval','finalizing');
+                    CREATE INDEX IF NOT EXISTS idx_agent_runs_owner_status ON agent_runs(execution_owner,status);
+                    CREATE INDEX IF NOT EXISTS idx_agent_runs_chat_session_id ON agent_runs(chat_session_id);
+                    CREATE INDEX IF NOT EXISTS idx_agent_runs_project_id ON agent_runs(project_id);
+                    CREATE TABLE IF NOT EXISTS agent_run_interactions (
+                        interaction_id TEXT PRIMARY KEY NOT NULL,
+                        run_id TEXT NOT NULL REFERENCES agent_runs(run_id) ON DELETE CASCADE,
+                        root_run_id TEXT NOT NULL,
+                        chat_session_id TEXT NOT NULL,
+                        kind TEXT NOT NULL,
+                        tool_call_id TEXT NOT NULL,
+                        tool_name TEXT NOT NULL,
+                        args_digest TEXT NOT NULL,
+                        request TEXT NOT NULL,
+                        resolution TEXT,
+                        target_basis TEXT CHECK(target_basis IS NULL OR (json_valid(target_basis) AND json_type(target_basis)='array')),
+                        status TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 0 CHECK(version >= 0)
+                    );
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_run_interactions_one_pending_root
+                        ON agent_run_interactions(root_run_id) WHERE status = 'pending';
+                    CREATE INDEX IF NOT EXISTS idx_agent_run_interactions_run_id ON agent_run_interactions(run_id);",
             )?;
             // SCHEMA 46 / DR-DBC-3: the write clock, its lineage row and the
             // per-table triggers. Idempotent and last, so every table the

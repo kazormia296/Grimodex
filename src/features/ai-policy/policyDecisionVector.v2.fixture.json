@@ -1,0 +1,422 @@
+[
+  {
+    "label": "full",
+    "state": "valid",
+    "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": true,
+      "analysis": true,
+      "structureWrite": true,
+      "knowledgeWrite": true
+    }
+  },
+  {
+    "label": "assist-off",
+    "state": "valid",
+    "raw": "{\"preset\":\"assist-off\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": true,
+      "knowledgeWrite": true
+    }
+  },
+  {
+    "label": "review-only",
+    "state": "valid",
+    "raw": "{\"preset\":\"review-only\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":true,\"structureWrite\":false,\"knowledgeWrite\":false}}",
+    "expected": {
+      "chat": false,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "off",
+    "state": "valid",
+    "raw": "{\"preset\":\"off\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":false,\"structureWrite\":false,\"knowledgeWrite\":false}}",
+    "expected": {
+      "chat": false,
+      "bodyWrite": false,
+      "analysis": false,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "custom",
+    "state": "valid",
+    "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":false}}",
+    "expected": {
+      "chat": false,
+      "bodyWrite": true,
+      "analysis": false,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "named-preset-omits-optional-toggles",
+    "state": "valid",
+    "raw": "{\"preset\":\"assist-off\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":true}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": true,
+      "knowledgeWrite": true
+    }
+  },
+  {
+    "label": "custom-omits-optional-toggles",
+    "state": "valid",
+    "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": true,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "empty-string",
+    "state": "invalid",
+    "raw": "",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "malformed-json",
+    "state": "invalid",
+    "raw": "not-json",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "non-object",
+    "state": "invalid",
+    "raw": "[]",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "unknown-preset",
+    "state": "invalid",
+    "raw": "{\"preset\":\"bogus\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "missing-preset",
+    "state": "invalid",
+    "raw": "{\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "preset-wrong-type",
+    "state": "invalid",
+    "raw": "{\"preset\":1,\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "missing-toggles",
+    "state": "invalid",
+    "raw": "{\"preset\":\"full\"}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "toggles-not-object",
+    "state": "invalid",
+    "raw": "{\"preset\":\"full\",\"toggles\":null}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "required-chat-missing",
+    "state": "invalid",
+    "raw": "{\"preset\":\"full\",\"toggles\":{\"bodyWrite\":true,\"analysis\":true}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "required-bodyWrite-wrong-type",
+    "state": "invalid",
+    "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":\"true\",\"analysis\":true}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "required-analysis-null",
+    "state": "invalid",
+    "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":null}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": false,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "structureWrite-null",
+    "state": "invalid",
+    "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":null,\"knowledgeWrite\":true}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "knowledgeWrite-null",
+    "state": "invalid",
+    "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":null}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "structureWrite-wrong-type",
+    "state": "invalid",
+    "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":\"true\",\"knowledgeWrite\":true}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "knowledgeWrite-wrong-type",
+    "state": "invalid",
+    "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":1}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "sql-null",
+    "state": "missing",
+    "raw": null,
+    "expected": {
+      "chat": true,
+      "bodyWrite": true,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "whitespace-only",
+    "state": "invalid",
+    "raw": "   ",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "leading-bom",
+    "state": "invalid",
+    "raw": "\ufeff{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "duplicate-key-last-wins",
+    "state": "valid",
+    "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true,\"bodyWrite\":false}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": true,
+      "knowledgeWrite": true
+    }
+  },
+  {
+    "label": "stored-first-default-full-three-axes",
+    "state": "valid",
+    "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": true,
+      "analysis": true,
+      "structureWrite": true,
+      "knowledgeWrite": true
+    }
+  },
+  {
+    "label": "stored-tutorial-fallback-off-three-axes",
+    "state": "valid",
+    "raw": "{\"preset\":\"off\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":false}}",
+    "expected": {
+      "chat": false,
+      "bodyWrite": false,
+      "analysis": false,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "stored-current-new-project-default",
+    "state": "valid",
+    "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":false,\"knowledgeWrite\":false}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": true,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "invalid-keeps-chat-off-when-optional-axis-null",
+    "state": "invalid",
+    "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":null}}",
+    "expected": {
+      "chat": false,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "invalid-keeps-analysis-off-when-required-wrong-type",
+    "state": "invalid",
+    "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":\"true\",\"analysis\":false}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": false,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "invalid-required-values-read-as-false",
+    "state": "invalid",
+    "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":0,\"bodyWrite\":true,\"analysis\":\"\"}}",
+    "expected": {
+      "chat": false,
+      "bodyWrite": false,
+      "analysis": false,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "invalid-required-values-read-as-true",
+    "state": "invalid",
+    "raw": "{\"preset\":\"off\",\"toggles\":{\"chat\":\"false\",\"bodyWrite\":false,\"analysis\":[]}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "invalid-missing-required-key-ignores-false",
+    "state": "invalid",
+    "raw": "{\"preset\":\"off\",\"toggles\":{\"chat\":false,\"analysis\":false}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "invalid-unknown-preset-ignores-false",
+    "state": "invalid",
+    "raw": "{\"preset\":\"bogus\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":false}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  }
+]

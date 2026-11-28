@@ -47,6 +47,7 @@ import {
   type ChatIrOutcomeShape,
   type ChatIrToolContentResult,
 } from "./chatIrToolResult";
+import { toolFailureScreenText } from "./toolFailureScreenText";
 import {
   agentCreateCodexEntry,
   agentUpdateCodexEntry,
@@ -551,7 +552,7 @@ async function createCodexEntryTool(
     return {
       name: "create_codex_entry",
       content: null,
-      summary: msg,
+      summary: toolFailureScreenText(e, msg),
       tokensUsed: 0,
       error: msg,
     };
@@ -624,7 +625,7 @@ async function updateCodexEntryTool(
     return {
       name: "update_codex_entry",
       content: null,
-      summary: msg,
+      summary: toolFailureScreenText(e, msg),
       tokensUsed: 0,
       error: msg,
     };
@@ -926,7 +927,7 @@ async function createSnippetTool(
     return {
       name: "create_snippet",
       content: null,
-      summary: msg,
+      summary: toolFailureScreenText(e, msg),
       tokensUsed: 0,
       error: msg,
     };
@@ -981,7 +982,7 @@ async function applyAiTreePlanTool(
     return {
       name: "apply_ai_tree_plan",
       content: null,
-      summary: msg,
+      summary: toolFailureScreenText(e, msg),
       tokensUsed: 0,
       error: msg,
     };
@@ -1044,7 +1045,7 @@ async function proposeSceneBodyTool(
     return {
       name: "propose_scene_body",
       content: null,
-      summary: msg,
+      summary: toolFailureScreenText(e, msg),
       tokensUsed: 0,
       error: msg,
     };
@@ -1115,7 +1116,7 @@ async function createForeshadowTool(
     return {
       name: "create_foreshadow",
       content: null,
-      summary: msg,
+      summary: toolFailureScreenText(e, msg),
       tokensUsed: 0,
       error: msg,
     };
@@ -1218,7 +1219,7 @@ async function updateForeshadowTool(
     return {
       name: "update_foreshadow",
       content: null,
-      summary: msg,
+      summary: toolFailureScreenText(e, msg),
       tokensUsed: 0,
       error: msg,
     };

@@ -1022,7 +1022,7 @@ pub fn narrative_extraction_apply_commit_with_control(
             )?;
             let validation_commit_map =
                 build_validation_commit_map(&sealed_plan.entity_bindings, &sealed_plan.operations)?;
-            validate_operation_field_authority(
+            let date_repairs = validate_operation_field_authority(
                 conn,
                 &sealed_plan.project_id,
                 &applications,
@@ -1117,7 +1117,9 @@ pub fn narrative_extraction_apply_commit_with_control(
             let mut after_snapshots = Vec::new();
             let mut scene_scope_refresh_events = Vec::new();
             let mut application_ids = Vec::with_capacity(payload.applications.len());
-            let mut system_dated_operations = BTreeSet::new();
+            let repair_ids = date_repairs.values().map(String::as_str).collect();
+            let repairs = crate::chronicle_date_migration::update_date_repairs(conn, &payload.project_id, &repair_ids)?;
+            let mut system_dated_operations = HashMap::new();
             // Kept so each Contribution can name the operation that produced
             // it (SCHEMA 29). 1:1 with `payload.operations` by construction,
             // the same way `application_ids` is.
@@ -1149,7 +1151,7 @@ pub fn narrative_extraction_apply_commit_with_control(
                                 timestamp,
                             })?;
                         if assigned_date {
-                            system_dated_operations.insert(index);
+                            system_dated_operations.insert(index, super::TEMPORAL_FIELD_PATHS);
                         }
                         (
                             "event",
@@ -1388,11 +1390,16 @@ pub fn narrative_extraction_apply_commit_with_control(
                     }
                     OP_KIND_EVENT_METADATA_PATCH => {
                         let event_payload = parse_event_metadata_patch_payload(&op.payload)?;
+                        let repair = date_repairs.get(&index).map(|id| repairs[id]);
+                        if let Some(repair) = repair {
+                            system_dated_operations.insert(index, repair.field_paths());
+                        }
                         let result = apply_event_metadata_patch_in_tx(
                             conn,
                             &payload.project_id,
                             &event_payload,
                             &now,
+                            repair,
                         )?;
                         (
                             "temporal_event_chronicle",

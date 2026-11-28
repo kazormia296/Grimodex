@@ -12,5 +12,6 @@ export default defineConfig({
     name: "electron",
     environment: "node",
     include: ["electron/{main,preload,shared}/**/*.test.ts"],
+    setupFiles: ["./electron/vitest.setup.ts"],
   },
 });

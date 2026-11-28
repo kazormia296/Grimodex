@@ -8796,9 +8796,8 @@ mod tests {
         }
 
         #[test]
-        fn schema_46_finalize_does_not_release_v45_dead_letters() {
-            // The marker-only 45 -> 46 step (the clock is already installed) and
-            // the full pass over a 45 workspace without a clock both leave the
+        fn previous_marker_finalize_does_not_release_v45_dead_letters() {
+            // Both marker-only finalization and a full pass without the clock leave the
             // dead-letters a 45 build created: the release is the 45 migration's.
             let db = dead_lettered_by_contention();
             let before = terminal_records(&db);
@@ -8810,7 +8809,7 @@ mod tests {
             assert_eq!(reservation(&db), reserved);
             assert!(reserved.0.is_some());
 
-            // 45 without the clock: the full migration installs it and stamps 47.
+            // A previous schema without the clock must take the full migration path.
             let db = dead_lettered_by_contention();
             let before = terminal_records(&db);
             let reserved = reservation(&db);
@@ -8832,8 +8831,8 @@ mod tests {
                 ))?;
                 Ok(())
             })
-            .expect("make the workspace a 45 without the clock");
-            db.migrate().expect("full pass from 45");
+            .expect("remove the clock at the previous marker");
+            db.migrate().expect("full pass from the previous marker");
             assert_eq!(user_version(&db), grimodex_core::SCHEMA_VERSION);
             assert!(db
                 .with_conn(grimodex_core::write_clock::has_v46_write_clock)

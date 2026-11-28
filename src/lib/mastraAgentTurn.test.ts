@@ -272,8 +272,8 @@ describe("cancelMastraAgentTurn", () => {
   });
 });
 
-describe("nothing calls the wrapper yet (the engine branch is MP-4)", () => {
-  it("no product source imports it", async () => {
+describe("the MP-4 renderer engine owns the wrapper entry", () => {
+  it("loads the wrapper from the engine module only", async () => {
     const { readdirSync, readFileSync } = await import("node:fs");
     const { join, resolve } = await import("node:path");
     const root = resolve(__dirname, "..");
@@ -297,7 +297,7 @@ describe("nothing calls the wrapper yet (the engine branch is MP-4)", () => {
       }
     };
     walk(root);
-    expect(importers).toEqual([]);
+    expect(importers).toEqual(["application/chat/chatTurnMastraEngine.ts"]);
   });
 });
 

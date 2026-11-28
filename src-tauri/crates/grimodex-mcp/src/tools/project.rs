@@ -105,7 +105,9 @@ mod tests {
             INSERT INTO projects (id, title) VALUES ('p2', 'Novel B');",
         )
         .unwrap();
-        let policy = grimodex_core::policy::load_policy(&conn, "p1").unwrap();
+        let policy = grimodex_core::policy::load_policy(&conn, "p1")
+            .unwrap()
+            .toggles;
         GrimodexServer::new(
             conn,
             "p1".to_string(),
