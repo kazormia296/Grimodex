@@ -139,6 +139,8 @@ const flush = async (): Promise<void> => {
 
 const PROJECT_ID = "project-1";
 const CHAT_POLICY_SQL = "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1";
+const FULL_AI_POLICY_JSON =
+  '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true,"knowledgeWrite":true}}';
 
 function startRequest(
   turnId: string,
@@ -322,7 +324,7 @@ function harness(
         if (policyDbExecute) return policyDbExecute(...args);
         return JSON.stringify({
           __grimodexDbResultKind: "read",
-          rows: [{ ai_policy: null }],
+          rows: [{ ai_policy: FULL_AI_POLICY_JSON }],
         });
       }
       if (overrides.readDbExecute) return overrides.readDbExecute(...args);
@@ -5347,7 +5349,21 @@ describe("MP-5 main-owned question holds", () => {
           policyDbExecute: async () => {
             policyChecks += 1;
             return readAnswer([
-              { ai_policy: policyChecks === 3 ? "off" : null },
+              {
+                ai_policy:
+                  policyChecks === 3
+                    ? JSON.stringify({
+                        preset: "off",
+                        toggles: {
+                          chat: false,
+                          bodyWrite: false,
+                          analysis: false,
+                          structureWrite: false,
+                          knowledgeWrite: false,
+                        },
+                      })
+                    : null,
+              },
             ]);
           },
         },
@@ -5476,10 +5492,7 @@ describe("MP-5 main-owned question holds", () => {
         }),
       },
       policyDbExecute: async () =>
-        JSON.stringify({
-          __grimodexDbResultKind: "read",
-          rows: [{ ai_policy: null }],
-        }),
+        readAnswer([{ ai_policy: FULL_AI_POLICY_JSON }]),
       issueWriteCapabilities: (senderId, args, response, backend, identity) =>
         issueAgentAuthorityCapabilitiesForSender(
           senderId,
@@ -5575,10 +5588,7 @@ describe("MP-5 main-owned question holds", () => {
         }),
       },
       policyDbExecute: async () =>
-        JSON.stringify({
-          __grimodexDbResultKind: "read",
-          rows: [{ ai_policy: null }],
-        }),
+        readAnswer([{ ai_policy: FULL_AI_POLICY_JSON }]),
       issueWriteCapabilities: (senderId, args, response, backend, identity) =>
         issueAgentAuthorityCapabilitiesForSender(
           senderId,
@@ -5662,10 +5672,7 @@ describe("MP-5 main-owned question holds", () => {
       responses: [writeResponse],
       nativeWriterMethods: { agentEventCreate: eventWriter },
       policyDbExecute: async () =>
-        JSON.stringify({
-          __grimodexDbResultKind: "read",
-          rows: [{ ai_policy: null }],
-        }),
+        readAnswer([{ ai_policy: FULL_AI_POLICY_JSON }]),
       issueWriteCapabilities: (senderId, args, response, backend, identity) =>
         issueAgentAuthorityCapabilitiesForSender(
           senderId,
@@ -5838,4 +5845,130 @@ describe("MP-5 main-owned question holds", () => {
       });
     },
   );
+});
+
+describe("MP-6 Main bindings for the tree plan and staged scene body", () => {
+  async function startWrite(
+    name: "apply_ai_tree_plan" | "propose_scene_body",
+    args: Record<string, unknown>,
+    sendWriteCompleted: (senderId: number, payload: unknown) => boolean,
+  ) {
+    const response: AgentWireResponse = {
+      blocks: [{ type: "tool_use", id: `call-${name}`, name, input: args }],
+      stopReason: "tool_use",
+    };
+    const h = harness({
+      responses: [response, { blocks: [], stopReason: "end_turn" }],
+      issueWriteCapabilities: (senderId, request, result, backend, identity) =>
+        issueAgentAuthorityCapabilitiesForSender(
+          senderId,
+          request as never,
+          result,
+          backend,
+          identity as never,
+        ),
+      agentAuthorityRequestId,
+      bindWriteCapability: consumeAndBindAgentAuthorityCapability,
+      sendWriteCompleted,
+      runTurn: async (input) => {
+        const first = await sendPreparedRequest(
+          input,
+          auditRequestFor(input),
+          0,
+        );
+        const tool = first.response.blocks[0];
+        if (tool?.type !== "tool_use") throw new Error("write tool missing");
+        const binding = input.bindings?.find((item) => item.name === name);
+        if (!binding) throw new Error("write binding missing");
+        const result = await binding.execute(tool.input, {
+          toolCallId: tool.id,
+          signal: input.signal,
+        });
+        input.onToolResult?.({
+          toolCallId: tool.id,
+          toolName: name,
+          tokens: result.tokensUsed,
+          summary: result.summary,
+        });
+        await sendPreparedRequest(input, auditRequestFor(input), 1);
+      },
+    });
+    const { context } = h.newContext();
+    const started = h.owner.start(
+      context,
+      startRequest(TURN_A, { tools: [name] as never }),
+    );
+    await vi.waitFor(() => expect(questionDeliveries).toHaveLength(1));
+    return {
+      h,
+      context,
+      started,
+      question: questionDeliveries[0]?.[2] as MastraAgentTurnQuestionPayload,
+    };
+  }
+
+  it("routes propose_scene_body to the renderer staging handler without completing a body write", async () => {
+    const sendWriteCompleted = vi.fn(() => true);
+    const { h, context, started, question } = await startWrite(
+      "propose_scene_body",
+      { sceneId: "scene-1", text: "Proposal", mode: "append" },
+      sendWriteCompleted,
+    );
+    expect(question).toMatchObject({
+      toolName: "propose_scene_body",
+      args: { sceneId: "scene-1", text: "Proposal", mode: "append" },
+      authorization: { capability: expect.any(String) },
+    });
+    await h.owner.answer(context, {
+      requestId: question.requestId,
+      result: {
+        toolCallId: question.toolCallId,
+        name: "propose_scene_body",
+        content: { stagingId: "stage-1", sceneId: "scene-1", status: "proposed" },
+        summary: "staged",
+        tokensUsed: 1,
+      },
+    });
+    const result = completed(await started);
+    expect(result.loopResult?.toolCallRecords[0]).toMatchObject({
+      name: "propose_scene_body",
+      content: { stagingId: "stage-1", status: "proposed" },
+    });
+    expect(sendWriteCompleted).not.toHaveBeenCalled();
+  });
+
+  it("records the native tree plan undo id and emits the identifier-only completion", async () => {
+    const sendWriteCompleted = vi.fn(() => true);
+    const { h, context, started, question } = await startWrite(
+      "apply_ai_tree_plan",
+      { kind: "scaffold", ops: [{ op: "create" }] },
+      sendWriteCompleted,
+    );
+    await h.owner.answer(context, {
+      requestId: question.requestId,
+      result: {
+        toolCallId: question.toolCallId,
+        name: "apply_ai_tree_plan",
+        content: {
+          createdIds: ["scene-1"],
+          movedIds: [],
+          renamedIds: [],
+          undoId: "undo-tree-1",
+        },
+        summary: "Applied tree plan",
+        tokensUsed: 4,
+        undoId: "undo-tree-1",
+      },
+    });
+    const result = completed(await started);
+    expect(result.loopResult?.toolCallRecords[0]).toMatchObject({
+      name: "apply_ai_tree_plan",
+      undoId: "undo-tree-1",
+      content: { createdIds: ["scene-1"], undoId: "undo-tree-1" },
+    });
+    expect(sendWriteCompleted).toHaveBeenCalledExactlyOnceWith(context.sender.id, {
+      targetId: "scene-1",
+      undoId: "undo-tree-1",
+    });
+  });
 });

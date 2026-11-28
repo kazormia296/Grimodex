@@ -1,5 +1,7 @@
 import { seasonOf, type ChronicleCalendar } from "./chronicleTime";
 import { detectSeasons } from "./seasonDetect";
+import { hasChronicleDate } from "@/../electron/shared/readDomain/features/chronicle/chronicleSpan";
+import type { EventRow } from "@/../electron/shared/readDomain/features/chronicle/eventRows";
 
 export interface SeasonConflict {
   eventId: string;
@@ -11,7 +13,10 @@ export interface SeasonConflict {
 }
 
 export interface SeasonCheckInput {
-  events: { id: string; startTime: number | null }[];
+  events: Pick<
+    EventRow,
+    "id" | "startTime" | "startGranularity" | "precision"
+  >[];
   calendar: ChronicleCalendar;
   /** scene↔event リンク。 */
   links: { sceneId: string; eventId: string }[];
@@ -23,7 +28,7 @@ export interface SeasonCheckInput {
 /**
  * 「出来事の時刻が示す季節」と「参照シーン本文が示す季節」の矛盾を検出する純関数。
  * 例: 冬に配置した出来事のシーンに「蝉」が出てくる → 矛盾。
- * startTime 無し / 暦未設定 / シーン本文未取得 のものはスキップ（false-positive を出さない）。
+ * unknown / 日時なし / 暦未設定 / シーン本文未取得 のものはスキップ（false-positive を出さない）。
  * 決定性: 乱数/時刻なし。
  */
 export function findSeasonConflicts(input: SeasonCheckInput): SeasonConflict[] {
@@ -33,8 +38,16 @@ export function findSeasonConflicts(input: SeasonCheckInput): SeasonConflict[] {
 
   const eventSeason = new Map<string, string>();
   for (const e of events) {
-    if (e.startTime == null) continue;
-    const s = seasonOf(e.startTime, calendar);
+    if (
+      e.precision === "unknown" ||
+      !hasChronicleDate({
+        startTime: e.startTime,
+        startMinute: null,
+        startGranularity: e.startGranularity,
+      })
+    )
+      continue;
+    const s = seasonOf(e.startTime!, calendar);
     if (s) eventSeason.set(e.id, s);
   }
 

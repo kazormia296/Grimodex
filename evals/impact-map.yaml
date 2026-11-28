@@ -8,8 +8,8 @@ allSuites:
   - narrative-runtime
   - narrative-extraction
   - narrative-semantic-contract
-  - nir1-entity-relation-review
   - nir1-capacity-diagnostics
+  - nir1-entity-relation-review
 rules:
   - id: quality-foundation
     reason: Quality policy, instruction entrypoints, skills, selectors, and evaluation metadata affect every gate.

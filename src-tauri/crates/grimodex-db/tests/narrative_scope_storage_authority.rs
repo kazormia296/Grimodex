@@ -1498,6 +1498,8 @@ fn chronicle_event_write_inventory() {
         ("grimodex-db/src/agent_writes.rs", "restore_event_update_snapshot", "UPDATE", 1),
         ("grimodex-db/src/narrative_extraction/temporal_operations.rs", "restore_event_chronicle_patch", "UPDATE", 1),
         // Seed and migration.
+        // CED/1 I2・I3: fills missing dates; not a user write (no version bump).
+        ("grimodex-db/src/chronicle_date_migration.rs", "fill_project", "UPDATE", 2),
         ("grimodex-db/src/runtime_performance_seed.rs", "seed_runtime_performance_fixture", "INSERT", 1),
     ];
     let mut expected: BTreeMap<_, _> = manifest

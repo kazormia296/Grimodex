@@ -946,7 +946,13 @@ describe("TimelineViewport – シーンドラッグ", () => {
         clientX: 200,
         clientY: 60,
       });
-      expect(onDropStoryTime).toHaveBeenCalledWith("s1", "a1", "a2", false);
+      expect(onDropStoryTime).toHaveBeenCalledWith(
+        "s1",
+        "a1",
+        "a2",
+        false,
+        "s3",
+      );
       expect(dragLayer.style.visibility).toBe("hidden");
     } finally {
       endPerfSession();
@@ -1134,7 +1140,7 @@ describe("TimelineViewport – シーンドラッグ", () => {
       clientX: 200,
       clientY: 60,
     });
-    expect(onDropStoryTime).toHaveBeenCalledWith("s1", "a1", "a2", false);
+    expect(onDropStoryTime).toHaveBeenCalledWith("s1", "a1", "a2", false, "s3");
   });
 });
 

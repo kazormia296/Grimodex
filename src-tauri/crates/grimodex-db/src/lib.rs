@@ -254,7 +254,7 @@ const SLIM_EN_FTS_TABLES: &[&str] = &[
 /// 既定 OFF）ため、`VACUUM` が必須。
 fn slim_backup_copy(path: &Path) -> anyhow::Result<()> {
     // foreign_keys は既定 OFF のまま（チャンク表に FK は無いが cascade 事故を避ける）。
-    let conn = Connection::open(path)?;
+    let mut conn = Connection::open(path)?;
     for table in SLIM_CHUNK_TABLES {
         conn.execute(&format!("DELETE FROM {table}"), [])?;
     }
@@ -274,6 +274,7 @@ fn slim_backup_copy(path: &Path) -> anyhow::Result<()> {
         "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('fts.slim_backup', '1')",
         [],
     )?;
+    agent_runs::scrub_snapshot_copy_on_connection(&mut conn)?;
     conn.execute_batch("VACUUM")?;
     Ok(())
 }
@@ -915,6 +916,7 @@ impl Database {
     }
 }
 
+pub mod agent_runs;
 pub mod agent_writes;
 pub mod ai_audit;
 pub mod backup_restore;
@@ -926,6 +928,8 @@ pub mod chat_typed_writes;
 pub mod mastra_memory;
 pub mod chronicle;
 pub mod chronicle_bulk;
+pub mod chronicle_date_migration;
+pub mod chronicle_read;
 pub mod codex_relation_keys;
 pub mod codex_writes;
 pub mod domain_writes;
@@ -1033,6 +1037,8 @@ pub use state::{
 mod background_checkpoint_tests;
 #[cfg(test)]
 mod identity_correction_schema_tests;
+#[cfg(test)]
+mod agent_runs_schema_tests;
 #[cfg(test)]
 mod seed_schema_parity;
 #[cfg(test)]

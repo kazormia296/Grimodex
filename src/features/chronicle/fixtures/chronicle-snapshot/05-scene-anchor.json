@@ -24,7 +24,9 @@
         "primaryCodexId": "hero",
         "locationCodexId": null,
         "startTime": 89012,
-        "kind": "birth"
+        "startGranularity": "day",
+        "kind": "birth",
+        "precision": "exact"
       },
       {
         "id": "e1",
@@ -34,7 +36,9 @@
         "primaryCodexId": "hero",
         "locationCodexId": null,
         "startTime": 96000,
-        "kind": "generic"
+        "startGranularity": "day",
+        "kind": "generic",
+        "precision": "exact"
       },
       {
         "id": "e2",
@@ -44,7 +48,9 @@
         "primaryCodexId": "mentor",
         "locationCodexId": null,
         "startTime": 96212,
-        "kind": "generic"
+        "startGranularity": "day",
+        "kind": "generic",
+        "precision": "exact"
       },
       {
         "id": "e3",
@@ -54,7 +60,9 @@
         "primaryCodexId": "hero",
         "locationCodexId": null,
         "startTime": 96500,
-        "kind": "generic"
+        "startGranularity": "day",
+        "kind": "generic",
+        "precision": "exact"
       }
     ],
     "participants": [],
@@ -112,14 +120,51 @@
       }
     ],
     "recentEvents": [
-      { "eventId": "e2", "title": "邂逅", "note": null, "relTime": "同日" },
-      { "eventId": "e1", "title": "出立", "note": "故郷を発つ", "relTime": "約7ヶ月前" }
+      {
+        "eventId": "e2",
+        "title": "邂逅",
+        "note": null,
+        "relTime": "同日",
+        "precision": "exact"
+      },
+      {
+        "eventId": "e1",
+        "title": "出立",
+        "note": "故郷を発つ",
+        "relTime": "約7ヶ月前",
+        "precision": "exact"
+      }
     ],
-    "unresolvedCausal": [{ "causeTitle": "出立", "effectTitle": "決戦" }],
+    "unresolvedCausal": [
+      {
+        "causeTitle": "出立",
+        "effectTitle": "決戦",
+        "causePrecision": "exact",
+        "effectPrecision": "exact"
+      }
+    ],
     "offpage": [
-      { "eventId": "eb", "title": "勇者誕生", "note": null, "relTime": "約20年前" },
-      { "eventId": "e2", "title": "邂逅", "note": null, "relTime": "同日" },
-      { "eventId": "e1", "title": "出立", "note": "故郷を発つ", "relTime": "約7ヶ月前" }
+      {
+        "eventId": "eb",
+        "title": "勇者誕生",
+        "note": null,
+        "relTime": "約20年前",
+        "precision": "exact"
+      },
+      {
+        "eventId": "e2",
+        "title": "邂逅",
+        "note": null,
+        "relTime": "同日",
+        "precision": "exact"
+      },
+      {
+        "eventId": "e1",
+        "title": "出立",
+        "note": "故郷を発つ",
+        "relTime": "約7ヶ月前",
+        "precision": "exact"
+      }
     ]
   }
 }

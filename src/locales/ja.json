@@ -5430,6 +5430,8 @@
     },
     "disabledReason": {
       "policy": "AIポリシーにより無効",
+      "invalidPolicy": "AI ポリシーが壊れているため、書き込みを停止しました",
+      "projectUnavailable": "作品を読み込めていないため、AI の書き込みを止めました",
       "noModel": "AIモデルが未選択です",
       "noProvider": "AIが未設定です"
     },

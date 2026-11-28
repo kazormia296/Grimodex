@@ -796,8 +796,10 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// gone, and the repair sweeps the orphaned `_en` rows the guard left behind.
 /// Version 47 adds six closed Mastra memory tables and their cascade edges.
 /// Version 48 adds the five immutable ERM tables (DR-M3-39).
+/// Version 49 records repaired Chronicle events and completion of the date migration.
+/// Version 50 adds the closed durable AgentRun and Interaction tables (DR-A3).
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 48
+    Ok(SCHEMA_VERSION == 50
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -867,7 +869,150 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         // SCHEMA 48 / DR-M3-39: all five immutable ERM tables, their exact
         // column names, lookup indexes, and unconditional UPDATE guards must
         // exist before either open fast path can advance the marker.
-        && has_v48_identity_correction_storage(conn)?)
+        && has_v48_identity_correction_storage(conn)?
+        && has_chronicle_date_migration_marker(conn)?
+        && has_chronicle_date_migration_table(conn)?
+        && has_v50_agent_run_storage(conn)?)
+}
+
+pub const CHRONICLE_DATE_MIGRATION_ID: &str = "chronicle-event-date-v49";
+
+pub fn has_chronicle_date_migration_marker(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "schema_data_migrations")? {
+        return Ok(false);
+    }
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_data_migrations
+                        WHERE migration_id = ?1 AND contract_version = 1)",
+        [CHRONICLE_DATE_MIGRATION_ID],
+        |row| row.get(0),
+    )?)
+}
+
+fn has_chronicle_date_migration_table(conn: &Connection) -> anyhow::Result<bool> {
+    let table = "chronicle_date_migration_events";
+    if !table_exists(conn, table)? {
+        return Ok(false);
+    }
+    let columns = table_columns(conn, table)?;
+    Ok(columns.iter().all(|c| c.not_null && c.declared_type == "TEXT")
+        && columns
+            .iter()
+            .map(|c| (c.name.as_str(), c.primary_key))
+            .eq([("project_id", 1), ("event_id", 2), ("recorded_at", 0)])
+        && foreign_key_matches(conn, table, "project_id", "projects", "id")?)
+}
+
+fn has_v50_agent_run_storage(conn: &Connection) -> anyhow::Result<bool> {
+    for (table, columns) in [
+        (
+            "agent_runs",
+            &[
+                "run_id",
+                "root_run_id",
+                "project_id",
+                "chat_session_id",
+                "turn_id",
+                "route",
+                "origin_user_message_id",
+                "model_provider_id",
+                "model_id",
+                "endpoint_hash",
+                "execution_owner",
+                "status",
+                "terminal_reason",
+                "interrupt_reason",
+                "resumable",
+                "not_resumable_reason",
+                "version",
+                "resume_block_detail",
+                "resume_blocked_at",
+                "finalizing_target_status",
+                "finalizing_target_reason",
+                "origin_assistant_message_id",
+                "activity_at",
+                "created_at",
+                "updated_at",
+                "audit_execution_ids",
+                "continuation_of",
+                "task_id",
+                "checkpoint",
+                "checkpoint_step",
+                "checkpoint_digest",
+                "tool_call_ledger",
+            ][..],
+        ),
+        (
+            "agent_run_interactions",
+            &[
+                "interaction_id",
+                "run_id",
+                "root_run_id",
+                "chat_session_id",
+                "kind",
+                "tool_call_id",
+                "tool_name",
+                "args_digest",
+                "request",
+                "resolution",
+                "target_basis",
+                "status",
+                "version",
+            ][..],
+        ),
+    ] {
+        if !table_exists(conn, table)?
+            || !table_columns(conn, table)?
+                .iter()
+                .map(|column| column.name.as_str())
+                .eq(columns.iter().copied())
+        {
+            return Ok(false);
+        }
+    }
+    for (index, table, column, predicate) in [
+        (
+            "idx_agent_runs_one_active_session",
+            "agent_runs",
+            "chat_session_id",
+            "wherestatusin('running','waiting_user','waiting_approval','finalizing')",
+        ),
+        (
+            "idx_agent_run_interactions_one_pending_root",
+            "agent_run_interactions",
+            "root_run_id",
+            "wherestatus='pending'",
+        ),
+    ] {
+        let sql: Option<String> = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1 AND tbl_name = ?2",
+            [index, table],
+            |row| row.get(0),
+        ).optional()?;
+        if !sql
+            .as_deref()
+            .is_some_and(|sql| compact_sql(sql).contains(predicate))
+            || index_columns(conn, index)? != [column]
+        {
+            return Ok(false);
+        }
+    }
+    has_plain_query_indexes(
+        conn,
+        &[
+            (
+                "agent_runs",
+                "idx_agent_runs_chat_session_id",
+                &["chat_session_id"],
+            ),
+            ("agent_runs", "idx_agent_runs_project_id", &["project_id"]),
+            (
+                "agent_run_interactions",
+                "idx_agent_run_interactions_run_id",
+                &["run_id"],
+            ),
+        ],
+    )
 }
 
 fn has_v47_mastra_memory_storage(conn: &Connection) -> anyhow::Result<bool> {

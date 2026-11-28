@@ -18,6 +18,7 @@ import type {
   ParticipantRow,
   SceneEventRow,
 } from "../features/chronicle/eventRows.js";
+import { assembleChronicleSnapshotText } from "../features/chronicle/chronicleSnapshot.js";
 import { normalizeCalendarRow } from "../features/chronicle/readRows.js";
 import {
   CHRONICLE_READ_TOOL_NAMES,
@@ -39,7 +40,7 @@ const event = (id: string, over: Partial<EventRow> = {}): EventRow => ({
   endTime: null,
   startMinute: null,
   endMinute: null,
-  startGranularity: "none",
+  startGranularity: over.startTime != null ? "day" : "none",
   endGranularity: "none",
   precision: "exact",
   kind: "generic",
@@ -321,7 +322,7 @@ describe("list_events", () => {
         primaryCodexId: "c1",
       }),
       event("e2", { ordinal: "a1", kind: "death", primaryCodexId: "c-gone" }),
-      event("e3", { ordinal: "a2", kind: "generic" }),
+      event("e3", { ordinal: "a2", kind: "generic", precision: "unknown" }),
     ],
     names: { c1: "Alice" },
   };
@@ -333,6 +334,7 @@ describe("list_events", () => {
     expect(r.summary).toBe("3 events");
     const content = r.content as { events: Array<Record<string, unknown>> };
     expect(content.events.map((e) => e.id)).toEqual(["e1", "e2", "e3"]);
+    expect(content.events[2]!.precision).toBe("unknown");
     expect(Object.keys(content.events[0]!)).toEqual([
       "id",
       "title",
@@ -341,6 +343,7 @@ describe("list_events", () => {
       "startTime",
       "startDate",
       "primaryCharacter",
+      "precision",
     ]);
     expect(Object.keys(content)).toEqual(["events"]);
     expect(r.tokensUsed).toBe(JSON.stringify(r.content).length);
@@ -733,7 +736,7 @@ describe("get_character_timeline", () => {
         kind: "birth",
         primaryCodexId: "c1",
       }),
-      event("with", { ordinal: "a3", startTime: 400 }),
+      event("with", { ordinal: "a3", startTime: 400, precision: "approx" }),
       event("other", { ordinal: "a2", primaryCodexId: "c2" }),
       event("hidden-birth", {
         ordinal: "a0",
@@ -770,6 +773,7 @@ describe("get_character_timeline", () => {
       events: Array<Record<string, unknown>>;
     };
     expect(Object.keys(content)).toEqual(["character", "events"]);
+    expect(content.events[2]!.precision).toBe("approx");
     expect(content.events.map((e) => e.id)).toEqual([
       "hidden-birth",
       "birth",
@@ -783,6 +787,7 @@ describe("get_character_timeline", () => {
       "ordinal",
       "startTime",
       "ageAtEvent",
+      "precision",
       "revealScene",
     ]);
     expect(content.events[0]!.revealScene).toEqual({
@@ -970,6 +975,54 @@ describe("get_chronicle_state", () => {
     ...over,
   });
 
+  it("keeps only unstamped background in both outputs when all events lack dates", async () => {
+    const events = ["a", "b", "c", "d", "linked"].map((id) =>
+      event(id, { primaryCodexId: "hero" }),
+    );
+    const sceneEvents = [{ sceneId: "s1", eventId: "linked" }];
+    const relations = [{ causeId: "linked", effectId: "d" }];
+    const args = {
+      events,
+      sceneEvents,
+      relations,
+      calendar: null,
+      sceneId: "s1",
+      participants: [],
+      readingOrder: new Map([["s1", 0]]),
+      codexNames: new Map([["hero", "Hero"]]),
+      lang: "en",
+    };
+    expect(assembleChronicleSnapshotText(args)).toBe(
+      "Off-page background:\n- title-d (date uncertain)\n- title-c (date uncertain)\n- title-b (date uncertain)",
+    );
+    const result = await makeCtx({
+      events,
+      sceneEvents,
+      relations,
+      activeSceneId: "s1",
+      calendar: null,
+    }).executors.get_chronicle_state({});
+    expect(result.content).toEqual({
+      time: {
+        source: "none",
+        startTime: null,
+        season: null,
+        precision: null,
+        formattedDate: null,
+      },
+      characters: [],
+      recentEvents: [],
+      unresolvedCausal: [],
+      offpage: ["d", "c", "b"].map((id) => ({
+        eventId: id,
+        title: "title-" + id,
+        note: null,
+        relTime: null,
+        precision: "unknown",
+      })),
+    });
+  });
+
   it("answers No sceneId and no active scene when neither is given (the project is checked first)", async () => {
     const c = makeCtx(stateWorld({ activeSceneId: null }));
     expect(await c.executors.get_chronicle_state({})).toEqual({
@@ -1044,7 +1097,7 @@ describe("get_chronicle_state", () => {
         ])[Symbol.iterator](),
     } as unknown as ReadonlyMap<string, number>;
     const c = makeCtx({
-      events: [event("e1")],
+      events: [event("e1", { startTime: 10, startGranularity: "day" })],
       sceneEvents: [{ sceneId: "s2", eventId: "e1" }],
       readingOrder: iterableOnly,
     });
@@ -1073,7 +1126,14 @@ describe("get_chronicle_state", () => {
 
   it("marks get_chronicle_state relative to the requested scene or the active scene", async () => {
     const world = {
-      events: [event("e1", { ordinal: "a0", revealSceneId: "s2" })],
+      events: [
+        event("e1", {
+          startTime: 10,
+          startGranularity: "day",
+          ordinal: "a0",
+          revealSceneId: "s2",
+        }),
+      ],
       sceneEvents: [{ sceneId: "s1", eventId: "e1" }],
       activeSceneId: "s3",
     };
@@ -1127,12 +1187,14 @@ describe("get_chronicle_state", () => {
         event("old-place", {
           ordinal: "a0",
           startTime: 100,
+          startGranularity: "day",
           primaryCodexId: "c1",
           locationCodexId: "old-place-id",
         }),
         event("hidden-place", {
           ordinal: "a1",
           startTime: 200,
+          startGranularity: "day",
           primaryCodexId: "c1",
           locationCodexId: "hidden-place-id",
         }),

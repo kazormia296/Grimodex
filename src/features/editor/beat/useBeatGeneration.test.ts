@@ -90,6 +90,7 @@ import { useSettingsStore } from "@/features/settings/settingsStore";
 import { findGeneratedBlockForBeat, findBeatById } from "./insertBeatStream";
 import { useRoleSuggestionsStore } from "./roleSuggestionsStore";
 import { useBeatGeneration } from "./useBeatGeneration";
+import { seedWritableProject } from "@/test-utils/writableProject";
 
 function emit(event: string, payload: unknown) {
   listeners.get(event)?.({
@@ -178,6 +179,7 @@ describe("useBeatGeneration", () => {
     // policy 既定はクリア（projects 空 → fail-open=full）。bodyWrite ガードを
     // 素通りさせ、既存テストの generate を従来どおり走らせる。
     useProjectStore.setState({ currentProjectId: null, projects: [] });
+    seedWritableProject();
   });
 
   it("検出 codex の summary が system prompt の 関連設定 に注入される", async () => {
@@ -661,6 +663,7 @@ describe("runRoleInference (C-7)", () => {
     // policy 既定はクリア（projects 空 → fail-open=full）。bodyWrite ガードを
     // 素通りさせ、既存テストの generate を従来どおり走らせる。
     useProjectStore.setState({ currentProjectId: null, projects: [] });
+    seedWritableProject();
   });
 
   it("onDone 後に inferMentionRoles が呼ばれ、提案が store に保存される", async () => {

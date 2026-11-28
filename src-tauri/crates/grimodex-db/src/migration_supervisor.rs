@@ -943,6 +943,7 @@ fn create_migration_snapshot(
             .ok_or_else(|| anyhow::anyhow!("snapshot path is not valid UTF-8"))?;
         conn.execute("VACUUM INTO ?1", rusqlite::params![snap_str])?;
     }
+    crate::agent_runs::scrub_snapshot_copy(&snap_path)?;
     if let Some(error) = Database::new(&snap_path)?.quick_check()? {
         return Err(MigrationSupervisorError::Message(format!(
             "MIGRATION_SOURCE_INTEGRITY_FAILED: snapshot quick_check failed: {error}"
@@ -1435,4 +1436,56 @@ pub struct OpenMigrationInfo {
     pub receipt_path: String,
     pub recovered: bool,
     pub error_code: Option<String>,
+}
+
+#[cfg(test)]
+mod agent_runs_snapshot_tests {
+    use super::*;
+    use crate::agent_runs_schema_tests::{
+        assert_scrubbed_snapshot, assert_snapshot_body_bytes, seed_snapshot_contents,
+        temp_workspace,
+    };
+
+    #[test]
+    fn agent_runs_migration_snapshot_scrubs_copy() {
+        let dir = temp_workspace();
+        let live = dir.join("grimodex.db");
+        drop(seed_snapshot_contents(&live));
+        let inspection = inspect_workspace_schema(&dir, &live).expect("inspect live");
+        let snapshot = create_migration_snapshot(&dir, &live, &inspection).expect("snapshot");
+
+        assert_scrubbed_snapshot(&snapshot.db_path);
+        verify_snapshot_checksum(&snapshot).expect("checksum reflects scrubbed bytes");
+        assert_snapshot_body_bytes(&live, true);
+        fs::remove_dir_all(dir).expect("clean migration fixture");
+    }
+
+    #[test]
+    fn agent_runs_migration_snapshot_removes_copy_on_scrub_failure() {
+        let dir = temp_workspace();
+        let live = dir.join("grimodex.db");
+        let db = seed_snapshot_contents(&live);
+        db.with_conn(|conn| Ok(conn.execute_batch("DROP TABLE agent_run_interactions")?))
+            .expect("break scrub schema");
+        drop(db);
+
+        let inspection = inspect_workspace_schema(&dir, &live).expect("inspect live");
+        let Err(error) = create_migration_snapshot(&dir, &live, &inspection) else {
+            panic!("scrub must fail");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("AGENT_RUN_SNAPSHOT_SCRUB_FAILED"),
+            "{error}"
+        );
+        assert!(live.is_file());
+        assert_eq!(
+            fs::read_dir(dir.join("backups/migrations"))
+                .expect("list snapshots")
+                .count(),
+            0
+        );
+        fs::remove_dir_all(dir).expect("clean migration fixture");
+    }
 }

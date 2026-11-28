@@ -69,7 +69,13 @@
       }
     ],
     "recentEvents": [
-      { "eventId": "e1", "title": "祝祭", "note": null, "relTime": "同日" }
+      {
+        "eventId": "e1",
+        "title": "祝祭",
+        "note": null,
+        "relTime": "同日",
+        "precision": "exact"
+      }
     ],
     "unresolvedCausal": [],
     "offpage": []

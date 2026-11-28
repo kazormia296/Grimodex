@@ -8,6 +8,7 @@
 import i18next from "i18next";
 import { invoke } from "@/lib/tauri";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { AiPolicyWriteBlockedError } from "@/features/ai-policy/writeBlockedError";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useForeshadowStore } from "@/features/foreshadow/foreshadowStore";
@@ -117,7 +118,7 @@ export async function agentCreateForeshadow(
   authority?: AgentAuthorityWriteOptions,
 ): Promise<ForeshadowRow> {
   if (blockIfPolicyOff("knowledgeWrite")) {
-    throw new Error("knowledgeWrite policy is off");
+    throw new AiPolicyWriteBlockedError("knowledgeWrite");
   }
   assertLoadBearing(input.loadBearing);
   if (input.requestId.trim().length === 0) {
@@ -168,7 +169,7 @@ export async function agentUpdateForeshadow(
   authority?: AgentAuthorityWriteOptions,
 ): Promise<ForeshadowRow> {
   if (blockIfPolicyOff("knowledgeWrite")) {
-    throw new Error("knowledgeWrite policy is off");
+    throw new AiPolicyWriteBlockedError("knowledgeWrite");
   }
   assertLoadBearing(input.loadBearing);
   if (!Number.isSafeInteger(input.baseVersion) || input.baseVersion < 0) {

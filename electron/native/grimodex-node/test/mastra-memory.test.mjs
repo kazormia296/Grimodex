@@ -55,9 +55,9 @@ test("all typed Mastra memory commands roundtrip through the main-only N-API", a
 
   await backend.memoryVectorCreateIndex(indexName, 3);
   await backend.memoryVectorUpsert(indexName, [{
-    id: "v1", vector: [1, 0, 0], metadata: { messageId }, messageId,
+    id: "v1", vector: [1, 0, 0], metadata: { messageId }, messageId, projectId: resource.projectId,
   }, {
-    id: "v2", vector: [0, 1, 0], metadata: { messageId }, messageId,
+    id: "v2", vector: [0, 1, 0], metadata: { messageId }, messageId, projectId: resource.projectId,
   }]);
   assert.equal(wire(await backend.memoryVectorQuery(indexName, [1, 0, 0], 1)).length, 1);
   assert.ok(wire(await backend.memoryVectorListIndexes()).includes(indexName));

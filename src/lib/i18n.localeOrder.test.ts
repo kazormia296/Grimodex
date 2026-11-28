@@ -141,6 +141,28 @@ describe("英語の辞書と feature の追加翻訳の登録順", () => {
     await ensureLocale("ja");
     expect(i18next.hasResourceBundle("en", "translation")).toBe(false);
   });
+
+  it("AI policy stop reasons keep matching order and confirmed wording", () => {
+    const ja = JSON.parse(
+      readFileSync(path.join(SRC_ROOT, "locales/ja.json"), "utf8"),
+    );
+    const en = JSON.parse(
+      readFileSync(path.join(SRC_ROOT, "locales/en.json"), "utf8"),
+    );
+    expect(Object.keys(ja.aiPolicy.disabledReason)).toEqual(
+      Object.keys(en.aiPolicy.disabledReason),
+    );
+    expect(ja.aiPolicy.disabledReason).toMatchObject({
+      invalidPolicy: "AI ポリシーが壊れているため、書き込みを停止しました",
+      projectUnavailable:
+        "作品を読み込めていないため、AI の書き込みを止めました",
+    });
+    expect(en.aiPolicy.disabledReason).toMatchObject({
+      invalidPolicy: "Writing was stopped because the AI policy is damaged.",
+      projectUnavailable:
+        "AI writing was stopped because the project is not loaded.",
+    });
+  });
 });
 
 describe("changeUiLanguage", () => {

@@ -285,6 +285,20 @@ describe("getChronicleExtractionReview cold-start restore", () => {
         },
       });
 
+      const redecide =
+        status === "approved"
+          ? {
+              rejectedBy: null,
+              removedVia: null,
+              rejectedAt: null,
+              reapproval: { available: false, reason: "already-approved" },
+            }
+          : {
+              rejectedBy: "event-removed",
+              removedVia: "screen-delete",
+              rejectedAt: "2026-01-01T00:01:00.000Z",
+              reapproval: { available: true, reason: null },
+            };
       getRunReviewBundleMock.mockResolvedValue({
         runId: "run-cold-1",
         projectId: "project-cold",
@@ -402,6 +416,7 @@ describe("getChronicleExtractionReview cold-start restore", () => {
                   ? "reviewer"
                   : "native:event-existence-sync",
             },
+            ...redecide,
             application: {
               commitId: "commit-cold-1",
               revisionId: nativeRevisionId,
@@ -442,6 +457,7 @@ describe("getChronicleExtractionReview cold-start restore", () => {
       expect(row.revisionId).not.toMatch(/^local-rev-/);
       expect(row.proposalId).not.toMatch(/^local-proposal-/);
       expect(row.status).toBe(status);
+      expect(row.redecide).toEqual(redecide);
       expect(row.application).toMatchObject({
         commitId: "commit-cold-1",
         revisionId: nativeRevisionId,
@@ -778,6 +794,7 @@ describe("getChronicleExtractionReview cold-start restore", () => {
         reasons: [],
       }),
     ]);
+    expect(eligible.proposals[0]?.redecide).toBeNull();
     expect(eligible.proposals[0]?.bulkApproval).toEqual({
       eligible: true,
       reasons: [],

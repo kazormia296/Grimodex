@@ -10,7 +10,7 @@
 // 成功経路は、ここでは扱わない。
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -73,6 +73,18 @@ function entries(backend, workspace) {
             workspaceRequest(workspace, {
               projectId: "no-project",
               revisionId: "no-revision",
+            }),
+          ],
+          identity,
+        ),
+      ),
+    nir1_entity_relation_approved_codex_filter: (identity) =>
+      backend.nir1EntityRelationApprovedCodexFilter(
+        ...withIdentity(
+          [
+            workspaceRequest(workspace, {
+              projectId: "no-project",
+              codexEntryIds: ["no-entry"],
             }),
           ],
           identity,
@@ -165,6 +177,7 @@ const COMMANDS = [
   "related_scenes_graph_continue",
   "nir1_evidence_qualify",
   "nir1_entity_relation_revision_read",
+  "nir1_entity_relation_approved_codex_filter",
   "nir1_entity_relation_revision_read_current",
   "nir1_entity_relation_revision_restore",
   "narrative_scene_scope_read",
@@ -342,6 +355,40 @@ test("restricted: a workspace switch revokes the identity before the next call",
         command,
       );
     }
+  } finally {
+    await rig.close();
+  }
+});
+
+test("approved Codex filter is bound to the expected workspace", async () => {
+  const rig = await restrictedRig("approved-codex-filter");
+  try {
+    const otherWorkspace = join(rig.root, "other-workspace");
+    mkdirSync(otherWorkspace);
+    const request = {
+      expectedWorkspacePath: rig.workspace,
+      projectId: "no-project",
+      codexEntryIds: ["no-entry"],
+    };
+    assert.deepEqual(
+      JSON.parse(
+        await rig.backend.nir1EntityRelationApprovedCodexFilter(
+          request,
+          rig.wire,
+        ),
+      ),
+      { status: "available", approvedCodexEntryIds: [] },
+    );
+    await assert.rejects(
+      rig.backend.nir1EntityRelationApprovedCodexFilter(
+        {
+          ...request,
+          expectedWorkspacePath: otherWorkspace,
+        },
+        rig.wire,
+      ),
+      /NEX_CHRONICLE_WORKSPACE_AUTHORITY_CHANGED/,
+    );
   } finally {
     await rig.close();
   }

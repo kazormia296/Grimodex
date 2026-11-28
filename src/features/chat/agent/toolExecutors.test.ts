@@ -19,6 +19,7 @@ const {
   mockAgentUnlinkSceneEvent,
   mockAgentAddEventRelation,
   mockAgentRemoveEventRelation,
+  mockAgentProposeSceneBody,
   mockProjectId,
   mockDbRows,
 } = vi.hoisted(() => ({
@@ -39,6 +40,7 @@ const {
   mockAgentUnlinkSceneEvent: vi.fn(),
   mockAgentAddEventRelation: vi.fn(),
   mockAgentRemoveEventRelation: vi.fn(),
+  mockAgentProposeSceneBody: vi.fn(),
   mockProjectId: vi.fn<() => string>(),
   mockDbRows: vi.fn<() => unknown[]>(),
 }));
@@ -50,6 +52,9 @@ vi.mock("@/features/agent-writes/codex", () => ({
 
 vi.mock("@/features/agent-writes/snippet", () => ({
   agentCreateSnippet: mockAgentCreateSnippet,
+}));
+vi.mock("@/features/agent-writes/prose", () => ({
+  agentProposeSceneBody: mockAgentProposeSceneBody,
 }));
 
 vi.mock("@/features/agent-writes/foreshadow", () => ({
@@ -91,6 +96,14 @@ vi.mock("@/features/codex/phaseApi", () => ({
 }));
 
 vi.mock("@/lib/tauri", () => ({ invoke: mockInvoke }));
+
+const mockStopText = vi.hoisted(() => vi.fn((): string | null => null));
+vi.mock("@/features/ai-policy/policyGuard", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/features/ai-policy/policyGuard")
+  >()),
+  aiPolicyStopText: mockStopText,
+}));
 
 vi.mock("@/features/foreshadow/api", () => ({
   readOpenForeshadowWire: mockReadOpenForeshadowWire,
@@ -146,6 +159,7 @@ vi.mock("./settingProposalTools", () => ({
   proposeSettingChangeTool: mockProposeSettingChange,
 }));
 
+import { AiPolicyWriteBlockedError } from "@/features/ai-policy/writeBlockedError";
 import {
   executeTool,
   executeReadOnlyTool,
@@ -160,6 +174,7 @@ import {
 } from "./toolDefinitions";
 import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import { invalidateChronicleToolCache } from "./chronicleToolCache";
+import { useProseStagingStore } from "@/features/agent-writes/proseStagingStore";
 
 const TOOL_TEST_WORKSPACE_PATH = "/workspace/tool-executors-test";
 
@@ -175,6 +190,46 @@ beforeEach(() => {
 
 afterEach(() => {
   setCurrentWorkspaceIdentity(null);
+  useProseStagingStore.getState().clear();
+});
+
+describe("executeTool — propose_scene_body staging", () => {
+  it("stages the proposal without applying scene body content", async () => {
+    mockAgentProposeSceneBody.mockResolvedValue({
+      stagingId: "stage-1",
+      sceneId: "scene-1",
+      status: "proposed",
+    });
+    const result = await executeTool(
+      "propose_scene_body",
+      "call-proposal",
+      { sceneId: "scene-1", text: "New prose", mode: "append" },
+      {
+        capability: "cap-1",
+        chatMessageId: "message-1",
+        toolCallId: "call-proposal",
+        executionId: "execution-1",
+        mainOwnedProvenanceId: "provenance-1",
+      },
+    );
+
+    expect(mockAgentProposeSceneBody).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sceneId: "scene-1",
+        text: "New prose",
+        mode: "append",
+        agentAuthorityCapability: "cap-1",
+      }),
+    );
+    expect(useProseStagingStore.getState().pending).toMatchObject({
+      stagingId: "stage-1",
+      sceneId: "scene-1",
+      text: "New prose",
+      mode: "append",
+    });
+    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(result.error).toBeUndefined();
+  });
 });
 
 // ── read-only allowlist 不変条件 (security review F-2) ───────────────────────
@@ -523,6 +578,19 @@ describe("foreshadow write executors", () => {
     const result = await executeTool("create_foreshadow", "call-f3", {
       title: "x",
     });
+    expect(result.error).toBe("knowledgeWrite policy is off");
+  });
+
+  it("shows the stop reason on the result line and keeps the model error", async () => {
+    mockStopText.mockReturnValueOnce("画面の行の理由");
+    mockAgentCreateForeshadow.mockRejectedValue(
+      new AiPolicyWriteBlockedError("knowledgeWrite"),
+    );
+    const result = await executeTool("create_foreshadow", "call-f3b", {
+      title: "x",
+    });
+    expect(mockStopText).toHaveBeenCalledWith("knowledgeWrite");
+    expect(result.summary).toBe("画面の行の理由");
     expect(result.error).toBe("knowledgeWrite policy is off");
   });
 

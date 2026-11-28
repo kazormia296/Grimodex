@@ -1,6 +1,7 @@
 import i18next from "i18next";
 import { invoke } from "@/lib/tauri";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { AiPolicyWriteBlockedError } from "@/features/ai-policy/writeBlockedError";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
@@ -178,7 +179,7 @@ async function trackedEventWrite(
     : command;
   // 手動 UI 編集はユーザーの直接操作なので AI 書き込みポリシーで弾かない。
   if (!opts?.skipPolicyGate && blockIfPolicyOff("knowledgeWrite")) {
-    throw new Error("knowledgeWrite policy is off");
+    throw new AiPolicyWriteBlockedError("knowledgeWrite");
   }
   const authority = capturedAuthority ?? captureEventWriteAuthority(opts);
   const { projectId } = authority;

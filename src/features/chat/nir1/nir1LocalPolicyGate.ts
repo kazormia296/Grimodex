@@ -3,11 +3,6 @@ import {
   useProjectStore,
 } from "@/features/project/projectStore";
 import { isAiFeatureBlockedByPolicy } from "@/features/ai-policy/policyGuard";
-import {
-  deriveAiGate,
-  evaluateAiCapability,
-} from "@/features/ai-policy/evaluateAiCapability";
-import { parseAiPolicy } from "@/features/ai-policy/parse";
 import type { AiFeature } from "@/features/ai-policy/types";
 import type { Nir1LocalPurpose } from "./nir1LocalGenerationApi";
 
@@ -16,13 +11,13 @@ import type { Nir1LocalPurpose } from "./nir1LocalGenerationApi";
  * K5/3 "AI 使用ポリシー"; DR-DD1B-12).
  *
  * Writing needs `chat` and `bodyWrite`, Review needs `chat` and `analysis`.
- * The items are read with the existing `evaluateAiCapability`／`deriveAiGate`
- * (a turned-off item hides the control). Because the renderer's
- * `parseAiPolicy` turns an unreadable value into full, a copy of Native's
- * `decide` (`grimodex-core/src/nir1_local_send_policy.rs`) tells an
- * unreadable value apart: the control is disabled with
+ * The display follows the copy of Native's `decide`
+ * (`grimodex-core/src/nir1_local_send_policy.rs`): a turned-off item hides the
+ * control, a value Native cannot read disables it with
  * `NIR1_LOCAL_POLICY_UNREADABLE`. The copy only shapes the display and the
- * refusal before IPC; Native's `check_before_attempt` decides.
+ * refusal before IPC; Native's `check_before_attempt` decides. A value Native
+ * reads but the renderer calls invalid (a wrong type in an axis Native does not
+ * read) is still stopped before dispatch by the policy guard below.
  */
 
 export const NIR1_LOCAL_PURPOSE_ITEMS: Readonly<
@@ -177,20 +172,14 @@ export function nir1LocalPurposeGate(
   if (!project) return { presentation: "pending" };
   const raw = project.aiPolicy ?? null;
   const strict = decideNir1LocalSendPolicy(raw, purpose);
-  if (!strict.allow && strict.code !== "item-disabled") {
+  if (strict.allow) return { presentation: "enabled" };
+  if (strict.code !== "item-disabled") {
     return {
       presentation: "disabled",
       reason: "NIR1_LOCAL_POLICY_UNREADABLE",
     };
   }
-  const policy = parseAiPolicy(raw);
-  for (const item of NIR1_LOCAL_PURPOSE_ITEMS[purpose]) {
-    const gate = deriveAiGate(evaluateAiCapability(policy, "ready", item));
-    if (gate.presentation === "hidden") {
-      return { presentation: "hidden", reason: "NIR1_LOCAL_POLICY_DENIED" };
-    }
-  }
-  return { presentation: "enabled" };
+  return { presentation: "hidden", reason: "NIR1_LOCAL_POLICY_DENIED" };
 }
 
 /** The gate of `purpose` for the current project. */

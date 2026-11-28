@@ -7393,6 +7393,10 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "get_global_settings",
       "get_license_state",
       "get_narrative_backfill_status",
+      "identity_correction_rule_create",
+      "identity_correction_rule_retire",
+      "identity_correction_rule_supersede",
+      "identity_correction_rules_list",
       "ime_export_clear_all",
       "ime_export_get_status",
       "ime_export_refresh",
@@ -7468,6 +7472,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_scope_project_default_read",
       "narrative_scope_project_default_update",
       "nir1_change_review_read",
+      "nir1_entity_relation_approved_codex_filter",
       "nir1_entity_relation_revision_create",
       "nir1_entity_relation_revision_prepare",
       "nir1_entity_relation_revision_read",
@@ -9542,6 +9547,187 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       if (!env.ok) expect(env.error).toContain("baseVersion");
     },
   );
+
+  it("identity correction rules map strict writes and current-list reads", async () => {
+    const row = { id: "rule-revision-1", project_id: "p1", reason: "spelling" };
+    const create = vi.fn(async () => JSON.stringify(row));
+    const supersede = vi.fn(async () => JSON.stringify(row));
+    const retire = vi.fn(async () => JSON.stringify(row));
+    const list = vi.fn(async () => JSON.stringify([row]));
+    const { backend } = fakeBackend({
+      identityCorrectionRuleCreate: create,
+      identityCorrectionRuleSupersede: supersede,
+      identityCorrectionRuleRetire: retire,
+      identityCorrectionRulesList: list,
+    });
+    const fields = {
+      kind: "must-link-surface",
+      scopeKind: "any",
+      surfaceText: "Mika",
+      entryId: "entry-1",
+    };
+    const createPayload = {
+      ...mutationIdentity("rule-create"),
+      sessionId: "writer-session",
+      writerSessionId: "writer-session",
+      fields,
+      context: { sessionId: "writer-session" },
+    };
+
+    expect(
+      await dispatchInvoke(
+        "identity_correction_rule_create",
+        { payload: createPayload },
+        { backend, shell: noShell },
+      ),
+    ).toEqual({ ok: true, value: row });
+    expect(
+      await dispatchInvoke(
+        "identity_correction_rule_supersede",
+        {
+          previousRevisionId: "rule-revision-1",
+          payload: {
+            ...createPayload,
+            ...mutationIdentity("rule-supersede"),
+            sessionId: "writer-session",
+          },
+        },
+        { backend, shell: noShell },
+      ),
+    ).toEqual({ ok: true, value: row });
+    const retirePayload = {
+      ...mutationIdentity("rule-retire"),
+      sessionId: "writer-session",
+      writerSessionId: "writer-session",
+      previousRevisionId: "rule-revision-2",
+      context: { sessionId: "writer-session" },
+    };
+    expect(
+      await dispatchInvoke(
+        "identity_correction_rule_retire",
+        { payload: retirePayload },
+        { backend, shell: noShell },
+      ),
+    ).toEqual({ ok: true, value: row });
+    expect(
+      await dispatchInvoke(
+        "identity_correction_rules_list",
+        { projectId: "p1" },
+        { backend, shell: noShell },
+      ),
+    ).toEqual({ ok: true, value: [row] });
+
+    expect(create).toHaveBeenCalledWith(createPayload);
+    expect(supersede).toHaveBeenCalledWith(
+      "rule-revision-1",
+      expect.objectContaining({ fields }),
+    );
+    expect(retire).toHaveBeenCalledWith(retirePayload);
+    expect(list).toHaveBeenCalledWith("p1");
+  });
+
+  it.each([
+    "identity_correction_rule_create",
+    "identity_correction_rule_supersede",
+    "identity_correction_rule_retire",
+  ] as const)("%s rejects a mismatched context sessionId", async (command) => {
+    const create = vi.fn(async () => "{}");
+    const supersede = vi.fn(async () => "{}");
+    const retire = vi.fn(async () => "{}");
+    const { backend } = fakeBackend({
+      identityCorrectionRuleCreate: create,
+      identityCorrectionRuleSupersede: supersede,
+      identityCorrectionRuleRetire: retire,
+    });
+    const payload = {
+      ...mutationIdentity(command),
+      sessionId: "writer-session",
+      writerSessionId: "writer-session",
+      context: { sessionId: "different-session" },
+      ...(command === "identity_correction_rule_retire"
+        ? { previousRevisionId: "rule-revision-1" }
+        : { fields: { kind: "must-link-surface", scopeKind: "any" } }),
+    };
+    const args =
+      command === "identity_correction_rule_supersede"
+        ? { previousRevisionId: "rule-revision-1", payload }
+        : { payload };
+    const result = await dispatchInvoke(command, args, {
+      backend,
+      shell: noShell,
+    });
+
+    expect(result).toMatchObject({ ok: false });
+    if (!result.ok) expect(result.error).toContain("context.sessionId");
+    expect(create).not.toHaveBeenCalled();
+    expect(supersede).not.toHaveBeenCalled();
+    expect(retire).not.toHaveBeenCalled();
+  });
+
+  it("identity correction rules reject invalid and unknown nested arguments", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = {
+      ...mutationIdentity("rule-invalid"),
+      fields: {
+        kind: "must-link-surface",
+        scopeKind: false,
+      },
+      context: { sessionId: "writer-session" },
+    };
+    const invalid = await dispatchInvoke(
+      "identity_correction_rule_create",
+      { payload },
+      { backend, shell: noShell },
+    );
+    const unknownPayload = await dispatchInvoke(
+      "identity_correction_rule_create",
+      { payload: { ...payload, unexpected: "no" } },
+      { backend, shell: noShell },
+    );
+    const unknownField = await dispatchInvoke(
+      "identity_correction_rule_create",
+      {
+        payload: {
+          ...payload,
+          fields: { kind: "must-link-surface", scopeKind: "any", extra: true },
+        },
+      },
+      { backend, shell: noShell },
+    );
+    const unknownContext = await dispatchInvoke(
+      "identity_correction_rule_create",
+      {
+        payload: {
+          ...payload,
+          fields: { kind: "must-link-surface", scopeKind: "any" },
+          context: { sessionId: "writer-session", extra: true },
+        },
+      },
+      { backend, shell: noShell },
+    );
+    const unknownListArg = await dispatchInvoke(
+      "identity_correction_rules_list",
+      { projectId: "p1", unexpected: true },
+      { backend, shell: noShell },
+    );
+    expect(invalid).toMatchObject({ ok: false });
+    expect(unknownPayload).toMatchObject({ ok: false });
+    expect(unknownField).toMatchObject({ ok: false });
+    expect(unknownContext).toMatchObject({ ok: false });
+    expect(unknownListArg).toMatchObject({ ok: false });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("identity correction rules report backend unavailable for an older binding", async () => {
+    const { backend } = fakeBackend();
+    const result = await dispatchInvoke(
+      "identity_correction_rules_list",
+      { projectId: "p1" },
+      { backend, shell: noShell },
+    );
+    expect(result).toMatchObject({ ok: false });
+    if (!result.ok) expect(result.error).toContain("IPC_BACKEND_UNAVAILABLE");
+  });
 
   // ── foreshadow 20 コマンド（Phase 3 バッチ1） ──────────────────────────
   it("foreshadow_create / update / delete: payload・id+patch 写像、unit→null", async () => {
@@ -12998,6 +13184,107 @@ describe("NIR-1 two-result command boundary", () => {
     );
   });
 
+  describe("nir1_entity_relation_approved_codex_filter", () => {
+    const command = "nir1_entity_relation_approved_codex_filter";
+    const request = {
+      expectedWorkspacePath: "/workspace/project-1",
+      projectId: "project-1",
+      codexEntryIds: ["codex-b", "codex-a"],
+    };
+    const setup = () => {
+      const nir1EntityRelationApprovedCodexFilter = vi.fn().mockResolvedValue(
+        JSON.stringify({
+          status: "available",
+          approvedCodexEntryIds: ["codex-b"],
+        }),
+      );
+      return {
+        nir1EntityRelationApprovedCodexFilter,
+        deps: {
+          backend: {
+            nir1EntityRelationApprovedCodexFilter,
+          } as unknown as NapiBackendLike,
+          shell: {},
+        },
+      };
+    };
+
+    it("maps the workspace-bound request and parses the approved ID subset", async () => {
+      const { nir1EntityRelationApprovedCodexFilter, deps } = setup();
+      expect(await dispatchInvoke(command, request, deps)).toEqual({
+        ok: true,
+        value: { status: "available", approvedCodexEntryIds: ["codex-b"] },
+      });
+      expect(
+        nir1EntityRelationApprovedCodexFilter,
+      ).toHaveBeenCalledExactlyOnceWith(request);
+    });
+
+    it("accepts 64 IDs and rejects empty, oversized, duplicate, or malformed IDs", async () => {
+      const { nir1EntityRelationApprovedCodexFilter, deps } = setup();
+      const ids = Array.from({ length: 64 }, (_, index) => `codex-${index}`);
+      expect(
+        (
+          await dispatchInvoke(
+            command,
+            { ...request, codexEntryIds: ids },
+            deps,
+          )
+        ).ok,
+      ).toBe(true);
+      for (const codexEntryIds of [
+        [],
+        Array.from({ length: 65 }, (_, index) => `codex-${index}`),
+        ["codex-a", "codex-a"],
+        [""],
+        ["  "],
+        [" codex-a"],
+        ["\u0085codex-a"],
+        ["c".repeat(513)],
+        [null],
+        [7],
+        "codex-a",
+      ]) {
+        expect(
+          (await dispatchInvoke(command, { ...request, codexEntryIds }, deps))
+            .ok,
+        ).toBe(false);
+      }
+      expect(
+        nir1EntityRelationApprovedCodexFilter,
+      ).toHaveBeenCalledExactlyOnceWith({ ...request, codexEntryIds: ids });
+    });
+
+    it("matches Rust whitespace and UTF-16 length boundaries", async () => {
+      const { nir1EntityRelationApprovedCodexFilter, deps } = setup();
+      const id = "a".repeat(512);
+      const boundaryRequest = {
+        ...request,
+        codexEntryIds: ["codex-b", id],
+      };
+      expect((await dispatchInvoke(command, boundaryRequest, deps)).ok).toBe(
+        true,
+      );
+      expect(
+        nir1EntityRelationApprovedCodexFilter,
+      ).toHaveBeenCalledExactlyOnceWith(boundaryRequest);
+      for (const args of [
+        { ...request, projectId: "\u0085p" },
+        { ...request, expectedWorkspacePath: "\u0085/workspace" },
+      ]) {
+        expect((await dispatchInvoke(command, args, deps)).ok).toBe(false);
+      }
+    });
+
+    it("reports an absent Native backend", async () => {
+      const result = await dispatchInvoke(command, request, {
+        backend: {} as unknown as NapiBackendLike,
+        shell: {},
+      });
+      expect(result.ok).toBe(false);
+    });
+  });
+
   describe("related_scenes_graph_continue", () => {
     const wait = {
       ownerKey,
@@ -13231,7 +13518,7 @@ describe("DA-2 profile activation contract (DR-DA2-9, DR-DA2-16)", () => {
     expect(end).toBeGreaterThan(start);
     const body = source.slice(start, end);
     const MAIN_ONLY =
-      "profileActivation\\w+|mainOpenPrePublicationGate|mainGrant(?:Preview|Issue|Revoke\\w*)|mainNir1LocalGenerationCancelSender";
+      "profileActivation\\w+|mainOpenPrePublicationGate|mainGrant(?:Preview|Issue|Revoke\\w*)|mainNir1LocalGenerationCancelSender|agentRun[A-Z]\\w*";
     // A call through the backend argument in any form.
     expect(
       [
@@ -13272,6 +13559,44 @@ describe("DA-2 profile activation contract (DR-DA2-9, DR-DA2-16)", () => {
         "profile-egress:state",
       ),
     ).toBe(false);
+  });
+});
+
+describe("main-only AgentRun N-API (DR-A3-19)", () => {
+  it("registers the Native declarations only in the backend type", () => {
+    const declarations = readFileSync(
+      new URL("../native/grimodex-node/index.d.ts", import.meta.url),
+      "utf8",
+    );
+    const contract = readFileSync(
+      new URL("./ipcContract.ts", import.meta.url),
+      "utf8",
+    );
+    const backendType =
+      /export interface NapiBackendLike \{([\s\S]*?)^\}/mu.exec(contract)?.[1];
+    expect(backendType).toBeDefined();
+    const nativeNames = [
+      ...declarations.matchAll(/^\s+(agentRun\w+)\(/gmu),
+    ].map((match) => match[1]);
+    expect(nativeNames).toEqual(
+      expect.arrayContaining([
+        "agentRunAppendToolCalls",
+        "agentRunAddAuditExecutionId",
+        "agentRunFinishWithoutMessages",
+        "agentRunListOwned",
+      ]),
+    );
+    expect(nativeNames).not.toContain("agentRunAppendToolCall");
+    const registeredNames = [
+      ...backendType!.matchAll(/^\s+(agentRun\w+)\?\(/gmu),
+    ].map((match) => match[1]);
+    expect(registeredNames.sort()).toEqual(nativeNames.sort());
+
+    expect(
+      [...Object.keys(NAPI_COMMANDS), ...SHELL_COMMAND_NAMES].filter((name) =>
+        /^agent(?:_run_|Run[A-Z])/u.test(name),
+      ),
+    ).toEqual([]);
   });
 });
 

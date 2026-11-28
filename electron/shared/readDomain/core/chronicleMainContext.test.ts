@@ -222,7 +222,7 @@ describe("the turn's tree state", () => {
   it("uses the turn's reading order to find the prior anchor for get_chronicle_state", async () => {
     const { client } = makeClient({
       p1: {
-        events: [eventRow("e1", { start_time: 10 })],
+        events: [eventRow("e1", { start_time: 10, start_granularity: "day" })],
         sceneEvents: [{ scene_id: "s2", event_id: "e1" }],
       },
     });

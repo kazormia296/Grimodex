@@ -68,6 +68,13 @@ const DATED_GRANULARITIES: ReadonlySet<string> = new Set([
 ]);
 
 /** 日時がある＝開始の日が有限の数で、粒度が time／day／month／season／year（DR-CED-3）。 */
+/** 日時の無い出来事（戻ったもの）の確度は、保存値に関わらず「不明」（CED/1 B1）。 */
+export function effectiveEventPrecision<P extends string>(
+  event: ChronicleDateInput & { precision: P },
+): P | "unknown" {
+  return hasChronicleDate(event) ? event.precision : "unknown";
+}
+
 export function hasChronicleDate(date: ChronicleDateInput): boolean {
   return (
     typeof date.startTime === "number" &&

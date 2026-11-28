@@ -4,6 +4,11 @@
 import initSqlJs from "sql.js/dist/sql-asm.js";
 import type { Database, SqlJsStatic, SqlValue } from "sql.js";
 import { sha256Hex } from "@grimodex/scan-contract";
+import type {
+  GetRunReviewBundleResult,
+  ReapproveAppliedProposalSkipReasonCode,
+  ReapproveAppliedProposalsResult,
+} from "@/application/narrative-extraction/nativeApi";
 import schemaContract from "@/db/generated/schema-contract.json";
 import protectedWriterPolicy from "../../policies/narrative/protected-writers.json";
 import { CHRONICLE_EVENT_DATE_REQUIRED } from "@/../electron/shared/chronicleEventDate";
@@ -147,6 +152,8 @@ type BrowserPlotBranchTransition = {
 // src/db/schema.contract.test.ts. BrowserMock uses every other canonical
 // CREATE statement so browser editing exercises the same renderer schema.
 const RUST_ONLY_BROWSER_TABLES = new Set([
+  "agent_run_interactions",
+  "agent_runs",
   "fts_meta",
   "codex_fts",
   "codex_fts_en",
@@ -165,6 +172,8 @@ const RUST_ONLY_BROWSER_TABLES = new Set([
   "identity_lineage_mappings",
   "identity_lineage_operations",
   "identity_lineage_reference_assignments",
+  // CED/1 I5: the date migration's record of repaired events is Native-owned.
+  "chronicle_date_migration_events",
   // SDEF/1 MD5: the project Scene Scope default is Native-owned (typed commands only).
   "narrative_scope_project_defaults",
   // MP-7 persistence stays Native-owned; the renderer receives it through typed commands.
@@ -855,6 +864,8 @@ export interface BrowserMockOptions {
   allowProtectedWriterTestFixtures?: boolean;
   /** Test-only observation point for the single genesis change-event probe. */
   onTimelapseGenesisLedgerReadForTest?: () => void;
+  /** In-memory Native review fixture, scoped to this browser mock instance. */
+  chronicleReviewBundleForTest?: GetRunReviewBundleResult;
   /** Test-only restore notices; absent injection keeps the mock loss-free. */
   projectSnapshotRestoreLossNoticesForTest?: {
     lossNotices?: RestoreLossNotice[];
@@ -28391,11 +28402,105 @@ export async function createBrowserMock(
     });
   }
 
+  const reviewBundle = options.chronicleReviewBundleForTest;
+  const reviewRows = new Map(
+    reviewBundle?.proposals.map(
+      (row) => [row.proposalId, structuredClone(row)] as const,
+    ),
+  );
+
+  function reapproveMockRows(
+    args: Record<string, unknown>,
+  ): ReapproveAppliedProposalsResult {
+    const command = "narrative_extraction_reapprove_applied_proposals";
+    const payload = browserCommandPayload(command, args);
+    const projectId = requiredBrowserString(command, payload, "projectId");
+    if (
+      Object.keys(payload).length !== 2 ||
+      projectId.trim() !== projectId ||
+      !Array.isArray(payload.targets) ||
+      payload.targets.length < 1 ||
+      payload.targets.length > 4096
+    ) {
+      throw new Error(command + ": invalid payload");
+    }
+    const seen = new Set<string>();
+    const targets = payload.targets.map((item: unknown) => {
+      const target = browserCommandPayload(command, { payload: item });
+      const proposalId = requiredBrowserString(command, target, "proposalId");
+      const revisionId = requiredBrowserString(command, target, "revisionId");
+      if (
+        Object.keys(target).length !== 2 ||
+        seen.has(proposalId) ||
+        proposalId.trim() !== proposalId ||
+        revisionId.trim() !== revisionId
+      ) {
+        throw new Error(command + ": invalid target");
+      }
+      seen.add(proposalId);
+      return { proposalId, revisionId };
+    });
+    const approved: ReapproveAppliedProposalsResult["approved"][number][] = [];
+    const skipped: ReapproveAppliedProposalsResult["skipped"][number][] = [];
+    for (const { proposalId, revisionId } of targets) {
+      const row =
+        reviewBundle?.projectId === projectId
+          ? reviewRows.get(proposalId)
+          : undefined;
+      let reason: ReapproveAppliedProposalSkipReasonCode | null = null;
+      if (!row) reason = "proposal-not-found";
+      else if (!row.application) reason = "no-application";
+      else if (
+        row.currentRevisionId !== revisionId ||
+        row.application.revisionId !== revisionId
+      )
+        reason = "revision-changed";
+      else if (row.status === "approved") reason = "already-approved";
+      else if (!row.reapproval?.available)
+        reason = row.reapproval?.reason ?? "not-removal-rejection";
+      if (!row || reason) {
+        skipped.push({ proposalId, reasons: [reason ?? "proposal-not-found"] });
+        continue;
+      }
+      reviewRows.set(proposalId, {
+        ...row,
+        status: "approved",
+        rejectedBy: null,
+        removedVia: null,
+        rejectedAt: null,
+        reapproval: { available: false, reason: "already-approved" },
+      });
+      approved.push({
+        proposalId,
+        revisionId,
+        decisionId: crypto.randomUUID(),
+      });
+    }
+    return { approved, skipped, failed: [], stopped: false };
+  }
+
   async function invoke<T = unknown>(
     cmd: string,
     args: Record<string, unknown> = {},
   ): Promise<T> {
     switch (cmd) {
+      case "narrative_extraction_get_run_review_bundle": {
+        const payload = browserCommandPayload(cmd, args);
+        if (
+          !reviewBundle ||
+          reviewBundle.projectId !==
+            requiredBrowserString(cmd, payload, "projectId") ||
+          reviewBundle.runId !== requiredBrowserString(cmd, payload, "runId")
+        ) {
+          throw new Error(cmd + ": run not found");
+        }
+        return structuredClone({
+          ...reviewBundle,
+          proposals: [...reviewRows.values()],
+        }) as T;
+      }
+      case "narrative_extraction_reapprove_applied_proposals":
+        return reapproveMockRows(args) as T;
       case "get_global_settings":
         return handleGetGlobalSettings() as T;
       case "save_global_settings":

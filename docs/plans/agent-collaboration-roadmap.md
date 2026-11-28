@@ -182,6 +182,14 @@ force-kill delay after explicit cancellation
 F0-liteはRelease Aと最小Task integrationが実際に使うcontractだけを固定する。
 Workspace／Semantic contractは明示的にscope外とする。
 
+> 注記（2026-11-27、[A3 の判断記録](a3-durable-agentrun-decisions.md) の DR-A3-13）：
+> F0-lite を 2 つに分ける。
+>
+> - F0-lite-A（A3 の lane）：`TransportExecutionHandle`、`AgentRunStatus`、`AgentRunInteractionStatus`、`ExecutionAuthority`、`ProjectionAttachment`、`AnalysisReadBasisEntryV1`。
+> - F0-lite-B（Release B の lane）：`WorkTaskStatus`、`minimal TaskContractSnapshotV1`、`AnalysisReadBasisV1`。
+>
+> Release B の前提にある「F0-lite」は、F0-lite-A と読む。
+
 ### Contracts
 
 ```text
@@ -248,6 +256,15 @@ result
 ## A3 — Durable AgentRun and durable interactions
 
 **State:** R1およびF0-lite state contractでBlocked。
+
+> 注記（2026-11-27）：
+> 利用者の決定により、A3 を「中断した瞬間の状態から、読み直しなしで同じ Run が続く」途中再開に拡張した（[A3 の判断記録](a3-durable-agentrun-decisions.md)、[ADR 007 の同日の追補](../adr/007-agent-collaboration-execution-boundary.md)）。
+> 下の Interaction contract の「明示的continuation contractがない限りRunを`interrupted`へ遷移」は、次のように読む。
+>
+> - legacy の API の agent loop には、その continuation contract がある。
+> - `interrupted` は非終端で、作者の操作で同じ Run を再開する。
+>
+> `AgentRunStatus` の値は判断記録の DR-A3-2 による（成功は `completed`）。
 
 ### Durable records
 
@@ -442,6 +459,7 @@ Session-local statusだけで十分なら、従来のfull SessionTasks設計を�
 **State:** Blocked。前提は[Write-Safety Roadmap](agent-auto-write-safety-roadmap.md)のGate A（A1・A2の承認境界）、Release AのA3（durable interaction。その前提のR1・F0-liteを含む）、
 Mastra移行のMP-6（write toolとcapability）・MP-9（履歴の持ち主と保存の移動）。
 Decision Gate Aは待たない（DR-ST-6）。判断の経緯と要件の振り分けは[SessionTasksの判断記録](session-tasks-decisions-2026-11.md)。
+設計の起案（未確認）は[Release Bの設計](release-b-session-tasks-design.md)。実装の担当は起案の後に決める（DR-ST-11）。
 
 ## Product promise
 
@@ -468,9 +486,9 @@ Project Task昇格には明示authorityが必要である。
 
 - 承認した範囲での連続実行は、ADR 008の`mutate / task-scope`（承認済みTask Grantの範囲内なら確認なしで実行）を使い、
   別の承認の仕組みを作らない。MP-6でMastraの承認を「止めて、人が押したら再開する」部品として使う案は候補で、
-  mockで確かめてから採る（DR-ST-4）。
+  mockで確かめてから採る（DR-ST-4）。（2026-11-28 追記：この候補は採らないと決まった。承認は作者の出来事の承認と同じmainの仕組み。判断記録の第9節）
 - 親turnのtool回数の上限（modelの文脈の窓で10〜25回）は撤廃する。tool結果のtoken予算（`limit_tokens`）は残す。
-  条件は、停止が効く経路から外すことと、予算や文脈で止まったときに成果を消さない扱いを決めること。
+  条件は、停止が効く経路から外すことと、予算や文脈で止まったときに成果を消さない扱いを決めること。（2026-11-28 追記：予算や文脈の超過では、要約して自動で続ける。判断記録のDR-ST-12）
   子の予算、画面操作と質問の回数の上限は対象外（DR-ST-5）。
 
 ## UI

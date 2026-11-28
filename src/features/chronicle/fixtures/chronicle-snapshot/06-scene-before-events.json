@@ -23,6 +23,7 @@
         "primaryCodexId": "hero",
         "locationCodexId": null,
         "startTime": 89012,
+        "startGranularity": "day",
         "kind": "birth"
       },
       {
@@ -33,6 +34,7 @@
         "primaryCodexId": "hero",
         "locationCodexId": null,
         "startTime": 96000,
+        "startGranularity": "day",
         "kind": "generic"
       },
       {
@@ -43,6 +45,7 @@
         "primaryCodexId": "hero",
         "locationCodexId": null,
         "startTime": 96500,
+        "startGranularity": "day",
         "kind": "generic"
       }
     ],

@@ -300,3 +300,35 @@ Agent Auto既定化後、設定破損が自動書き込み許可へ変換され�
 6. **Invariant 12（renderer 単独の確認 UI は承認境界とみなさない）。** 承認を main が握るので、capability を持つ renderer の迂回は防ぐ。ただし、main は、承認の IPC の呼び手が人かを区別できない。「満たす」とは書かず、AWA/1 の受け入れる残り（乗っ取られた renderer は範囲外）と対応づける。
 7. **MCP。** MCP は、本 ADR の対象の文面に無い。MCP は、設定で許した、1 つの作品に固定した接続だけ、作者の出来事を承認なしで更新・削除できる（AWA/1-2。確認 70・73・74・76・77）。MCP の削除が承認なしであることを、ここに書く。
 8. **変えないもの。** Invariants 5・6（承認つきの経路で満たす）。Invariant 4 は、承認が要る（`needs-approval` の）呼出しについてだけ満たす（上の 3）。Gate A の全体（`effect`／`approvalMode` の導入、Task Grant、AiPolicy の fail-closed）。`requiresUserConfirmation`（tool manifest の宣言）は、AWA/1 では実行時に読まない。AWA/1 の承認は、持ち主の欄で決める別の仕組みで、`effect`／`approvalMode` への置き換えの前倒しではない。
+
+## 追補（2026-11-27）：途中再開での capability の扱い（A3 の拡張）
+
+判断の経緯と規則の正本は [A3 の判断記録](../plans/a3-durable-agentrun-decisions.md)（DR-A3-4・DR-A3-6・DR-A3-14）。本 ADR の本文は書き換えない。
+
+1. **Decision §4 の発行の時点は変えない。**
+   - 中断した Run の途中再開のために、main は、model の応答から tool の呼出しを受け取った時点で、tool 呼出しの台帳を Native に書く。
+   - 台帳は、main が見た provider の応答だけから作る。renderer から受け取った tool 呼出しは、根拠にしない。
+   - 台帳から capability を発行し直す経路は置かない。
+     - capability を使うのは、変更系と stage の tool だけ。
+     - 読む tool は、capability なしで再実行できる。
+2. **変更系（`mutate`・`destructive`）と stage の tool**：
+   - 落ちたときに実行中だった呼出しは、Gate A の前は再実行しない。
+   - commit 済みか（stage なら提案が作られたか）を、台帳の元の値（provenance と requestId）で照会して、AI に知らせるだけにする。
+   - 再開の後に新しく出た呼出しは、今どおりの経路と承認による。
+3. **Decision §4「承認待ちの間、既発行Capabilityを保存して延命してはならない。」は変えない。**
+   - 台帳には、capability の token を保存しない。保存するのは、状態（未発行・承認待ち・発行・消費）だけ。
+   - 保存した回答や承認は、認可に使わない。
+4. **2026-11-23 の追補 5（ApprovalRequest はメモリだけ）を改める**（利用者の回答、問 22・23）。ApprovalRequest の durable な実体は、A3 の `approval` の AgentRunInteraction とする。交換の状態（capability の発行・消費）は、memory の中だけに置く。再起動の後は、A3 の記録から承認のカードを出し直し、交換で確かめ直す。AWA/1 の承認にも及ぼす（AWA/1 の判断記録 DR-AWA-2）。
+
+## 追補（2026-11-28）：画面の操作の分類 `ui`（Gate A の A1）
+
+判断の経緯と規則の正本は [Gate A の判断記録](../plans/gate-a-write-safety-decisions.md)（DR-GA-6）。本 ADR の本文は書き換えない。§3 の `effect` に、画面の操作を表す `ui` を足す。
+
+1. **理由。** §3 の 4 値には、作品の内容を変えず、画面の表示や設定の提案だけを行う tool に当たる値が無い。利用者は、画面の操作（UI 系の 3 本）を承認なしのままにすると決めた（Gate A の判断記録の第 7 節の問 2、2026-11-27）。
+2. **範囲。** `ui` は次の 3 本の名指しに限る。TS と Rust の build の検査が、ほかの tool の `ui` を拒む。
+   - `run_app_command`：登録簿で `agent: true` かつ `risk: "view"` の command だけを実行する。
+   - `apply_layout_preset`：組み込みと利用者の既存の preset を適用するだけ。
+   - `propose_setting_change`：提案を返すだけで、適用は利用者の操作だけ。
+3. **扱い。** `ui` の `approvalMode` は `none`。正規状態（Canonical SQLite）は変えない。
+4. **変えないもの。** §4 の Capability の発行の時点、Invariants、`requiresUserConfirmation`（A1 では読まない）。
+5. **広げる場合。** この 3 本以外へ `ui` を広げる、承認の有無を変える、または 3 本のどれかが作品の内容を変えうるようになる場合は、利用者に確認し、本 ADR を改める。

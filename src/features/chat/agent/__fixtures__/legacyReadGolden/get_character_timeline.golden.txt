@@ -13,7 +13,7 @@
       "result": {
         "name": "get_character_timeline",
         "summary": "2 events for アリア",
-        "tokensUsed": 226,
+        "tokensUsed": 266,
         "content": {
           "character": "アリア",
           "events": [
@@ -23,7 +23,8 @@
               "kind": "birth",
               "ordinal": "a0",
               "startTime": 0,
-              "ageAtEvent": 0
+              "ageAtEvent": 0,
+              "precision": "exact"
             },
             {
               "id": "ev-meet",
@@ -31,12 +32,13 @@
               "kind": "generic",
               "ordinal": "a2",
               "startTime": 5400,
-              "ageAtEvent": 15
+              "ageAtEvent": 15,
+              "precision": "exact"
             }
           ]
         }
       },
-      "contentJson": "{\"character\":\"アリア\",\"events\":[{\"id\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"ordinal\":\"a0\",\"startTime\":0,\"ageAtEvent\":0},{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"ageAtEvent\":15}]}"
+      "contentJson": "{\"character\":\"アリア\",\"events\":[{\"id\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"ordinal\":\"a0\",\"startTime\":0,\"ageAtEvent\":0,\"precision\":\"exact\"},{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"ageAtEvent\":15,\"precision\":\"exact\"}]}"
     },
     {
       "case": "rows: 参加者 c-mage（S3。戦争を含む。恒久秘匿の死は出ない）",
@@ -50,7 +52,7 @@
       "result": {
         "name": "get_character_timeline",
         "summary": "3 events for 老魔術師",
-        "tokensUsed": 333,
+        "tokensUsed": 393,
         "content": {
           "character": "老魔術師",
           "events": [
@@ -60,7 +62,8 @@
               "kind": "generic",
               "ordinal": "a1",
               "startTime": 3600,
-              "ageAtEvent": null
+              "ageAtEvent": null,
+              "precision": "exact"
             },
             {
               "id": "ev-meet",
@@ -68,7 +71,8 @@
               "kind": "generic",
               "ordinal": "a2",
               "startTime": 5400,
-              "ageAtEvent": null
+              "ageAtEvent": null,
+              "precision": "exact"
             },
             {
               "id": "ev-death",
@@ -76,12 +80,13 @@
               "kind": "death",
               "ordinal": "a3",
               "startTime": 7200,
-              "ageAtEvent": null
+              "ageAtEvent": null,
+              "precision": "exact"
             }
           ]
         }
       },
-      "contentJson": "{\"character\":\"老魔術師\",\"events\":[{\"id\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"ordinal\":\"a1\",\"startTime\":3600,\"ageAtEvent\":null},{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"ageAtEvent\":null},{\"id\":\"ev-death\",\"title\":\"老魔術師の死\",\"kind\":\"death\",\"ordinal\":\"a3\",\"startTime\":7200,\"ageAtEvent\":null}]}"
+      "contentJson": "{\"character\":\"老魔術師\",\"events\":[{\"id\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"ordinal\":\"a1\",\"startTime\":3600,\"ageAtEvent\":null,\"precision\":\"exact\"},{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"ageAtEvent\":null,\"precision\":\"exact\"},{\"id\":\"ev-death\",\"title\":\"老魔術師の死\",\"kind\":\"death\",\"ordinal\":\"a3\",\"startTime\":7200,\"ageAtEvent\":null,\"precision\":\"exact\"}]}"
     },
     {
       "case": "rows: S1 の c-mage（戦争は hidden）",
@@ -95,7 +100,7 @@
       "result": {
         "name": "get_character_timeline",
         "summary": "3 events for 老魔術師",
-        "tokensUsed": 333,
+        "tokensUsed": 393,
         "content": {
           "character": "老魔術師",
           "events": [
@@ -105,7 +110,8 @@
               "kind": "generic",
               "ordinal": "a1",
               "startTime": 3600,
-              "ageAtEvent": null
+              "ageAtEvent": null,
+              "precision": "exact"
             },
             {
               "id": "ev-meet",
@@ -113,7 +119,8 @@
               "kind": "generic",
               "ordinal": "a2",
               "startTime": 5400,
-              "ageAtEvent": null
+              "ageAtEvent": null,
+              "precision": "exact"
             },
             {
               "id": "ev-death",
@@ -121,12 +128,13 @@
               "kind": "death",
               "ordinal": "a3",
               "startTime": 7200,
-              "ageAtEvent": null
+              "ageAtEvent": null,
+              "precision": "exact"
             }
           ]
         }
       },
-      "contentJson": "{\"character\":\"老魔術師\",\"events\":[{\"id\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"ordinal\":\"a1\",\"startTime\":3600,\"ageAtEvent\":null},{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"ageAtEvent\":null},{\"id\":\"ev-death\",\"title\":\"老魔術師の死\",\"kind\":\"death\",\"ordinal\":\"a3\",\"startTime\":7200,\"ageAtEvent\":null}]}"
+      "contentJson": "{\"character\":\"老魔術師\",\"events\":[{\"id\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"ordinal\":\"a1\",\"startTime\":3600,\"ageAtEvent\":null,\"precision\":\"exact\"},{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"ageAtEvent\":null,\"precision\":\"exact\"},{\"id\":\"ev-death\",\"title\":\"老魔術師の死\",\"kind\":\"death\",\"ordinal\":\"a3\",\"startTime\":7200,\"ageAtEvent\":null,\"precision\":\"exact\"}]}"
     },
     {
       "case": "empty: 関与のない codex（名前の解決もなく id を character に）",
@@ -193,7 +201,7 @@
       "result": {
         "name": "get_character_timeline",
         "summary": "1 events for アリア",
-        "tokensUsed": 130,
+        "tokensUsed": 150,
         "content": {
           "character": "アリア",
           "events": [
@@ -203,12 +211,13 @@
               "kind": "generic",
               "ordinal": "a0",
               "startTime": 100,
-              "ageAtEvent": null
+              "ageAtEvent": null,
+              "precision": "exact"
             }
           ]
         }
       },
-      "contentJson": "{\"character\":\"アリア\",\"events\":[{\"id\":\"x-ev-1\",\"title\":\"他作品の出来事\",\"kind\":\"generic\",\"ordinal\":\"a0\",\"startTime\":100,\"ageAtEvent\":null}]}"
+      "contentJson": "{\"character\":\"アリア\",\"events\":[{\"id\":\"x-ev-1\",\"title\":\"他作品の出来事\",\"kind\":\"generic\",\"ordinal\":\"a0\",\"startTime\":100,\"ageAtEvent\":null,\"precision\":\"exact\"}]}"
     },
     {
       "case": "no-project",

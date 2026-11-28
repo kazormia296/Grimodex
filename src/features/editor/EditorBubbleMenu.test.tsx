@@ -17,6 +17,7 @@ import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
 import { EditorBubbleMenu } from "./EditorBubbleMenu";
 import type { ToolbarActions } from "./Toolbar";
+import { seedWritableProject } from "@/test-utils/writableProject";
 
 // AI サブメニューの表示ゲートに使う useAiGate を固定値でモック
 // (プロバイダ readiness ストアを引き込まない)。policy は既定 (未ブロック)。
@@ -71,6 +72,7 @@ describe("EditorBubbleMenu", () => {
       pendingEntryId: null,
       selectedEntry: null,
     });
+    seedWritableProject();
   });
   afterEach(() => {
     cleanup();

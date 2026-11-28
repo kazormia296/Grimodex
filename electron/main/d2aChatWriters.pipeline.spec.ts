@@ -209,7 +209,8 @@ async function seedWorkspace(rig: Rig): Promise<Workspace> {
   const seeded = ok<{ path: string; projectId: string }>(
     await rig.route("seed_sample_workspace", {
       language: "ja",
-      aiPolicy: '{"preset":"full"}',
+      aiPolicy:
+        '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true,"knowledgeWrite":true}}',
     }),
   );
   ok(await rig.route("open_workspace", { path: seeded.path }));
@@ -713,7 +714,8 @@ describe("DA-2b typed writers through the real router, gate and Native", () => {
     const fresh = ok<{ path: string; projectId: string }>(
       await unavailable.route("seed_sample_workspace", {
         language: "ja",
-        aiPolicy: '{"preset":"full"}',
+        aiPolicy:
+          '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true,"knowledgeWrite":true}}',
       }),
     );
     ok(await unavailable.route("open_workspace", { path: fresh.path }));

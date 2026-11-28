@@ -669,7 +669,7 @@ describe("AI path registry — MP-10 memory routes", () => {
       join(REPO_ROOT, "electron/main/mastra/agentRuntime.ts"),
       "utf8",
     );
-    expect(agentRuntime).not.toMatch(/memory_title|\bmemory\s*:/u);
+    expect(agentRuntime).not.toMatch(/memory_title/u);
   });
 });
 

@@ -76,6 +76,11 @@ pub(crate) fn internal_err(e: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error("internal error".to_string(), None)
 }
 
+pub(crate) const INVALID_POLICY_WRITE_DENIAL: &str =
+    "AI policy is invalid; write tools are disabled";
+pub(crate) const PROJECT_UNAVAILABLE_WRITE_DENIAL: &str =
+    "Project is unavailable; write tools are disabled";
+
 pub struct GrimodexServer {
     pub conn: grimodex_db::Database,
     /// The project all tools currently scope to. Mutable so `--all-projects`
@@ -163,7 +168,20 @@ impl GrimodexServer {
     /// `select_project` in all-projects mode (not the startup project).
     pub fn reload_policy(&self) -> Result<grimodex_core::policy::AiPolicyToggles, ErrorData> {
         let conn = self.conn.lock().map_err(internal_err)?;
-        grimodex_core::policy::load_policy(&conn, &self.project_id()).map_err(internal_err)
+        let policy = match grimodex_core::policy::load_policy(&conn, &self.project_id()) {
+            Ok(policy) => policy,
+            Err(grimodex_core::policy::PolicyLoadError::ProjectNotFound) => {
+                return Err(ErrorData::invalid_params(
+                    PROJECT_UNAVAILABLE_WRITE_DENIAL,
+                    None,
+                ));
+            }
+            Err(error) => return Err(internal_err(error)),
+        };
+        if policy.state == grimodex_core::policy::AiPolicyState::Invalid {
+            return Err(ErrorData::invalid_params(INVALID_POLICY_WRITE_DENIAL, None));
+        }
+        Ok(policy.toggles)
     }
 
     /// ライセンスゲート (ライセンス認証設計書 §6)。write 系ツールは制限状態
@@ -623,6 +641,7 @@ impl GrimodexServer {
     ) -> Result<CallToolResult, ErrorData> {
         tools::chronicle::remove_event_relation(self, params.0).await
     }
+
 }
 
 #[tool_handler]
@@ -809,6 +828,64 @@ mod tool_route_tests {
             "every generated router tool must have an explicit egress disposition"
         );
         assert!(ledger_names.contains("select_project"));
+    }
+
+    #[test]
+    fn standalone_mcp_tool_names_are_pinned_without_identity_correction() {
+        let mut router_names: Vec<String> = GrimodexServer::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.into_owned())
+            .collect();
+        router_names.sort();
+        assert!(!router_names
+            .iter()
+            .any(|name| name.contains("identity_correction")));
+        assert_eq!(
+            router_names,
+            [
+                "add_event_relation",
+                "create_codex_entry",
+                "create_event",
+                "create_foreshadow",
+                "create_snippet",
+                "delete_event",
+                "find_related_entries",
+                "get_attribution_report",
+                "get_chapter_summaries",
+                "get_character_timeline",
+                "get_chronicle_state",
+                "get_codex_entry",
+                "get_event_detail",
+                "get_foreshadow_detail",
+                "get_project",
+                "get_project_stats",
+                "get_scene_timeline_neighbors",
+                "get_writing_context",
+                "list_chat_sessions",
+                "list_codex_entries",
+                "list_codex_tags",
+                "list_events",
+                "list_open_foreshadows",
+                "list_projects",
+                "list_snippets",
+                "list_tree",
+                "propose_scene_body",
+                "read_chat_history",
+                "read_scene",
+                "read_scenes_batch",
+                "remove_event_relation",
+                "search_codex_by_tags",
+                "search_project",
+                "select_project",
+                "set_event_participants",
+                "stamp_scene_event",
+                "unstamp_scene_event",
+                "update_codex_entry",
+                "update_event",
+                "update_foreshadow",
+            ]
+        );
     }
 
     #[test]

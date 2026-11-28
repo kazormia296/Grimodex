@@ -7,6 +7,7 @@ import {
   createNir1EntityRelationRevision,
   decideNir1EntityRelationRevision,
   prepareNir1EntityRelationRevision,
+  readApprovedNir1EntityRelationCodexEntryIds,
   readCurrentNir1EntityRelationRevision,
   readNir1EntityRelationRevision,
   restoreNir1EntityRelationRevision,
@@ -72,6 +73,25 @@ describe("NIR-1 typed Entity/Relation Revision renderer API", () => {
         projectId: "project-1",
         revisionId: "revision-1",
       },
+    );
+  });
+
+  it("filters Codex IDs through the approved typed Entity/Relation reader", async () => {
+    h.invoke.mockResolvedValueOnce({
+      status: "available",
+      approvedCodexEntryIds: ["codex-b"],
+    });
+    const request = {
+      expectedWorkspacePath: "/workspace/project-1",
+      projectId: "project-1",
+      codexEntryIds: ["codex-b", "codex-a"],
+    };
+
+    await readApprovedNir1EntityRelationCodexEntryIds(request);
+
+    expect(h.invoke).toHaveBeenCalledExactlyOnceWith(
+      "nir1_entity_relation_approved_codex_filter",
+      request,
     );
   });
 

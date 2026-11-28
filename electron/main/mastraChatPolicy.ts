@@ -1,36 +1,16 @@
-const AI_POLICY_PRESETS = new Set([
-  "full",
-  "assist-off",
-  "review-only",
-  "off",
-  "custom",
-]);
-const REQUIRED_TOGGLES = ["chat", "bodyWrite", "analysis"] as const;
+import { classifyAiPolicy } from "../shared/aiPolicy/classifyAiPolicy.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** NULL and an unset value retain the renderer's documented full default. */
+/** NULL は会話可。壊れた値（空文字を含む）は、chat が true と読めても拒む（DR-A4-5）。 */
 export function aiPolicyAllowsChat(raw: unknown): boolean {
-  if (raw === null || raw === undefined || raw === "") return true;
-  if (typeof raw !== "string") return false;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    const toggles = isRecord(parsed) ? parsed.toggles : null;
-    if (
-      !isRecord(parsed) ||
-      typeof parsed.preset !== "string" ||
-      !AI_POLICY_PRESETS.has(parsed.preset) ||
-      !isRecord(toggles) ||
-      !REQUIRED_TOGGLES.every((key) => key in toggles)
-    ) {
-      return false;
-    }
-    return toggles.chat === true;
-  } catch {
-    return false;
-  }
+  const policy = classifyAiPolicy(raw);
+  return (
+    policy.state === "missing" ||
+    (policy.state === "valid" && policy.toggles.chat)
+  );
 }
 
 /** Read Native's object-row result; an absent or malformed row is unreadable. */

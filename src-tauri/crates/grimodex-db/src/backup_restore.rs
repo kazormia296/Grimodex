@@ -444,6 +444,7 @@ pub fn create_persistent_live_safety_artifact(
     let logical = backups_dir.join(format!("grimodex-pre-restore-{stamp}.db"));
     match vacuum_live_into(db_path, &logical) {
         Ok(_) => {
+            crate::agent_runs::scrub_snapshot_copy(&logical)?;
             sync_path(&logical)?;
             verify_sqlite_ok(&logical)?;
             Ok(LiveSafetyArtifact::LogicalDb { path: logical })
@@ -613,6 +614,8 @@ pub fn install_staged_workspace_db(
             tracing::warn!("restore: staged FTS rebuild after Epoch mint failed: {error}");
         }
         drop(staged_database);
+        // Scrub before sealing the candidate and recording the installed digest.
+        crate::agent_runs::scrub_snapshot_copy(staged_plain)?;
         crate::migration_supervisor::seal_sqlite_image(staged_plain)
             .map_err(|error| anyhow::anyhow!("RESTORE_STAGED_EPOCH_SEAL_FAILED: {error}"))?;
         crate::migration_supervisor::installed_image_token_from_sealed(
@@ -1922,6 +1925,9 @@ pub(crate) fn wait_for_sole_owner(authority: &PinnedWorkspaceDb) -> AppResult<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_runs_schema_tests::{
+        assert_scrubbed_snapshot, assert_snapshot_body_bytes, seed_snapshot_contents,
+    };
     use crate::narrative_extraction::{
         canonical_work_key_for_epoch, AutomaticRunKind, REBUILD_DERIVED_WORK_KEY,
         VERIFY_WORK_KEY_PREFIX,
@@ -1957,6 +1963,68 @@ mod tests {
 
     fn backup_active(state: &WorkspaceState, path: &Path) {
         with_db_state(state, |db| db.backup_to(path)).expect("write backup");
+    }
+
+    #[test]
+    fn agent_runs_pre_restore_safety_scrubs_copy() {
+        let dir = crate::agent_runs_schema_tests::temp_workspace();
+        let live = dir.join("grimodex.db");
+        drop(seed_snapshot_contents(&live));
+        let artifact = create_persistent_live_safety_artifact(&dir, &live).expect("safety copy");
+        let LiveSafetyArtifact::LogicalDb { path } = artifact else {
+            panic!("expected logical safety copy");
+        };
+        assert_scrubbed_snapshot(&path);
+        assert_snapshot_body_bytes(&live, true);
+        std::fs::remove_dir_all(dir).expect("clean safety fixture");
+    }
+
+    #[test]
+    fn agent_runs_pre_restore_safety_removes_copy_on_scrub_failure() {
+        let dir = crate::agent_runs_schema_tests::temp_workspace();
+        let live = dir.join("grimodex.db");
+        let db = seed_snapshot_contents(&live);
+        db.with_conn(|conn| Ok(conn.execute_batch("DROP TABLE agent_run_interactions")?))
+            .expect("break scrub schema");
+        drop(db);
+
+        let Err(error) = create_persistent_live_safety_artifact(&dir, &live) else {
+            panic!("scrub must fail");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("AGENT_RUN_SNAPSHOT_SCRUB_FAILED"),
+            "{error}"
+        );
+        assert!(live.is_file());
+        assert_eq!(
+            std::fs::read_dir(dir.join("backups"))
+                .expect("list safety copies")
+                .count(),
+            0
+        );
+        std::fs::remove_dir_all(dir).expect("clean safety fixture");
+    }
+
+    #[test]
+    fn agent_runs_restore_scrubs_installed_image() {
+        let (dir, state) = fixture("agent-runs");
+        let staged = dir.join("candidate.db");
+        drop(seed_snapshot_contents(&staged));
+        assert_snapshot_body_bytes(&staged, true);
+
+        let live = dir.join("grimodex.db");
+        install_staged_workspace_db(
+            &state,
+            &dir,
+            &staged,
+            InstallStagedOptions::normal_restore(|| assert_scrubbed_snapshot(&live)),
+        )
+        .expect("install unsanitized candidate");
+        assert_scrubbed_snapshot(&live);
+        drop(state);
+        std::fs::remove_dir_all(dir).expect("clean restore fixture");
     }
 
     fn set_marker(state: &WorkspaceState, value: &str) {

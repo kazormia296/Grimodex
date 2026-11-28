@@ -14,9 +14,29 @@ struct Manifest {
 struct Tool {
     name: String,
     capability: String,
+    effect: Effect,
+    approval_mode: ApprovalMode,
     required_policy: Option<String>,
     allowed_channels: Vec<String>,
     requires_user_confirmation: bool,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum Effect {
+    Read,
+    Stage,
+    Ui,
+    Mutate,
+    Destructive,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+enum ApprovalMode {
+    None,
+    TaskScope,
+    Always,
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -50,6 +70,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         if !matches!(tool.capability.as_str(), "read" | "write" | "destructive") {
             return Err(format!("invalid capability for {}", tool.name).into());
+        }
+        let expected_approval = match tool.effect {
+            Effect::Read | Effect::Stage | Effect::Ui => ApprovalMode::None,
+            Effect::Mutate => ApprovalMode::TaskScope,
+            Effect::Destructive => ApprovalMode::Always,
+        };
+        if tool.approval_mode != expected_approval {
+            return Err(format!(
+                "invalid approvalMode for {}: {:?} requires {:?}",
+                tool.name, tool.effect, expected_approval
+            )
+            .into());
+        }
+        if (tool.effect == Effect::Read) != (tool.capability == "read")
+            || (tool.effect == Effect::Destructive) != (tool.capability == "destructive")
+        {
+            return Err(format!("effect and capability disagree for {}", tool.name).into());
+        }
+        if tool.effect == Effect::Ui
+            && !matches!(
+                tool.name.as_str(),
+                "run_app_command" | "apply_layout_preset" | "propose_setting_change"
+            )
+        {
+            return Err(format!("ui effect is not allowed for {}", tool.name).into());
         }
         if tool.capability == "read" && tool.required_policy.is_some() {
             return Err(format!("read tool {} must not require a policy", tool.name).into());

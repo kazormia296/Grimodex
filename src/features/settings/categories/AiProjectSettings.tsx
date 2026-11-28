@@ -1,11 +1,16 @@
 import { Suspense, lazy } from "react";
 import { useTranslation } from "react-i18next";
+import { AlertTriangle } from "lucide-react";
 import { useProjectSettings } from "../hooks/useProjectSettings";
 import { useSettingBoolean } from "../useSettingControl";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
 import { SettingTextarea } from "../components/SettingTextarea";
-import { parseAiPolicy, serializeAiPolicy } from "@/features/ai-policy/parse";
+import {
+  getAiPolicyClassification,
+  parseAiPolicy,
+  serializeAiPolicy,
+} from "@/features/ai-policy/parse";
 import { expandPreset, inferPreset } from "@/features/ai-policy/preset";
 import type { AiFeature, AiPolicyPreset } from "@/features/ai-policy/types";
 import { resolveSemanticRerankerCapability } from "@/features/chat/semanticRerankerMode";
@@ -46,6 +51,9 @@ export function AiProjectSettings() {
   if (isLoading || !project) return null;
 
   const currentPolicy = parseAiPolicy(project.aiPolicy);
+  // 壊れた値では書き込みが止まる。プリセットを選び直すと保存し直されて直る。
+  const policyDamaged =
+    getAiPolicyClassification(project.aiPolicy).state === "invalid";
   const rerankerCapability = resolveSemanticRerankerCapability({
     language: project.language,
     electronRuntime:
@@ -75,6 +83,18 @@ export function AiProjectSettings() {
   return (
     <>
       <SettingSection title={t("settings.project.aiPolicy", "AI使用ポリシー")}>
+        {policyDamaged && (
+          <p
+            role="alert"
+            className="mb-2 flex items-start gap-1.5 rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive"
+          >
+            <AlertTriangle
+              className="mt-0.5 h-3.5 w-3.5 shrink-0"
+              aria-hidden
+            />
+            {t("aiPolicy.disabledReason.invalidPolicy")}
+          </p>
+        )}
         {NIR1_LOCAL_GENERATION_UI_ENABLED && (
           <Suspense fallback={null}>
             <Nir1LocalDisclosure placement={2} />

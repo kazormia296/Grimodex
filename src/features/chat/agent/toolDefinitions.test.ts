@@ -80,6 +80,55 @@ describe("toolDefinitions", () => {
     expect(names).toEqual([...names].sort());
   });
 
+  it("pins the chat tool names without identity-correction commands", () => {
+    expect(AGENT_TOOLS.map((tool) => tool.name).sort()).toEqual([
+      "add_event_relation",
+      "apply_ai_tree_plan",
+      "apply_layout_preset",
+      "ask_user",
+      "create_codex_entry",
+      "create_event",
+      "create_foreshadow",
+      "create_snippet",
+      "delete_event",
+      "find_related_entries",
+      "get_app_help",
+      "get_app_help_index",
+      "get_chapter_summaries",
+      "get_character_timeline",
+      "get_chronicle_state",
+      "get_codex_entry",
+      "get_event_detail",
+      "get_foreshadow_detail",
+      "get_scene",
+      "get_scene_timeline_neighbors",
+      "get_thread_scenes",
+      "get_ui_state",
+      "list_chapters",
+      "list_codex_by_type",
+      "list_codex_tags",
+      "list_events",
+      "list_open_foreshadows",
+      "list_plot_threads",
+      "propose_scene_body",
+      "propose_setting_change",
+      "remove_event_relation",
+      "run_app_command",
+      "run_research",
+      "search_codex",
+      "search_codex_by_tags",
+      "search_events",
+      "search_scenes",
+      "search_snippets",
+      "set_event_participants",
+      "stamp_scene_event",
+      "unstamp_scene_event",
+      "update_codex_entry",
+      "update_event",
+      "update_foreshadow",
+    ]);
+  });
+
   it("snapshotAgentTools returns deep clone independent of source", () => {
     const snap = snapshotAgentTools();
     snap[0]!.description = "mutated";
@@ -169,6 +218,8 @@ describe("app help read tools", () => {
       expect(AGENT_TOOL_MANIFEST.find((tool) => tool.name === name)).toEqual({
         name,
         capability: "read",
+        effect: "read",
+        approvalMode: "none",
         requiredPolicy: null,
         allowedChannels: ["agent", "hermes", "native"],
         requiresUserConfirmation: false,

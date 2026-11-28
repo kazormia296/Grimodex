@@ -2,7 +2,6 @@ import type {
   CoreChronicleReadContext,
   CoreTreeNode,
 } from "../../mastraRead/ports.js";
-import type { EventPrecision } from "../db/schema.js";
 import {
   collectChronicleCandidateCodexIds,
   dropHiddenCodexFromChronicleInput,
@@ -21,10 +20,8 @@ import {
   type ChronicleCalendar,
   type DateLang,
 } from "../features/chronicle/chronicleTime.js";
-import {
-  resolveSceneAnchor,
-  type SceneChronicle,
-} from "../features/chronicle/resolveSceneAnchor.js";
+import { resolveSnapshotSceneAnchor } from "../features/chronicle/chronicleAnchorByDate.js";
+import { effectiveEventPrecision } from "../features/chronicle/chronicleSpan.js";
 import { cmpKeys } from "../features/tree/fractionalIndex.js";
 import { requireCoreProjectId } from "./readContext.js";
 import type { CoreToolResult } from "./toolResult.js";
@@ -132,6 +129,7 @@ export async function listEvents(
         e.primaryCodexId != null && !hidden.has(e.primaryCodexId)
           ? (names.get(e.primaryCodexId) ?? null)
           : null,
+      precision: effectiveEventPrecision(e),
       ...revealOf(e.id),
     })),
   };
@@ -218,7 +216,7 @@ export async function getEventDetail(
       ev.endGranularity,
       lang,
     ),
-    precision: ev.precision,
+    precision: effectiveEventPrecision(ev),
     primaryCharacter:
       ev.primaryCodexId != null && !hidden.has(ev.primaryCodexId)
         ? (names.get(ev.primaryCodexId) ?? null)
@@ -297,7 +295,8 @@ export async function getCharacterTimeline(
     if (
       e.primaryCodexId === codexId &&
       e.kind === "birth" &&
-      e.startTime != null
+      e.startTime != null &&
+      effectiveEventPrecision(e) !== "unknown"
     )
       birthTime =
         birthTime == null ? e.startTime : Math.min(birthTime, e.startTime);
@@ -315,6 +314,7 @@ export async function getCharacterTimeline(
         birthTime != null && e.startTime != null && daysPerYear > 0
           ? Math.floor((e.startTime - birthTime) / daysPerYear)
           : null,
+      precision: effectiveEventPrecision(e),
       ...revealOf(e.id),
     })),
   };
@@ -363,18 +363,6 @@ export async function getChronicleState(
     ]);
   const nodes: readonly CoreTreeNode[] = ctx.getTreeState().nodes;
   const readingOrder = new Map(ctx.chronicle.getReadingOrder(nodes));
-  // push (buildChronicleSnapshotTextForScene) と同じアンカー結果になるよう、
-  // シーン自身の暦日付（scene-own アンカー源）を tree ノードから構築する。
-  const sceneChronicle = new Map<string, SceneChronicle>();
-  for (const n of nodes) {
-    if (n.nodeType !== "scene") continue;
-    sceneChronicle.set(n.id, {
-      startTime: n.chronicleStartTime ?? null,
-      startMinute: n.chronicleStartMinute ?? null,
-      startGranularity: n.chronicleStartGranularity ?? "none",
-      precision: (n.chroniclePrecision ?? "exact") as EventPrecision,
-    });
-  }
   const ids = collectChronicleCandidateCodexIds({
     events,
     participants,
@@ -387,27 +375,22 @@ export async function getChronicleState(
     { events, participants, codexNames: names },
     hidden,
   );
-  const anchor = resolveSceneAnchor(sceneId, {
-    sceneEvents,
-    events: input.events,
+  const args = {
+    ...input,
+    sceneId,
+    nodes,
     readingOrder,
-    sceneChronicle,
-  });
-  const characterIds = pickSnapshotCharacters({
-    anchor,
-    events: input.events,
-    participants: input.participants,
-  });
+    sceneEvents,
+    calendar: calendarRow ? calendarFromRow(calendarRow) : null,
+  };
+  const anchor = resolveSnapshotSceneAnchor(sceneId, args);
+  const characterIds = pickSnapshotCharacters({ ...args, anchor });
   const snapshot = deriveChronicleSnapshot(
     {
+      ...args,
       anchor,
-      events: input.events,
-      participants: input.participants,
       relations,
-      sceneEvents,
-      calendar: calendarRow ? calendarFromRow(calendarRow) : null,
       characterIds,
-      codexNames: input.codexNames,
       // 読む順は archived の場面とその下を含まない（buildReadingOrder）。
       revealSceneView: { nodes, currentSceneId: sceneId, readingOrder },
     },

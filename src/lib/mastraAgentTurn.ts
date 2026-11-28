@@ -137,7 +137,8 @@ export async function listenMastraAgentTurnProgress(
 
 /** Starts a turn; settles when the turn does. */
 export async function startMastraAgentTurn(
-  request: MastraAgentTurnStartRequest,
+  // writerSessionId はこの wrapper が付ける（呼び手は渡さない）。
+  request: Omit<MastraAgentTurnStartRequest, "writerSessionId">,
 ): Promise<MastraAgentTurnStartOutcome> {
   let raw: unknown;
   try {

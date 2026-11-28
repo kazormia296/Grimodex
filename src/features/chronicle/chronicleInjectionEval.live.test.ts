@@ -144,7 +144,8 @@ function mkEvent(
     endTime: e.endTime ?? null,
     startMinute: e.startMinute ?? null,
     endMinute: e.endMinute ?? null,
-    startGranularity: e.startGranularity ?? "none",
+    startGranularity:
+      e.startGranularity ?? (e.startTime != null ? "day" : "none"),
     endGranularity: e.endGranularity ?? "none",
     precision: e.precision ?? "exact",
     kind: e.kind ?? "generic",

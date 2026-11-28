@@ -161,6 +161,8 @@ const MASTRA_WRITE_COMMANDS: Readonly<
   create_foreshadow: "agent_foreshadow_create",
   update_foreshadow: "agent_foreshadow_update",
   create_snippet: "agent_snippet_create",
+  apply_ai_tree_plan: "ai_tree_plan_apply",
+  propose_scene_body: "agent_propose_scene_body",
   create_event: "agent_event_create",
   update_event: "agent_event_update",
   delete_event: "agent_event_delete",
@@ -1021,6 +1023,7 @@ export function createMastraTurnOwner(
     toolCallId: string,
     toolName: MastraAgentTurnQuestionToolName,
     args: Readonly<Record<string, unknown>>,
+    authorization?: AgentWireCapabilityGrant,
   ): Promise<MastraAgentTurnUiToolResult> {
     const turn = attached.get(turnId);
     if (!turn || turn.finished) throw new Error("MASTRA_AGENT_TURN_NOT_ACTIVE");
@@ -1046,6 +1049,7 @@ export function createMastraTurnOwner(
       toolCallId,
       toolName,
       args,
+      ...(authorization ? { authorization } : {}),
       deadlineAt: Date.now() + timeoutMs,
     };
     const parsed = parseMastraAgentTurnQuestionPayload(payload);
@@ -1494,7 +1498,7 @@ export function createMastraTurnOwner(
       const writeCapabilities = new Map<string, AgentWireCapabilityGrant>();
       const writeToolResults = new Map<
         string,
-        { readonly content: unknown; readonly undoId: string }
+        { readonly content: unknown; readonly undoId?: string }
       >();
       const uiToolBindings = uiToolNames.map((name) => {
         const definition = uiTools?.get(name);
@@ -1568,6 +1572,52 @@ export function createMastraTurnOwner(
               name,
               args as Record<string, unknown>,
             );
+            if (
+              name === "apply_ai_tree_plan" ||
+              name === "propose_scene_body"
+            ) {
+              const result = await requestUiTool(
+                turn.turnId,
+                toolCallId,
+                name,
+                normalized,
+                grant,
+              );
+              uiToolResults.set(toolCallId, result);
+              if (result.error) throw new Error(result.error);
+              if (result.content !== undefined) {
+                writeToolResults.set(toolCallId, {
+                  content: result.content,
+                  ...(result.undoId ? { undoId: result.undoId } : {}),
+                });
+              }
+              if (name === "apply_ai_tree_plan") {
+                if (!result.undoId) {
+                  throw new Error("MASTRA_AGENT_WRITE_RESULT_INVALID");
+                }
+                writeToolResults.set(toolCallId, {
+                  content: result.content,
+                  undoId: result.undoId,
+                });
+                const content = result.content as Record<string, unknown>;
+                const targetId = ["createdIds", "movedIds", "renamedIds"]
+                  .flatMap((key) =>
+                    Array.isArray(content?.[key]) ? content[key] as unknown[] : [],
+                  )
+                  .find((id): id is string => typeof id === "string");
+                sendWriteCompleted(turn.senderId, {
+                  targetId: targetId ?? requestId,
+                  undoId: result.undoId,
+                });
+              }
+              assertLive(turn);
+              const text = JSON.stringify(result.content);
+              return {
+                text,
+                summary: result.summary,
+                tokensUsed: result.tokensUsed,
+              };
+            }
             if (name === "update_codex_entry") {
               const raw = await backend.dbExecute(
                 "SELECT version FROM codex_entries WHERE id = ? AND project_id = ? LIMIT 1",

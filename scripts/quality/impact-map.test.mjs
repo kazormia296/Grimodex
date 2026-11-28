@@ -19,6 +19,7 @@ import {
   selectImpact,
   validateAcceptanceGateRegistration,
 } from "./impact-map.mjs";
+import { planImpactCommands } from "../local-ci-impact-parts.mjs";
 import {
   C2ZC_RUST_ACCEPTANCE_GATES,
   C2ZC_RUST_ACCEPTANCE_RUNNER_COMMAND,
@@ -688,9 +689,9 @@ test("NIR-1 post-B paths select executable core/DB checks and retain separate Na
   assert.equal(postBSelection.fallback, false);
   assert.equal(postBSelection.allSelected, false);
   assert.deepEqual(postBSelection.suiteIds, [
-    "nir1-entity-relation-review",
-    "narrative-runtime",
     "tool-policy",
+    "narrative-runtime",
+    "nir1-entity-relation-review",
   ]);
   assert.ok(
     postBSelection.matchedRuleIds.includes("narrative-runtime-authority"),
@@ -2284,6 +2285,46 @@ test("a docs-markdown-only selection keeps the suite selection but drops every c
       /cargo/,
       `${script} must not run cargo`,
     );
+  }
+});
+
+test("observation prep runs last in its hosted Quick part for full and partial selections", async () => {
+  const map = await loadImpactMap();
+  const suiteId = "nir1-entity-relation-review";
+  const definitions = LIGHT_SUITE_DEFINITIONS;
+  const observationCommand = definitions[suiteId].commands.findIndex((command) =>
+    command.includes("scripts/quality/nir1-graph/observation-prep.test.mjs"),
+  );
+  assert.notEqual(observationCommand, -1);
+
+  const assertObservationLastInPart = (selection) => {
+    const plan = planImpactCommands(selection, definitions);
+    const observation = plan.find(
+      (entry) => entry.suiteId === suiteId && entry.stepIndex === observationCommand,
+    );
+    assert.ok(observation, "selection includes the observation prep command");
+    const samePart = plan.filter((entry) => entry.part === observation.part);
+    assert.equal(samePart.at(-1), observation);
+  };
+
+  const full = selectImpact(map, ["docs/some-new-note.md"]);
+  assert.equal(full.allSelected, true);
+  assertObservationLastInPart(full);
+
+  const partialRules = map.rules.filter(
+    (candidate) => candidate.suites.includes(suiteId) && !candidate.suites.includes("all"),
+  );
+  assert.ok(partialRules.length > 0);
+  for (const rule of partialRules) {
+    const matchingPath = rule.paths
+      .map((pattern) => pattern.replace(/\*\*/gu, "sample").replace(/\*/gu, "sample"))
+      .find((changedPath) =>
+        selectImpact(map, [changedPath]).matchedRuleIds.includes(rule.id),
+      );
+    assert.ok(matchingPath, `a representative path matches ${rule.id}`);
+    const selection = selectImpact(map, [matchingPath]);
+    assert.equal(selection.allSelected, false, rule.id);
+    assertObservationLastInPart(selection);
   }
 });
 
