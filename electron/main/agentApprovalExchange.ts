@@ -1,5 +1,6 @@
 import type {
   AgentRunApprovalPort,
+  AgentRunResolution,
   AgentRunState,
 } from "./agentRunRecorderPort.js";
 import type {
@@ -18,12 +19,10 @@ import {
 export const AGENT_APPROVAL_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
 export const AGENT_APPROVAL_CAPABILITY_TTL_MS = 60 * 1000;
 
-export interface AgentApprovalRunHandle {
-  readonly runId: string;
-  transact<T extends AgentRunState>(
-    op: (version: number) => Promise<T>,
-  ): Promise<T>;
-}
+export type AgentApprovalRunHandle = Pick<
+  Extract<AgentRunResolution, { readonly kind: "recorded" }>,
+  "runId" | "transact"
+>;
 
 export interface AgentApprovalRequest {
   readonly senderId: number;
@@ -386,7 +385,7 @@ function summaryBytes(value: string): number {
 }
 
 function requestKey(request: AgentApprovalRequest): string {
-  return `${request.run.runId}\0${request.toolCallId}`;
+  return `${request.run.runId}\0${request.executionId}\0${request.toolCallId}`;
 }
 
 function createLiveWait(
@@ -553,7 +552,7 @@ export function createAgentApprovalExchange<
     try {
       await dependencies.port.updateToolCall(
         request.run.runId,
-        request.toolCallId,
+        { executionId: request.executionId, toolCallId: request.toolCallId },
         { executionState: "failed" },
       );
     } catch {
@@ -642,7 +641,7 @@ export function createAgentApprovalExchange<
     try {
       await dependencies.port.updateToolCall(
         request.run.runId,
-        request.toolCallId,
+        { executionId: request.executionId, toolCallId: request.toolCallId },
         {
           mainOwnedProvenanceId: prepared.grant.mainOwnedProvenanceId,
           capabilityState: "issued",
@@ -667,7 +666,7 @@ export function createAgentApprovalExchange<
       try {
         await dependencies.port.updateToolCall(
           request.run.runId,
-          request.toolCallId,
+          { executionId: request.executionId, toolCallId: request.toolCallId },
           { executionState: "failed" },
         );
       } catch {
@@ -759,7 +758,7 @@ export function createAgentApprovalExchange<
       try {
         await dependencies.port.updateToolCall(
           input.run.runId,
-          input.toolCallId,
+          { executionId: input.executionId, toolCallId: input.toolCallId },
           {
             capabilityState: "awaiting_approval",
           },
@@ -788,6 +787,7 @@ export function createAgentApprovalExchange<
             runId: input.run.runId,
             expectedVersion,
             interactionId,
+            executionId: input.executionId,
             toolCallId: input.toolCallId,
             toolName: input.toolName,
             argsDigest: digest!,
@@ -893,16 +893,23 @@ export function createAgentApprovalExchange<
 
   async function recordExecution(
     runId: string,
+    executionId: string,
     toolCallId: string,
     executionState: Extract<AgentRunExecutionState, "committed" | "failed">,
   ): Promise<void> {
-    const watch = capabilityWatches.get(`${runId}\0${toolCallId}`);
+    const watch = capabilityWatches.get(
+      `${runId}\0${executionId}\0${toolCallId}`,
+    );
     if (executionState === "failed") watch?.revoke();
     else watch?.cleanup();
-    await dependencies.port.updateToolCall(runId, toolCallId, {
-      capabilityState: "consumed",
-      executionState,
-    });
+    await dependencies.port.updateToolCall(
+      runId,
+      { executionId, toolCallId },
+      {
+        capabilityState: "consumed",
+        executionState,
+      },
+    );
   }
 
   return { request, resolve, recordExecution };

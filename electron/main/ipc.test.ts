@@ -706,18 +706,20 @@ describe("Agent approval capability exchange helpers", () => {
       transact: <T>(op: (version: number) => Promise<T>) =>
         op(port.readRun("run-stop").version),
     };
-    await port.appendToolCall("run-stop", {
-      toolCallId: "call-stop",
-      name: "update_codex_entry",
-      canonicalArgs: modelInput,
-      argsDigest: agentToolInputDigest("update_codex_entry", modelInput)!,
-      executionId: "execution-stop",
-      chatMessageId: "message-stop",
-      mainOwnedProvenanceId: "",
-      model: "gpt-test",
-      capabilityState: "not_issued",
-      executionState: "pending",
-    });
+    await port.appendToolCalls("run-stop", [
+      {
+        toolCallId: "call-stop",
+        name: "update_codex_entry",
+        canonicalArgs: modelInput,
+        argsDigest: agentToolInputDigest("update_codex_entry", modelInput)!,
+        executionId: "execution-stop",
+        chatMessageId: "message-stop",
+        mainOwnedProvenanceId: "",
+        model: "gpt-test",
+        capabilityState: "not_issued",
+        executionState: "pending",
+      },
+    ]);
     const controller = new AbortController();
     const exchange = createAgentApprovalExchange({
       port,
@@ -798,18 +800,20 @@ describe("Agent approval capability exchange helpers", () => {
     ).toBeNull();
 
     port.createRunningRun("run-failed");
-    await port.appendToolCall("run-failed", {
-      toolCallId: "call-failed",
-      name: "update_codex_entry",
-      canonicalArgs: modelInput,
-      argsDigest: agentToolInputDigest("update_codex_entry", modelInput)!,
-      executionId: "execution-failed",
-      chatMessageId: "message-failed",
-      mainOwnedProvenanceId: "",
-      model: "gpt-test",
-      capabilityState: "not_issued",
-      executionState: "pending",
-    });
+    await port.appendToolCalls("run-failed", [
+      {
+        toolCallId: "call-failed",
+        name: "update_codex_entry",
+        canonicalArgs: modelInput,
+        argsDigest: agentToolInputDigest("update_codex_entry", modelInput)!,
+        executionId: "execution-failed",
+        chatMessageId: "message-failed",
+        mainOwnedProvenanceId: "",
+        model: "gpt-test",
+        capabilityState: "not_issued",
+        executionState: "pending",
+      },
+    ]);
     const secondExchange = createAgentApprovalExchange({
       port,
       isPolicyAllowed: () => true,
@@ -867,7 +871,12 @@ describe("Agent approval capability exchange helpers", () => {
     const failedResult = await secondCompletion;
     expect(failedResult.kind).toBe("approved");
     if (failedResult.kind !== "approved") return;
-    await secondExchange.recordExecution("run-failed", "call-failed", "failed");
+    await secondExchange.recordExecution(
+      "run-failed",
+      "execution-failed",
+      "call-failed",
+      "failed",
+    );
     expect(
       consumeAgentAuthorityCapability(
         "agent_codex_update",

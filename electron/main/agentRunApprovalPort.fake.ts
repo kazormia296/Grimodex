@@ -3,6 +3,7 @@ import type {
   AgentRunApprovalPort,
   AgentRunLedgerEntry,
   AgentRunState,
+  AgentRunToolCallKey,
   PendingApproval,
 } from "./agentRunRecorderPort.js";
 import type {
@@ -29,6 +30,7 @@ type Run = {
   version: number;
   status: AgentRunStatus;
   ledger: MutableLedgerEntry[];
+  auditExecutionIds: string[];
 };
 
 function fail(code: string): never {
@@ -37,6 +39,11 @@ function fail(code: string): never {
 
 function utf8Bytes(value: string): number {
   return new TextEncoder().encode(value).byteLength;
+}
+
+function validateToolCallKey(executionId: string, toolCallId: string): void {
+  if (!executionId) fail("AGENT_RUN_EXECUTION_ID_INVALID");
+  if (!toolCallId) fail("AGENT_RUN_TOOL_CALL_ID_INVALID");
 }
 
 function validBasis(
@@ -99,6 +106,7 @@ export class FakeAgentRunApprovalPort implements AgentRunApprovalPort {
       version: 0,
       status: "running" as const,
       ledger: [],
+      auditExecutionIds: [],
     };
     this.#runs.set(runId, run);
     return this.readRun(runId);
@@ -125,10 +133,17 @@ export class FakeAgentRunApprovalPort implements AgentRunApprovalPort {
       : null;
   }
 
-  readToolCall(runId: string, toolCallId: string): AgentRunLedgerEntry | null {
+  readToolCall(
+    runId: string,
+    key: AgentRunToolCallKey,
+  ): AgentRunLedgerEntry | null {
     const entry = this.#runs
       .get(runId)
-      ?.ledger.find((item) => item.toolCallId === toolCallId);
+      ?.ledger.find(
+        (item) =>
+          item.executionId === key.executionId &&
+          item.toolCallId === key.toolCallId,
+      );
     return entry ? { ...entry } : null;
   }
 
@@ -159,6 +174,7 @@ export class FakeAgentRunApprovalPort implements AgentRunApprovalPort {
     if (input.targetBasis !== null && !validBasis(input.targetBasis))
       fail("AGENT_RUN_TARGET_BASIS_INVALID");
     const run = this.#requireRun(input.runId);
+    this.#requireNonterminal(input.runId);
     if (
       [...this.#interactions.values()].some(
         (item) =>
@@ -168,6 +184,15 @@ export class FakeAgentRunApprovalPort implements AgentRunApprovalPort {
     ) {
       fail("AGENT_RUN_PENDING_INTERACTION_EXISTS");
     }
+    validateToolCallKey(input.executionId, input.toolCallId);
+    const entry = [...run.ledger]
+      .reverse()
+      .find((item) => item.toolCallId === input.toolCallId);
+    if (!entry) fail("AGENT_RUN_UNKNOWN_TOOL_CALL_ID");
+    if (entry.executionId !== input.executionId)
+      fail("AGENT_RUN_TOOL_CALL_EXECUTION_MISMATCH");
+    if (entry.name !== input.toolName || entry.argsDigest !== input.argsDigest)
+      fail("AGENT_RUN_TOOL_CALL_MISMATCH");
     this.#requireCas(input.runId, input.expectedVersion, "running");
     if (this.#interactions.has(input.interactionId))
       throw new Error(
@@ -178,6 +203,7 @@ export class FakeAgentRunApprovalPort implements AgentRunApprovalPort {
     this.#interactions.set(input.interactionId, {
       runId: input.runId,
       interactionId: input.interactionId,
+      executionId: input.executionId,
       version: 0,
       toolCallId: input.toolCallId,
       toolName: input.toolName,
@@ -232,27 +258,56 @@ export class FakeAgentRunApprovalPort implements AgentRunApprovalPort {
     return pending;
   }
 
-  async appendToolCall(
+  async appendToolCalls(
     runId: string,
-    entry: AgentRunLedgerEntry,
+    entries: readonly AgentRunLedgerEntry[],
   ): Promise<void> {
-    const run = this.#requireNonterminal(runId);
-    if (run.ledger.some((item) => item.toolCallId === entry.toolCallId))
-      fail("AGENT_RUN_DUPLICATE_TOOL_CALL_ID");
-    run.ledger.push(entry);
+    if (entries.length === 0) fail("AGENT_RUN_EMPTY_TOOL_CALL_BATCH");
+    const run = this.#requireRun(runId);
+    this.#requireActive(runId);
+    const executionId = entries[0]!.executionId;
+    const pendingToolCallId = [...this.#interactions.values()].find(
+      (item) => item.runId === runId && item.status === "pending",
+    )?.toolCallId;
+    const toolCallIds = new Set(
+      run.ledger
+        .filter((item) => item.executionId === executionId)
+        .map((item) => item.toolCallId),
+    );
+    for (const entry of entries) {
+      validateToolCallKey(entry.executionId, entry.toolCallId);
+      if (entry.executionId !== executionId)
+        fail("AGENT_RUN_TOOL_CALL_BATCH_EXECUTION_MISMATCH");
+      if (pendingToolCallId === entry.toolCallId)
+        fail("AGENT_RUN_PENDING_INTERACTION_EXISTS");
+      if (toolCallIds.has(entry.toolCallId))
+        fail("AGENT_RUN_DUPLICATE_TOOL_CALL_ID");
+      toolCallIds.add(entry.toolCallId);
+    }
+    if (!run.auditExecutionIds.includes(executionId)) {
+      if (run.auditExecutionIds.length >= 512)
+        fail("AGENT_RUN_AUDIT_EXECUTION_IDS_LIMIT");
+      run.auditExecutionIds.push(executionId);
+    }
+    run.ledger.push(...entries.map((entry) => ({ ...entry })));
   }
 
   async updateToolCall(
     runId: string,
-    toolCallId: string,
+    call: AgentRunToolCallKey,
     update: {
       readonly mainOwnedProvenanceId?: string;
       readonly capabilityState?: AgentRunCapabilityState;
       readonly executionState?: Exclude<AgentRunExecutionState, "pending">;
     },
   ): Promise<void> {
+    validateToolCallKey(call.executionId, call.toolCallId);
     const run = this.#requireNonterminal(runId);
-    const entry = run.ledger.find((item) => item.toolCallId === toolCallId);
+    const entry = run.ledger.find(
+      (item) =>
+        item.executionId === call.executionId &&
+        item.toolCallId === call.toolCallId,
+    );
     if (!entry) fail("AGENT_RUN_UNKNOWN_TOOL_CALL_ID");
     if (
       update.mainOwnedProvenanceId === undefined &&
@@ -329,6 +384,13 @@ export class FakeAgentRunApprovalPort implements AgentRunApprovalPort {
     const run = this.#requireRun(runId);
     if (["completed", "failed", "cancelled", "discarded"].includes(run.status))
       fail("AGENT_RUN_TERMINAL");
+    return run;
+  }
+
+  #requireActive(runId: string): Run {
+    const run = this.#requireNonterminal(runId);
+    if (!["running", "waiting_user", "waiting_approval"].includes(run.status))
+      fail("AGENT_RUN_VERSION_OR_STATUS_MISMATCH");
     return run;
   }
 

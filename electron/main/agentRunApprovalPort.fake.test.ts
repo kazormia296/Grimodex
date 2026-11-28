@@ -12,5 +12,6 @@ describeAgentRunApprovalPortContract("FakeAgentRunApprovalPort", () => {
     interrupt: (runId, expectedVersion) =>
       port.interruptForApprovalTimeout({ runId, expectedVersion }),
     readInteraction: (interactionId) => port.readInteraction(interactionId),
+    readToolCall: (runId, key) => port.readToolCall(runId, key),
   };
 });

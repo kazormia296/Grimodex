@@ -159,7 +159,7 @@ function makeFixture(
       capabilityState: "not_issued",
       executionState: "pending",
     };
-    await port.appendToolCall(run.runId, entry);
+    await port.appendToolCalls(run.runId, [entry]);
   }
 
   return {
@@ -192,7 +192,12 @@ describe("agent approval exchange", () => {
     const completion = f.exchange.request(f.request);
     await f.pendingEntered;
 
-    expect(f.port.readToolCall("run-1", "call-1")).toMatchObject({
+    expect(
+      f.port.readToolCall("run-1", {
+        executionId: "execution-1",
+        toolCallId: "call-1",
+      }),
+    ).toMatchObject({
       capabilityState: "awaiting_approval",
       executionState: "pending",
     });
@@ -211,7 +216,12 @@ describe("agent approval exchange", () => {
       interactionId: "interaction-1",
     });
     expect(f.activated).toHaveLength(1);
-    expect(f.port.readToolCall("run-1", "call-1")).toMatchObject({
+    expect(
+      f.port.readToolCall("run-1", {
+        executionId: "execution-1",
+        toolCallId: "call-1",
+      }),
+    ).toMatchObject({
       capabilityState: "issued",
       mainOwnedProvenanceId: "provenance-1",
     });
@@ -235,8 +245,18 @@ describe("agent approval exchange", () => {
       decision: "approved",
     });
     await expect(completion).resolves.toMatchObject({ kind: "approved" });
-    await completed.exchange.recordExecution("run-1", "call-1", "committed");
-    expect(completed.port.readToolCall("run-1", "call-1")).toMatchObject({
+    await completed.exchange.recordExecution(
+      "run-1",
+      "execution-1",
+      "call-1",
+      "committed",
+    );
+    expect(
+      completed.port.readToolCall("run-1", {
+        executionId: "execution-1",
+        toolCallId: "call-1",
+      }),
+    ).toMatchObject({
       capabilityState: "consumed",
       executionState: "committed",
     });
@@ -255,8 +275,18 @@ describe("agent approval exchange", () => {
       decision: "approved",
     });
     await expect(failedCompletion).resolves.toMatchObject({ kind: "approved" });
-    await failed.exchange.recordExecution("run-1", "call-1", "failed");
-    expect(failed.port.readToolCall("run-1", "call-1")).toMatchObject({
+    await failed.exchange.recordExecution(
+      "run-1",
+      "execution-1",
+      "call-1",
+      "failed",
+    );
+    expect(
+      failed.port.readToolCall("run-1", {
+        executionId: "execution-1",
+        toolCallId: "call-1",
+      }),
+    ).toMatchObject({
       capabilityState: "consumed",
       executionState: "failed",
     });
@@ -310,7 +340,12 @@ describe("agent approval exchange", () => {
     await expect(completion).resolves.toEqual({ kind: "rejected" });
     expect(f.dependencies.prepareCapability).not.toHaveBeenCalled();
     expect(f.activated).toEqual([]);
-    expect(f.port.readToolCall("run-1", "call-1")).toMatchObject({
+    expect(
+      f.port.readToolCall("run-1", {
+        executionId: "execution-1",
+        toolCallId: "call-1",
+      }),
+    ).toMatchObject({
       capabilityState: "awaiting_approval",
       executionState: "failed",
     });
@@ -644,7 +679,12 @@ describe("agent approval exchange", () => {
     });
     expect(changedBasis.dependencies.prepareCapability).not.toHaveBeenCalled();
     expect(changedBasis.activated).toEqual([]);
-    expect(changedBasis.port.readToolCall("run-1", "call-1")).toMatchObject({
+    expect(
+      changedBasis.port.readToolCall("run-1", {
+        executionId: "execution-1",
+        toolCallId: "call-1",
+      }),
+    ).toMatchObject({
       executionState: "failed",
     });
   });
@@ -1031,7 +1071,12 @@ describe("agent approval exchange", () => {
       expect(decide).not.toHaveBeenCalled();
       expect(invalidate).not.toHaveBeenCalled();
       expect(update).not.toHaveBeenCalled();
-      expect(f.port.readToolCall("run-1", "call-1")).toMatchObject({
+      expect(
+        f.port.readToolCall("run-1", {
+          executionId: "execution-1",
+          toolCallId: "call-1",
+        }),
+      ).toMatchObject({
         capabilityState: "awaiting_approval",
         executionState: "pending",
       });
@@ -1108,7 +1153,12 @@ describe("agent approval exchange", () => {
         reason: "port_failed",
       });
       expect(unprepared.activated).toEqual([]);
-      expect(unprepared.port.readToolCall("run-1", "call-1")).toMatchObject({
+      expect(
+        unprepared.port.readToolCall("run-1", {
+          executionId: "execution-1",
+          toolCallId: "call-1",
+        }),
+      ).toMatchObject({
         capabilityState: "awaiting_approval",
         executionState: "pending",
       });
@@ -1280,7 +1330,12 @@ describe("agent approval exchange", () => {
       reason: "port_failed",
     });
     expect(f.activated).toEqual([]);
-    expect(f.port.readToolCall("run-1", "call-1")).toMatchObject({
+    expect(
+      f.port.readToolCall("run-1", {
+        executionId: "execution-1",
+        toolCallId: "call-1",
+      }),
+    ).toMatchObject({
       capabilityState: "issued",
       executionState: "failed",
     });
@@ -1349,7 +1404,12 @@ describe("agent approval exchange", () => {
     expect(f.port.readInteraction("interaction-1")?.status).toBe("pending");
     expect(f.dependencies.prepareCapability).not.toHaveBeenCalled();
     expect(f.activated).toEqual([]);
-    expect(f.port.readToolCall("run-1", "call-1")).toMatchObject({
+    expect(
+      f.port.readToolCall("run-1", {
+        executionId: "execution-1",
+        toolCallId: "call-1",
+      }),
+    ).toMatchObject({
       capabilityState: "awaiting_approval",
       executionState: "pending",
     });
@@ -1389,6 +1449,7 @@ describe("agent approval exchange", () => {
         runId: f.request.run.runId,
         expectedVersion,
         interactionId: "saved-interaction",
+        executionId: f.request.executionId,
         toolCallId: f.request.toolCallId,
         toolName: f.request.toolName,
         argsDigest: "digest-1",
