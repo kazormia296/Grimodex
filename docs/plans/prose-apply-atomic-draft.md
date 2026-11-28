@@ -6,7 +6,7 @@
 
 本文の提案（`prose_staging`）は、適用の記録（`accepted`）を本文の保存より前に確定し、保存に失敗しても戻さない。
 
-- 画面を開かない自動適用（設定 `ai.autoAcceptBodyProposals`、既定は無効）：`autoApplyProseProposal` が accept → `persistSceneBody` の順（`autoApplyProse.ts:257-269`）。保存が失敗しても `accepted` のまま（試験：`claude/m4-auto-apply-check` の `autoApplyProse.saveFailure.test.ts`、偽装は DB と保存の境界）。手動の確認に積まれるが、「適用」は `not in proposed status` で拒まれて「処理済み」で閉じる。再起動の後の一覧は `proposed` だけ（読み）。
+- 画面を開かない自動適用（設定 `ai.autoAcceptBodyProposals`、既定は無効）：`autoApplyProseProposal` が accept → `persistSceneBody` の順（`autoApplyProse.ts:257-269`）。保存が失敗しても `accepted` のまま（試験：M4 の手元の未 push の枝 `claude/m4-auto-apply-check` の `autoApplyProse.saveFailure.test.ts`。偽装は DB と保存の境界。この PR には含めない）。手動の確認に積まれるが、「適用」は `not in proposed status` で拒まれて「処理済み」で閉じる。再起動の後の一覧は `proposed` だけ（読み）。
 - 画面の手動「適用」：accept → `diffApi.accept()`（入力欄へ反映）→ 自動保存（`useAgentProseStaging.ts:176-218`）。保存の失敗は通知され、本文は未保存のまま入力欄に残る。タブを閉じると未保存の確認が出る。**保存できないまま破棄を選ぶか強制終了すると**本文を失いうる。提案の読み直しは `proposed` だけなので再表示されない（読み）。
 - アプリ内 agent と Mastra の `propose_scene_body` は `proposed` を作るだけで、適用は上の 2 経路。standalone MCP は dispatch の前に拒むので、適用へは来ない。
 
@@ -44,7 +44,7 @@ A でも残る限界：版の条件で防げるのは「適用の時点で、本
 1. **段 1：自動適用**。`autoApplyProseProposal` を新しい命令 1 回に置き換える（版の条件つき）。失敗した提案は `proposed` のまま、今の手動の確認の流れ（stale は conflict の案内）に乗る。段 1 だけの間は、同じ提案を旧の手動「適用」と自動が同時に取ると、手動が先に `accepted` を確定して自動が拒まれ、手動の保存が失敗した場合の取りこぼしが残る。
 2. **段 2：手動の「適用」**。入力欄へ反映した直後の内容を、自動保存を待たずに同じ命令で保存する。難所：失敗した場合、入力欄には本文があるのに提案は `proposed` なので、自動保存が本文だけを後で保存すると、提案が再表示されて二重に入りうる。扱い（反映を戻す／次の自動保存に記録を同梱する）は段 2 の設計で決め、伺う。
 
-Release B の「提案が適用されたら手順を完了」（問 32）は手動も対象なので、段 2 が無ければ手動の適用は完了の根拠にできない。段 1・2 の後は、新しい経路の `accepted` は適用の時点で本文も保存した証拠になる（今の本文に残っていることは別。版の復元などは `accepted` を変えない）。それまでは本文の保存の成功を根拠にする（`release-b-session-tasks-screen-draft.md` の下書き）。
+Release B の「提案が適用されたら手順を完了」（問 32）は手動も対象なので、段 2 が無ければ手動の適用は完了の根拠にできない。段 1・2 の後は、新しい経路の `accepted` は適用の時点で本文も保存した証拠になる（今の本文に残っていることは別。版の復元などは `accepted` を変えない）。それまでは本文の保存の成功を根拠にする（Release B の未 push の下書きにもそう書いた）。
 
 ## 5. 他の道との重なり
 
