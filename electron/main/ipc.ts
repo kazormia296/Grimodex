@@ -1066,7 +1066,10 @@ function bindApprovedAgentTarget(
     ) {
       return false;
     }
-    bound.expected = { ...expected };
+    // Native の期待状態の欄だけを渡す。kind は main の中の区別で、Native は未知の欄を拒む。
+    const nativeExpected: Record<string, unknown> = { ...expected };
+    delete nativeExpected.kind;
+    bound.expected = nativeExpected;
   } else if (
     capability.toolName === "stamp_scene_event" ||
     capability.toolName === "unstamp_scene_event" ||

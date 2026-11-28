@@ -909,6 +909,16 @@ describe("Agent approval capability exchange helpers", () => {
       },
     ],
     [
+      "unstamp_scene_event",
+      "agent_scene_event_unlink",
+      { sceneId: "scene-1", eventId: "event-1" },
+      {
+        kind: "scene_event_link",
+        linkIncarnation: "",
+        eventVersion: 9,
+      },
+    ],
+    [
       "add_event_relation",
       "agent_event_relation_add",
       { causeEventId: "cause-1", effectEventId: "effect-1" },
@@ -952,7 +962,8 @@ describe("Agent approval capability exchange helpers", () => {
       ).payload as Record<string, unknown>;
 
       expect(bound.authorityRoute).toBe("interactive-agent-command");
-      expect(bound.expected).toEqual(expected);
+      const { kind: _kind, ...nativeExpected } = expected;
+      expect(bound.expected).toStrictEqual(nativeExpected);
     },
   );
 

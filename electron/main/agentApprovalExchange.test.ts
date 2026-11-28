@@ -441,6 +441,30 @@ describe("agent approval exchange", () => {
     },
   );
 
+  it("opens for a scene link whose incarnation is the pre-schema-16 empty string", async () => {
+    const target: AgentApprovalTarget = {
+      summary: "Unlink scene s1 from event e1",
+      basis: [
+        { sourceKind: "scene_event_link", sourceId: "s1:e1", contentHash: "h" },
+      ],
+      baseVersions: null,
+      expected: {
+        kind: "scene_event_link",
+        linkIncarnation: "",
+        eventVersion: 3,
+      },
+    };
+    const f = makeFixture({
+      toolName: "unstamp_scene_event",
+      input: { sceneId: "s1", eventId: "e1" },
+      target,
+    });
+    await f.appendToolCall();
+    const openApproval = vi.spyOn(f.port, "openApproval");
+    void f.exchange.request(f.request);
+    await vi.waitFor(() => expect(openApproval).toHaveBeenCalledTimes(1));
+  });
+
   it("refuses a stale model baseVersion and tools without a versioned target", async () => {
     const target: AgentApprovalTarget = {
       summary: "Update foreshadow f1",

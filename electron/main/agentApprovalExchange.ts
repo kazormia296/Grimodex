@@ -339,9 +339,9 @@ function hasExpectedTarget(
     const expected = target.expected;
     return (
       expected?.kind === "scene_event_link" &&
+      // '' は schema 16 より前の紐付けの行で「関係がある」。null だけが「関係が無い」。
       (expected.linkIncarnation === null ||
-        (typeof expected.linkIncarnation === "string" &&
-          expected.linkIncarnation.length > 0)) &&
+        typeof expected.linkIncarnation === "string") &&
       Number.isSafeInteger(expected.eventVersion) &&
       expected.eventVersion >= 0
     );
