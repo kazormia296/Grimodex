@@ -16,6 +16,7 @@ import {
   type AgentPrepareSend,
   createAgentLanguageModel,
   grimodexProviderOptions,
+  restoreToolInputOrder,
 } from "./agentLanguageModel.js";
 import {
   AGENT_CALL_OPTIONS,
@@ -35,6 +36,7 @@ import type {
   AgentWireArgs,
   AgentWireResponse,
   AgentWireToolDefinition,
+  AgentWireToolUse,
 } from "./agentWire.js";
 import {
   findAgentLoopStopped,
@@ -262,6 +264,167 @@ async function runTwoSendToolTurn(
 }
 
 describe("4c-1 loop characterization", () => {
+  it("replays a completed tool step and restores the original wire key order before audit", async () => {
+    const kit = await loadMastraForTest();
+    const user = { role: "user" as const, content: "start" };
+    // 入れ子の各階層で、辞書順と異なる順序を wire に載せる。
+    const input = { scope: { section: "draft", chapter: 2 }, filter: "title" };
+    const definition = {
+      name: "lookup",
+      description: "synthetic lookup",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          scope: { type: "object" as const },
+          filter: { type: "string" as const },
+        },
+        required: ["scope", "filter"],
+      },
+    };
+    const execute = vi.fn(async () => "found in chapter 2");
+    const options = {
+      ...AGENT_CALL_OPTIONS,
+      providerOptions: grimodexProviderOptions({
+        route: ROUTE,
+        systemCacheSegments: ["cached system"],
+        systemVolatileTail: "volatile tail",
+      }),
+    };
+
+    function freshAgent(
+      hooks: {
+        observeResponse?: AgentObserveResponse;
+        prepareSend?: AgentPrepareSend;
+      } = {},
+    ) {
+      const requests: AgentWireArgs[] = [];
+      const { audit } = auditHarness();
+      const { model } = createAgentLanguageModel({
+        originalTools: [definition],
+        audit,
+        ...hooks,
+        send: async (args) => {
+          requests.push(structuredClone(args));
+          if (args.messages.at(-1)?.role === "tool_result") {
+            return response("end_turn");
+          }
+          return {
+            blocks: [{ type: "tool_use", id: "call-1", name: "lookup", input }],
+            stopReason: "tool_use",
+          };
+        },
+      });
+      const agent = new kit.Agent({
+        id: "reentry",
+        name: "reentry",
+        instructions: "system",
+        model,
+        tools: {
+          lookup: kit.createTool({
+            id: definition.name,
+            description: definition.description,
+            inputSchema: kit.jsonSchema<typeof input>(definition.inputSchema),
+            execute,
+          }),
+        },
+      });
+      return { agent, requests };
+    }
+
+    const continuous = freshAgent();
+    await continuous.agent.generate([user], { ...options, maxSteps: 2 });
+    expect(continuous.requests).toHaveLength(2);
+    expect(execute).toHaveBeenCalledTimes(1);
+    const next = continuous.requests[1]!;
+    expect(next.messages.slice(-2)).toEqual([
+      {
+        role: "assistant",
+        content: "",
+        toolUses: [{ id: "call-1", name: "lookup", input }],
+      },
+      {
+        role: "tool_result",
+        toolUseId: "call-1",
+        content: "found in chapter 2",
+        isError: false,
+      },
+    ]);
+
+    execute.mockClear();
+    const observeResponse = vi.fn<AgentObserveResponse>();
+    const firstStep = freshAgent({ observeResponse });
+    const step = await firstStep.agent.generate([user], {
+      ...options,
+      maxSteps: 1,
+    });
+    expect(firstStep.requests).toHaveLength(1);
+    expect(execute).toHaveBeenCalledTimes(1);
+    const history = step.response.messages;
+    expect(history?.map((message) => message.role)).toEqual([
+      "assistant",
+      "tool",
+    ]);
+    const observedCall = observeResponse.mock.calls[0]![0].blocks[0];
+    expect(observedCall?.type).toBe("tool_use");
+    // 中断側の応答と SDK の履歴だけで試験用の切れ目を作る。DB への保存は対象外。
+    const checkpoint = JSON.stringify({ call: observedCall, history });
+
+    async function replay(restoreOrder: boolean) {
+      const saved = JSON.parse(checkpoint) as {
+        call: AgentWireToolUse;
+        history: NonNullable<typeof history>;
+      };
+      const resumed = freshAgent({
+        prepareSend: restoreOrder
+          ? (request) => ({
+              ...request,
+              messages: request.messages.map((message) => {
+                if (message.role !== "assistant" || !message.toolUses)
+                  return message;
+                return {
+                  ...message,
+                  toolUses: message.toolUses.map((use) =>
+                    use.id === saved.call.id && use.name === saved.call.name
+                      ? {
+                          ...use,
+                          input: restoreToolInputOrder(
+                            use.input,
+                            saved.call.input,
+                          ),
+                        }
+                      : use,
+                  ),
+                };
+              }),
+            })
+          : undefined,
+      });
+      await resumed.agent.generate([user, ...saved.history], {
+        ...options,
+        maxSteps: 2,
+      });
+      expect(resumed.requests).toHaveLength(1);
+      expect(execute).toHaveBeenCalledTimes(1);
+      return resumed.requests[0]!;
+    }
+    function withoutExecutionId(request: AgentWireArgs) {
+      return {
+        ...request,
+        auditContext: { ...request.auditContext, executionId: undefined },
+      };
+    }
+    const sdkOnly = withoutExecutionId(await replay(false));
+    const reference = withoutExecutionId(next);
+    expect(sdkOnly).toEqual(reference);
+    const replayedCall = sdkOnly.messages.find(
+      (message) => message.role === "assistant",
+    )?.toolUses?.[0];
+    expect(JSON.stringify(replayedCall?.input)).not.toBe(JSON.stringify(input));
+    expect(JSON.stringify(sdkOnly)).not.toBe(JSON.stringify(reference));
+    const withOriginalOrder = withoutExecutionId(await replay(true));
+    expect(JSON.stringify(withOriginalOrder)).toBe(JSON.stringify(reference));
+  });
+
   it("K-1 A: runTurn messages are visible identically in request.prepared and send", async () => {
     const { audit, events } = auditHarness();
     const sent: AgentWireArgs[] = [];

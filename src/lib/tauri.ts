@@ -582,11 +582,17 @@ export function invokeMastraAgentTurnControl<T = unknown>(
   return invokeCommand<T>(cmd, args, true);
 }
 
+interface IpcDispatchGuard<T> {
+  allow: () => boolean;
+  cancelledValue: T;
+}
+
 export function invoke<T = unknown>(
   cmd: string,
   args?: Record<string, unknown>,
+  guard?: IpcDispatchGuard<T>,
 ): Promise<T> {
-  return invokeCommand<T>(cmd, args, false);
+  return invokeCommand<T>(cmd, args, false, guard);
 }
 
 function enqueueCommand<T>(
@@ -596,8 +602,16 @@ function enqueueCommand<T>(
   category: "mutation" | "read" | "derived",
   pair: string | null,
   urgentMutation: boolean,
+  guard?: IpcDispatchGuard<T>,
 ): Promise<T> {
-  if (!urgentMutation) return enqueueIpc(cmd, run, timeoutMs, category, pair);
+  if (!urgentMutation) {
+    // A turn withdrawn while queued never reaches the bridge. Its local
+    // cancellation is a settled admission decision for lifecycle drains.
+    const dispatch = guard
+      ? () => (guard.allow() ? run() : Promise.resolve(guard.cancelledValue))
+      : run;
+    return enqueueIpc(cmd, dispatch, timeoutMs, category, pair);
+  }
   if (
     cmd === "mastra_agent_turn_answer" ||
     cmd === "mastra_agent_turn_cancel"
@@ -611,6 +625,7 @@ async function invokeCommand<T = unknown>(
   cmd: string,
   args: Record<string, unknown> | undefined,
   urgentMutation: boolean,
+  guard?: IpcDispatchGuard<T>,
 ): Promise<T> {
   // DA-2b の PUB-G 前の必須 3（DR-DA2B-R22、R25）：閉なら（lazy な状態の表示が台帳の
   // 関数を global に置いたら）、Main の gate が拒否する command を IPC に出さず、Main と
@@ -636,6 +651,7 @@ async function invokeCommand<T = unknown>(
         ipcCategoryForCommand(cmd, args),
         null,
         urgentMutation,
+        guard,
       );
     } catch (error) {
       throw normalizeIpcFailure(cmd, error);
@@ -681,6 +697,7 @@ async function invokeCommand<T = unknown>(
         ipcCategoryForCommand(cmd, args),
         derivedPairForCommand(cmd, args),
         urgentMutation,
+        guard,
       );
     } catch (error) {
       const normalized = normalizeIpcFailure(cmd, error);
@@ -700,6 +717,7 @@ async function invokeCommand<T = unknown>(
       ipcCategoryForCommand(cmd, args),
       null,
       urgentMutation,
+      guard,
     );
   } catch (error) {
     throw normalizeIpcFailure(cmd, error);

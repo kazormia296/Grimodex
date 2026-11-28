@@ -35,6 +35,53 @@ function mockedStorage() {
 }
 
 describe("NativeMemoryStorage", () => {
+  it.each([
+    ["ASC", "asc"],
+    ["DESC", "desc"],
+  ] as const)(
+    "maps %s on both thread and message reads",
+    async (direction, expected) => {
+      const { storage, calls } = mockedStorage();
+      await storage.listThreads({
+        filter: { resourceId: "r1" },
+        orderBy: { field: "updatedAt", direction },
+      });
+      await storage.listMessages({
+        threadId: "t1",
+        orderBy: { field: "createdAt", direction },
+      });
+      expect(calls).toEqual([
+        [
+          "threadRead",
+          {
+            operation: "list",
+            resourceId: "r1",
+            orderBy: { field: "updatedAt", direction: expected },
+          },
+        ],
+        [
+          "messageRead",
+          {
+            operation: "list",
+            threadId: "t1",
+            orderBy: { field: "createdAt", direction: expected },
+          },
+        ],
+      ]);
+    },
+  );
+
+  it("rejects unrecognized sort directions before reading Native memory", async () => {
+    const { storage, calls } = mockedStorage();
+    await expect(
+      storage.listMessages({
+        threadId: "t1",
+        orderBy: { direction: "ascending" as never },
+      }),
+    ).rejects.toThrow("Invalid Mastra memory sort direction");
+    expect(calls).toEqual([]);
+  });
+
   it("maps supported methods to typed N-API payloads and decodes results", async () => {
     const { calls, storage } = mockedStorage();
     const thread = {

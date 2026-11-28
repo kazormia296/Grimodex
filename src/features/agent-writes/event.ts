@@ -260,8 +260,25 @@ async function trackedEventWrite(
     throw new Error("event write authority changed");
   }
   const result = outcome.value;
+  projectChronicleWrite(
+    command,
+    result,
+    historyLabelKey,
+    opts?.suppressDocumentNotification,
+  );
+  return result;
+}
+
+/** Reflect a committed writer receipt. This never dispatches the forward write. */
+export function projectChronicleWrite(
+  command: string,
+  result: Pick<AgentWriteResult, "entityId" | "undoJournalId">,
+  historyLabelKey: string,
+  suppressDocumentNotification = false,
+): void {
+  const commandKind = canonicalEventCommand(command);
   const documentOp = eventDocumentOp(command);
-  if (!opts?.suppressDocumentNotification && documentOp) {
+  if (!suppressDocumentNotification && documentOp) {
     notifyEventDocumentWrite(result.entityId, documentOp);
   }
   bump();
@@ -298,7 +315,6 @@ async function trackedEventWrite(
       },
     });
   }
-  return result;
 }
 
 export interface AgentEventCreateInput {

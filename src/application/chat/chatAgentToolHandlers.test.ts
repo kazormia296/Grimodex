@@ -30,6 +30,112 @@ function result(name: string, toolCallId: string): ToolResult {
   return { toolCallId, name, content: {}, summary: name, tokensUsed: 0 };
 }
 
+describe("createChatResearchSubagentHandler", () => {
+  function setup() {
+    type Options = Parameters<typeof createChatResearchSubagentHandler>[0];
+    const send = vi.fn<Options["sendAgentMessage"]>().mockResolvedValue({
+      blocks: [{ type: "text", content: "findings" }],
+      stopReason: "end_turn",
+    });
+    const read = vi.fn<ExecuteReadOnlyTool>(async (name, id) =>
+      result(name, id),
+    );
+    const set = vi.fn<Options["set"]>();
+    const createTurn = () =>
+      createChatResearchSubagentHandler({
+        set,
+        sendAgentMessage: send,
+        executeReadOnlyTool: read,
+        recordAiUsage: vi.fn(),
+        assertTurnAuthority: () => {},
+        isCurrentTurn: () => true,
+        shouldAbortTurn: () => false,
+        signal: new AbortController().signal,
+        getParentAuditExecutionId: () => "parent-send",
+        resolveTransportOverride: () => ({}),
+        turnRoute: null,
+        turnProjectId: "project",
+        operationId: "turn",
+        assistantMessageId: "assistant",
+        projectLanguage: "ja",
+        model: "test-model",
+        provider: "test-provider",
+        usageRoute: null,
+        tokenEstimatorFamily: "o200k_base",
+        apiVariant: null,
+        thinkingParams: {},
+        tokenBudget: 8_000,
+        parentMaxToolCalls: 10,
+        systemPrompt: "Research",
+        limitMessage: "Summarize",
+      });
+    return { createTurn, send, read, set };
+  }
+
+  it("starts at most four research children per parent turn", async () => {
+    const { createTurn, send } = setup();
+    const run = createTurn();
+    const task = { task: "Find references" };
+    for (let i = 0; i < 4; i++) {
+      expect((await run("run_research", `child-${i}`, task))?.content).toEqual({
+        findings: "findings",
+        toolCalls: 0,
+      });
+    }
+    const refused = await run("run_research", "fifth", task);
+    expect(refused?.error).toContain("limit reached");
+    expect(send).toHaveBeenCalledTimes(4);
+
+    const nextTurn = createTurn();
+    expect((await nextTurn("run_research", "next", task))?.content).toEqual({
+      findings: "findings",
+      toolCalls: 0,
+    });
+    expect(send).toHaveBeenCalledTimes(5);
+  });
+
+  it("runs a read in the child budget and links the reply to the child send when nesting is refused", async () => {
+    const { createTurn, send, read, set } = setup();
+    send.mockResolvedValueOnce({
+      blocks: [
+        { type: "tool_use", name: "list_chapters", id: "read", input: {} },
+        {
+          type: "tool_use",
+          name: "run_research",
+          id: "nested",
+          input: { task: "More" },
+        },
+      ],
+      stopReason: "tool_use",
+    });
+    await createTurn()("run_research", "child", { task: "Find references" });
+
+    expect(read).toHaveBeenCalledExactlyOnceWith("list_chapters", "read", {});
+    expect(set).toHaveBeenCalledWith({
+      subAgentProgress: expect.objectContaining({
+        maxCalls: 5,
+        tokenBudget: 4_000,
+      }),
+    });
+    expect(send).toHaveBeenCalledTimes(2);
+    const [[, , first], [messages, , second]] = send.mock.calls;
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        role: "tool_result",
+        toolUseId: "nested",
+        isError: true,
+      }),
+    );
+    expect(first).toMatchObject({
+      pathId: "agent_research_subagent",
+      parentExecutionId: "parent-send",
+      executionId: expect.any(String),
+    });
+    expect(second.parentExecutionId).toBe(first.executionId);
+    expect(second.executionId).not.toBe(first.executionId);
+  });
+});
+
 describe("createGuardedExecuteTool", () => {
   function setup(
     overrides: { authorityThrows?: boolean; beforeFails?: boolean } = {},

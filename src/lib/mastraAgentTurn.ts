@@ -15,6 +15,7 @@
  * lifecycle drains still wait for their actual IPC settlement.
  */
 import {
+  MASTRA_AGENT_WRITE_TOOL_NAMES,
   parseMastraAgentTurnCancelResult,
   parseMastraAgentTurnProgressPayload,
   parseMastraAgentTurnQuestionPayload,
@@ -30,6 +31,7 @@ import {
   type MastraAgentTurnLoopResult,
   type MastraAgentTurnStartRequest,
 } from "@/../electron/shared/mastraAgentTurnWire";
+import { isElectron } from "./shell";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import {
   MASTRA_AGENT_TURN_PROGRESS_EVENT,
@@ -43,6 +45,7 @@ import {
 } from "@/lib/tauri";
 
 export type MastraAgentTurnStartOutcome =
+  | { readonly kind: "cancelled-before-dispatch" }
   | {
       readonly kind: "completed";
       readonly turnId: string;
@@ -135,22 +138,55 @@ export async function listenMastraAgentTurnProgress(
   };
 }
 
+// These two tools already project their own result in the renderer responder.
+const mainWriteCompletionTools = new Set<string>(
+  MASTRA_AGENT_WRITE_TOOL_NAMES.filter(
+    (tool) => tool !== "apply_ai_tree_plan" && tool !== "propose_scene_body",
+  ),
+);
+
 /** Starts a turn; settles when the turn does. */
 export async function startMastraAgentTurn(
   // writerSessionId はこの wrapper が付ける（呼び手は渡さない）。
   request: Omit<MastraAgentTurnStartRequest, "writerSessionId">,
+  beforeDispatch?: () => boolean,
 ): Promise<MastraAgentTurnStartOutcome> {
+  const cancelled = Symbol();
   let raw: unknown;
+  let finishWrites: (() => Promise<void>) | undefined;
+  let dispatched = false;
   try {
-    raw = await invoke<unknown>("mastra_agent_turn_start", {
-      ...request,
-      writerSessionId: getRecorderSessionId(),
-    });
+    const args = { ...request, writerSessionId: getRecorderSessionId() };
+    if (
+      isElectron() &&
+      request.tools.some((tool) => mainWriteCompletionTools.has(tool))
+    ) {
+      const { receiveMastraWriteCompletions } =
+        await import("@/application/chat/mastraWriteCompletion");
+      finishWrites = await receiveMastraWriteCompletions(
+        args,
+        () => dispatched,
+      );
+    }
+    const guard =
+      beforeDispatch || finishWrites
+        ? {
+            allow: () => {
+              dispatched = beforeDispatch?.() ?? true;
+              return dispatched;
+            },
+            cancelledValue: cancelled,
+          }
+        : undefined;
+    raw = await invoke<unknown>("mastra_agent_turn_start", args, guard);
   } catch (error) {
     if (isD2aEgressDenied(error))
       return { kind: "refused", reason: "restricted" };
     throw error;
+  } finally {
+    await finishWrites?.();
   }
+  if (raw === cancelled) return { kind: "cancelled-before-dispatch" };
   const answer = parseMastraAgentTurnStartResult(raw);
   if (answer === null) return { kind: "invalid-response" };
   if (answer.status === "refused") {

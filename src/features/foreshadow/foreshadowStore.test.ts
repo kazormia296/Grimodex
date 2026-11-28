@@ -1,6 +1,9 @@
 import { toast } from "sonner";
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { useForeshadowStore } from "./foreshadowStore";
+import {
+  reloadForeshadowsAfterCommit,
+  useForeshadowStore,
+} from "./foreshadowStore";
 import type { ForeshadowRow, ForeshadowSetupRow } from "./types";
 import { attachCreateResultMetadata } from "@/lib/createResultMetadata";
 import { IpcInvokeError } from "@/lib/tauri";
@@ -201,6 +204,53 @@ describe("foreshadowStore", () => {
   // ── load ──────────────────────────────────────────────────────────
 
   describe("load", () => {
+    it("reads again after an outstanding pre-commit list settles", async () => {
+      const result = {
+        items: [{ ...makeRow(), label: "planned" as const, setupCount: 0 }],
+        sceneInfoBySceneId: {},
+        setupScenesByForeshadowId: {},
+      };
+      let finishEarlier!: (value: typeof result) => void;
+      mockListForeshadowsWithLabels
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              finishEarlier = resolve;
+            }),
+        )
+        .mockResolvedValueOnce(result);
+      const before = useForeshadowStore.getState().load("proj-1");
+      const after = reloadForeshadowsAfterCommit("proj-1", () => true);
+      finishEarlier({ ...result, items: [] });
+      await Promise.all([before, after]);
+      expect(mockListForeshadowsWithLabels).toHaveBeenCalledTimes(2);
+      expect(useForeshadowStore.getState().items).toEqual(result.items);
+    });
+
+    it("discards a completion read when its scope changes before the list arrives", async () => {
+      let current = true;
+      const item = { ...makeRow(), label: "planned" as const, setupCount: 0 };
+      mockListForeshadowsWithLabels.mockImplementationOnce(async () => {
+        current = false;
+        return {
+          items: [item],
+          sceneInfoBySceneId: {},
+          setupScenesByForeshadowId: {},
+        };
+      });
+      await reloadForeshadowsAfterCommit("proj-1", () => current);
+      expect(useForeshadowStore.getState().items).toEqual([]);
+      expect(useForeshadowStore.getState().isLoading).toBe(false);
+    });
+
+    it("preserves a committed undo when only its refresh fails", async () => {
+      mockListForeshadowsWithLabels.mockRejectedValueOnce(new Error("refresh"));
+      await expect(
+        reloadForeshadowsAfterCommit("proj-1", () => true, false),
+      ).resolves.toBeUndefined();
+      expect(toast.error).toHaveBeenCalled();
+    });
+
     it("sets items from listForeshadowsWithLabels", async () => {
       const items = [
         { ...makeRow(), label: "planned" as const, setupCount: 0 },

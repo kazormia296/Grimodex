@@ -123,6 +123,29 @@ describe("snippetStore", () => {
       expect(useSnippetStore.getState().isLoading).toBe(false);
     });
 
+    it("keeps the current search and selection when a pre-write search finishes last", async () => {
+      const selected = fakeSnippet();
+      useSnippetStore.setState({ selectedSnippet: selected });
+      let finish!: (entries: snippetApi.Snippet[]) => void;
+      mockSearchSnippets
+        .mockReturnValueOnce(
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+        )
+        .mockResolvedValueOnce([selected]);
+      const oldSearch = useSnippetStore.getState().search("検索");
+      await useSnippetStore.getState().loadEntries({ afterWrite: () => true });
+      finish([]);
+      await oldSearch;
+      expect(useSnippetStore.getState()).toMatchObject({
+        entries: [selected],
+        searchQuery: "検索",
+        selectedSnippet: selected,
+      });
+      expect(mockListSnippets).not.toHaveBeenCalled();
+    });
+
     it("sets isLoading during fetch", async () => {
       let resolvePromise: (v: snippetApi.Snippet[]) => void;
       mockListSnippets.mockReturnValue(

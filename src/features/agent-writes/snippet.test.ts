@@ -1,11 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { HistoryCommand } from "@/store/globalHistoryStore";
 import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import { _resetTimelapseGenesisBarriersForTests } from "@/features/timelapse/genesisBarrier";
 import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 
 const h = vi.hoisted(() => ({
   invoke: vi.fn(),
+  history: {
+    isReplaying: true,
+    push: vi.fn<(command: HistoryCommand) => void>(),
+  },
+  applyUndoJournal: vi.fn(),
   loadEntries: vi.fn(),
   entries: [{ id: "snippet-request-1", title: "Excerpt" }],
 }));
@@ -31,7 +37,7 @@ vi.mock("@/features/snippets/snippetStore", () => ({
 }));
 vi.mock("@/store/globalHistoryStore", () => ({
   useGlobalHistoryStore: {
-    getState: () => ({ isReplaying: true, push: vi.fn() }),
+    getState: () => h.history,
   },
 }));
 vi.mock("./authorshipSpans", () => ({
@@ -40,9 +46,9 @@ vi.mock("./authorshipSpans", () => ({
 vi.mock("./codex", () => ({
   markCodexContentAsAi: (content: string) => content,
 }));
-vi.mock("./undoJournal", () => ({ applyUndoJournal: vi.fn() }));
+vi.mock("./undoJournal", () => ({ applyUndoJournal: h.applyUndoJournal }));
 
-import { agentCreateSnippet } from "./snippet";
+import { agentCreateSnippet, projectSnippetWrite } from "./snippet";
 
 describe("agentCreateSnippet idempotency contract", () => {
   beforeEach(() => {
@@ -80,5 +86,34 @@ describe("agentCreateSnippet idempotency contract", () => {
         title: "Excerpt",
       }),
     });
+  });
+});
+
+describe("Native snippet write projection", () => {
+  it("keeps the receipt undoable when the current list hides the snippet", async () => {
+    vi.clearAllMocks();
+    h.history.isReplaying = false;
+    setCurrentWorkspaceIdentity({ path: "/fixture", openRevision: 2 });
+    await projectSnippetWrite(
+      "project-1",
+      "filtered",
+      "snippet-journal",
+      () => true,
+    );
+    expect(h.invoke).not.toHaveBeenCalled();
+    expect(h.history.push).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "snippets",
+        entityId: "filtered",
+        operationId: "snippet-journal",
+      }),
+    );
+    const [command] = h.history.push.mock.calls[0]!;
+    await command.undo();
+    await command.redo();
+    expect(h.applyUndoJournal.mock.calls).toEqual([
+      ["snippet-journal", "undo"],
+      ["snippet-journal", "redo"],
+    ]);
   });
 });
