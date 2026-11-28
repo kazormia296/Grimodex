@@ -20,7 +20,7 @@ use serde_json::Value;
 
 use crate::{from_wire, run_blocking, Backend};
 
-pub(super) struct WorkspaceOwner {
+pub(crate) struct WorkspaceOwner {
     path: PathBuf,
     id: String,
     _lock: File,
@@ -61,12 +61,11 @@ impl Backend {
         F: FnOnce(&Database, &WorkspaceOwner, P) -> anyhow::Result<T> + Send + 'static,
     {
         let state = Arc::clone(&self.state);
-        let owner = Arc::clone(&self.agent_run_owner);
         run_blocking(move || {
             let payload = from_wire("payload", payload)?;
             // Keep the DB and its lock directory bound to the same lifecycle participant.
             let workspace = active_workspace_snapshot(&state.ws)?;
-            let owner = WorkspaceOwner::acquire(&owner, workspace.db().path())?;
+            let owner = WorkspaceOwner::acquire(&state.agent_run_owner, workspace.db().path())?;
             let result = operation(workspace.db().db(), &owner, payload)?;
             Ok(serde_json::to_string(&result).map_err(anyhow::Error::from)?)
         })
