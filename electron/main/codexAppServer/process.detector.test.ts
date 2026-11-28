@@ -1,4 +1,23 @@
+import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const temporaryRoots: string[] = [];
+
+async function temporaryHomeOptions() {
+  const root = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-codex-detector-"),
+  );
+  temporaryRoots.push(root);
+  const sourceCodexHomeDir = path.join(root, "source-codex-home");
+  await mkdir(sourceCodexHomeDir);
+  return {
+    codexHomeDir: path.join(root, "isolated-codex-home"),
+    sourceCodexHomeDir,
+  };
+}
 
 const mocks = vi.hoisted(() => ({
   createNodeCliProcessRunner: vi.fn(),
@@ -30,8 +49,11 @@ function createRunner(
 }
 
 describe("Codex default executable detector lifecycle", () => {
-  afterEach(() => {
+  afterEach(async () => {
     vi.clearAllMocks();
+    await Promise.all(
+      temporaryRoots.splice(0).map((root) => rm(root, { recursive: true })),
+    );
   });
 
   it("waits for the detector runner child close after an early rejection", async () => {
@@ -48,7 +70,7 @@ describe("Codex default executable detector lifecycle", () => {
     const { CodexAppServerProcess } = await import("./process.js");
     const process = new CodexAppServerProcess({
       authorizeExecutable: async () => true,
-      codexHomeDir: "/tmp/grimodex-codex",
+      ...(await temporaryHomeOptions()),
     });
     let settled = false;
     const starting = process.start().finally(() => {
@@ -76,7 +98,7 @@ describe("Codex default executable detector lifecycle", () => {
       await import("./process.js");
     const process = new CodexAppServerProcess({
       authorizeExecutable: async () => true,
-      codexHomeDir: "/tmp/grimodex-codex",
+      ...(await temporaryHomeOptions()),
     });
 
     await expect(process.start()).rejects.toBeInstanceOf(
@@ -103,7 +125,7 @@ describe("Codex default executable detector lifecycle", () => {
     const { CodexAppServerProcess } = await import("./process.js");
     const process = new CodexAppServerProcess({
       authorizeExecutable: async () => true,
-      codexHomeDir: "/tmp/grimodex-codex",
+      ...(await temporaryHomeOptions()),
     });
     let settled = false;
     const starting = process.start().catch((cause: unknown) => {
@@ -138,7 +160,7 @@ describe("Codex default executable detector lifecycle", () => {
       await import("./process.js");
     const process = new CodexAppServerProcess({
       authorizeExecutable: async () => true,
-      codexHomeDir: "/tmp/grimodex-codex",
+      ...(await temporaryHomeOptions()),
       forceKillAfterMs: 1,
     });
     const timeout = Symbol("detector timeout");
@@ -169,7 +191,7 @@ describe("Codex default executable detector lifecycle", () => {
       await import("./process.js");
     const process = new CodexAppServerProcess({
       authorizeExecutable: async () => true,
-      codexHomeDir: "/tmp/grimodex-codex",
+      ...(await temporaryHomeOptions()),
     });
 
     const failure = await process.start().catch((cause: unknown) => cause);
