@@ -61,6 +61,7 @@ function turn(
 
 function mockBackend(): NapiMemoryBackendLike & NapiMemoryVectorBackendLike {
   return {
+    memoryEmbedTexts: vi.fn(),
     memoryThreadRead: vi.fn(),
     memoryThreadWrite: vi.fn(),
     memoryThreadDelete: vi.fn(),
