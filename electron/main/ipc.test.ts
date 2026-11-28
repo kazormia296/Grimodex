@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { getSchema } from "@tiptap/core";
 import { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import StarterKit from "@tiptap/starter-kit";
@@ -19,6 +20,16 @@ import {
 } from "./profileEgress.js";
 import { activateGateForTest } from "./profileActivation.test.support.js";
 import { nativeSqlPolicyV3 } from "./d2aSqlPolicyFixture.js";
+import {
+  AGENT_APPROVAL_PROTECTED_TOOLS,
+  AGENT_APPROVAL_VERSIONED_TOOLS,
+} from "./agentApprovalProtectedTools.js";
+import type { AgentApprovalExpected } from "./agentApprovalProtectedTools.js";
+import {
+  AGENT_APPROVAL_CAPABILITY_TTL_MS,
+  createAgentApprovalExchange,
+} from "./agentApprovalExchange.js";
+import { FakeAgentRunApprovalPort } from "./agentRunApprovalPort.fake.js";
 
 const mocks = vi.hoisted(() => ({
   handlers: new Map<
@@ -67,12 +78,26 @@ vi.mock("./windows.js", () => ({
 
 const {
   applyMainOwnedAuthorshipMarks,
+  AGENT_TOOL_COMMANDS,
+  agentAuthorityRequestId,
+  agentToolInputDigest,
   bindRendererAuthorityForIpc,
   consumeAgentAuthorityCapability,
   consumeAndBindAgentAuthorityCapability,
+  isAgentToolPolicyAllowed,
+  prepareAgentAuthorityCapability,
   recordRendererHistoryJournalForIpc,
   registerIpcRouter,
 } = await import("./ipc.js");
+
+const AGENT_TOOL_MANIFEST = (
+  JSON.parse(
+    readFileSync(
+      new URL("../../agent-tool-manifest.json", import.meta.url),
+      "utf8",
+    ),
+  ) as { tools: Array<{ name: string; effect: string }> }
+).tools;
 
 function invokeHandler(): (
   event: { sender: unknown },
@@ -210,6 +235,45 @@ function agentCapabilityPayload(
   };
 }
 
+function prepareApprovalCapability(
+  toolName: string,
+  input: Record<string, unknown>,
+  approvedBaseVersions:
+    | readonly {
+        readonly id: string;
+        readonly version: number;
+      }[]
+    | null,
+  senderId = 719,
+  expected: AgentApprovalExpected | null = null,
+  includeApprovedTarget = true,
+) {
+  const canonicalInputDigest = agentToolInputDigest(toolName, input);
+  if (!canonicalInputDigest) throw new Error("unsupported test input");
+  const prepared = prepareAgentAuthorityCapability({
+    senderId,
+    projectId: "p1",
+    toolName,
+    toolCallId: "call-1",
+    executionId: `execution-${toolName}`,
+    chatMessageId: `assistant-${toolName}`,
+    model: "gpt-test",
+    modelInput: input,
+    canonicalInputDigest,
+    ttlMs: AGENT_APPROVAL_CAPABILITY_TTL_MS,
+    origin: "approval-exchange",
+    ...(includeApprovedTarget
+      ? { approvedTarget: { baseVersions: approvedBaseVersions, expected } }
+      : {}),
+  });
+  if (!prepared) throw new Error("could not prepare test capability");
+  prepared.activate();
+  return {
+    ...prepared.grant,
+    requestId: agentAuthorityRequestId(toolName, "p1", "call-1"),
+  };
+}
+
 beforeEach(() => {
   mocks.handlers.clear();
   vi.clearAllMocks();
@@ -218,7 +282,785 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.GRIMODEX_WORKSPACE_OPEN_TRACE;
+  vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+describe("Agent approval capability exchange helpers", () => {
+  it("pins the 14 protected tools to both main commands and the manifest effects", () => {
+    const protectedTools = [...AGENT_APPROVAL_PROTECTED_TOOLS].sort();
+    expect(protectedTools).toHaveLength(14);
+    expect(protectedTools).toEqual(
+      Object.keys(AGENT_TOOL_COMMANDS)
+        .filter((toolName) => toolName !== "propose_scene_body")
+        .sort(),
+    );
+    expect([...AGENT_APPROVAL_VERSIONED_TOOLS].sort()).toEqual([
+      "apply_ai_tree_plan",
+      "delete_event",
+      "set_event_participants",
+      "update_codex_entry",
+      "update_event",
+      "update_foreshadow",
+    ]);
+    expect(protectedTools).toEqual(
+      AGENT_TOOL_MANIFEST.filter(
+        (tool) => tool.effect === "mutate" || tool.effect === "destructive",
+      )
+        .map((tool) => tool.name)
+        .sort(),
+    );
+  });
+
+  it("exports the tool policy lookup and secret-aware input digest", async () => {
+    const backend = {
+      dbExecute: vi.fn(async () =>
+        nativeDbReadResult([
+          {
+            ai_policy:
+              '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true,"knowledgeWrite":false}}',
+          },
+        ]),
+      ),
+    } as unknown as NapiBackendLike;
+
+    expect(await isAgentToolPolicyAllowed(backend, "p1", "update_event")).toBe(
+      false,
+    );
+    expect(await isAgentToolPolicyAllowed(backend, "p1", "unknown_tool")).toBe(
+      false,
+    );
+    expect(backend.dbExecute).toHaveBeenCalledTimes(1);
+    expect(
+      agentToolInputDigest("create_event", { title: "event", secret: true }),
+    ).toBe(null);
+    expect(agentToolInputDigest("create_event", { title: "event" })).toEqual(
+      expect.any(String),
+    );
+  });
+
+  it("activates exchange capabilities only on demand and enforces their 60-second one-shot TTL", () => {
+    vi.useFakeTimers();
+    expect(AGENT_APPROVAL_CAPABILITY_TTL_MS).toBe(60_000);
+    const input = { title: "from model" };
+    const canonicalInputDigest = agentToolInputDigest(
+      "create_foreshadow",
+      input,
+    );
+    if (!canonicalInputDigest) throw new Error("test input rejected");
+    const prepare = (senderId: number, toolCallId: string) => {
+      const prepared = prepareAgentAuthorityCapability({
+        senderId,
+        projectId: "p1",
+        toolName: "create_foreshadow",
+        toolCallId,
+        executionId: `execution-${toolCallId}`,
+        chatMessageId: `assistant-${toolCallId}`,
+        model: "gpt-test",
+        modelInput: input,
+        canonicalInputDigest,
+        ttlMs: AGENT_APPROVAL_CAPABILITY_TTL_MS,
+        origin: "approval-exchange",
+        approvedTarget: { baseVersions: [], expected: null },
+      });
+      if (!prepared) throw new Error("test capability was not prepared");
+      const grant = {
+        ...prepared.grant,
+        requestId: agentAuthorityRequestId(
+          "create_foreshadow",
+          "p1",
+          toolCallId,
+        ),
+      };
+      return {
+        prepared,
+        payload: agentCapabilityPayload(grant, {
+          toolCallId,
+          title: "from model",
+        }),
+      };
+    };
+    const { prepared, payload } = prepare(720, "call-1");
+    expect(
+      consumeAgentAuthorityCapability("agent_foreshadow_create", payload, 720),
+    ).toBeNull();
+
+    prepared.activate();
+    expect(
+      consumeAgentAuthorityCapability("agent_foreshadow_create", payload, 720),
+    ).toMatchObject({
+      origin: "approval-exchange",
+      approvedTarget: { baseVersions: [], expected: null },
+    });
+    expect(
+      consumeAgentAuthorityCapability("agent_foreshadow_create", payload, 720),
+    ).toBeNull();
+
+    const within = prepare(721, "call-2");
+    within.prepared.activate();
+    vi.advanceTimersByTime(AGENT_APPROVAL_CAPABILITY_TTL_MS - 1);
+    expect(
+      consumeAgentAuthorityCapability(
+        "agent_foreshadow_create",
+        within.payload,
+        721,
+      ),
+    ).not.toBeNull();
+
+    const expires = prepare(722, "call-3");
+    expires.prepared.activate();
+    vi.advanceTimersByTime(60_000);
+    expect(
+      consumeAgentAuthorityCapability(
+        "agent_foreshadow_create",
+        expires.payload,
+        722,
+      ),
+    ).toBeNull();
+
+    const revoked = prepare(723, "call-4");
+    revoked.prepared.activate();
+    revoked.prepared.revoke();
+    expect(
+      consumeAgentAuthorityCapability(
+        "agent_foreshadow_create",
+        revoked.payload,
+        723,
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps the existing response-time issuer at five minutes", async () => {
+    vi.useFakeTimers();
+    const grant = await issueAgentCapability(
+      "create_foreshadow",
+      { title: "from model" },
+      722,
+    );
+    const payload = agentCapabilityPayload(grant, { title: "from model" });
+    vi.advanceTimersByTime(5 * 60 * 1000 - 1);
+    expect(
+      consumeAgentAuthorityCapability("agent_foreshadow_create", payload, 722),
+    ).not.toBeNull();
+
+    const expired = await issueAgentCapability(
+      "create_foreshadow",
+      { title: "from model" },
+      723,
+    );
+    vi.advanceTimersByTime(5 * 60 * 1000);
+    expect(
+      consumeAgentAuthorityCapability(
+        "agent_foreshadow_create",
+        agentCapabilityPayload(expired, { title: "from model" }),
+        723,
+      ),
+    ).toBeNull();
+  });
+
+  it.each([
+    [
+      "update_codex_entry",
+      "agent_codex_update",
+      { id: "entry-1", summary: "edit" },
+      { entryId: "entry-1", baseVersion: 99, summary: "edit" },
+      "entry-1",
+    ],
+    [
+      "update_foreshadow",
+      "agent_foreshadow_update",
+      { id: "foreshadow-1", baseVersion: 3, title: "edit" },
+      { foreshadowId: "foreshadow-1", baseVersion: 3, title: "edit" },
+      "foreshadow-1",
+    ],
+    [
+      "update_event",
+      "agent_event_update",
+      { eventId: "event-1", title: "edit" },
+      { eventId: "event-1", baseVersion: 99, title: "edit" },
+      "event-1",
+    ],
+    [
+      "delete_event",
+      "agent_event_delete",
+      { eventId: "event-1" },
+      { eventId: "event-1", baseVersion: 99 },
+      "event-1",
+    ],
+    [
+      "set_event_participants",
+      "agent_event_set_participants",
+      { eventId: "event-1", codexEntryIds: ["entry-1"] },
+      { eventId: "event-1", codexEntryIds: ["entry-1"], baseVersion: 99 },
+      "event-1",
+    ],
+  ] as const)(
+    "binds %s to the approved Native version",
+    (toolName, command, input, payloadFields, id) => {
+      const grant = prepareApprovalCapability(toolName, input, [
+        { id, version: 42 },
+      ]);
+      const bound = bindRendererAuthorityForIpc(
+        command,
+        {
+          payload: agentCapabilityPayload(grant, payloadFields),
+        },
+        719,
+      ).payload as Record<string, unknown>;
+
+      expect(bound.authorityRoute).toBe("interactive-agent-command");
+      expect(bound.baseVersion).toBe(42);
+    },
+  );
+
+  it("replaces every tree update baseVersion with its approved version", () => {
+    const ops = [{ op: "rename", nodeId: "node-1", title: "Renamed" }];
+    const grant = prepareApprovalCapability(
+      "apply_ai_tree_plan",
+      { kind: "reorganize", ops },
+      [{ id: "node-1", version: 27 }],
+    );
+    const bound = bindRendererAuthorityForIpc(
+      "ai_tree_plan_apply",
+      {
+        payload: agentCapabilityPayload(grant, {
+          kind: "reorganize",
+          ops,
+          creates: [],
+          updates: [
+            {
+              id: "node-1",
+              placement: null,
+              title: "Renamed",
+              baseVersion: 99,
+            },
+          ],
+          redo: false,
+        }),
+      },
+      719,
+    ).payload as {
+      authorityRoute?: string;
+      updates?: Array<{ baseVersion?: number }>;
+    };
+
+    expect(bound.authorityRoute).toBe("interactive-agent-command");
+    expect(bound.updates?.[0]?.baseVersion).toBe(27);
+  });
+
+  it.each([
+    ["move only", [{ op: "move", nodeId: "node-1" }], false],
+    [
+      "create and move",
+      [
+        {
+          op: "create",
+          tempId: "tmp:scene",
+          parentRef: null,
+          nodeType: "scene",
+          title: "Opening",
+        },
+        { op: "move", nodeId: "node-1" },
+      ],
+      false,
+    ],
+    [
+      "create and rename",
+      [
+        {
+          op: "create",
+          tempId: "tmp:scene",
+          parentRef: null,
+          nodeType: "scene",
+          title: "Opening",
+        },
+        { op: "rename", nodeId: "node-1" },
+      ],
+      false,
+    ],
+    ["unknown op", [{ op: "delete", nodeId: "node-1" }], false],
+    ["rename without nodeId", [{ op: "rename" }], false],
+    ["empty ops", [], false],
+    [
+      "create only",
+      [
+        {
+          op: "create",
+          tempId: "tmp:scene",
+          parentRef: null,
+          nodeType: "scene",
+          title: "Opening",
+        },
+      ],
+      true,
+    ],
+  ] as const)(
+    "tree plan capability version rule: %s",
+    (_label, ops, accepted) => {
+      const grant = prepareApprovalCapability(
+        "apply_ai_tree_plan",
+        { kind: "scaffold", ops },
+        null,
+      );
+      const creates = ops.some((op) => op.op === "create")
+        ? [
+            {
+              tempId: "tmp:scene",
+              id: "tree-node-1",
+              parentId: null,
+              nodeType: "scene",
+              title: "Opening",
+            },
+          ]
+        : [];
+      const bound = bindRendererAuthorityForIpc(
+        "ai_tree_plan_apply",
+        {
+          payload: agentCapabilityPayload(grant, {
+            kind: "scaffold",
+            ops,
+            creates,
+            updates: [],
+          }),
+        },
+        719,
+      ).payload as Record<string, unknown>;
+      expect(bound.authorityRoute).toBe(
+        accepted ? "interactive-agent-command" : "",
+      );
+    },
+  );
+
+  it("binds a create-only tree plan without versions and rejects unversioned updates", () => {
+    const ops = [
+      {
+        op: "create",
+        tempId: "tmp:scene",
+        parentRef: null,
+        nodeType: "scene",
+        title: "Opening",
+      },
+    ];
+    const createGrant = prepareApprovalCapability(
+      "apply_ai_tree_plan",
+      { kind: "scaffold", ops },
+      null,
+    );
+    const createBound = bindRendererAuthorityForIpc(
+      "ai_tree_plan_apply",
+      {
+        payload: agentCapabilityPayload(createGrant, {
+          kind: "scaffold",
+          ops,
+          creates: [
+            {
+              tempId: "tmp:scene",
+              id: "tree-node-1",
+              parentId: null,
+              nodeType: "scene",
+              title: "Opening",
+            },
+          ],
+          updates: [],
+        }),
+      },
+      719,
+    ).payload as { authorityRoute?: string };
+    expect(createBound.authorityRoute).toBe("interactive-agent-command");
+
+    const updateGrant = prepareApprovalCapability(
+      "apply_ai_tree_plan",
+      {
+        kind: "reorganize",
+        ops: [{ op: "rename", nodeId: "node-1", title: "Renamed" }],
+      },
+      null,
+    );
+    const updateBound = bindRendererAuthorityForIpc(
+      "ai_tree_plan_apply",
+      {
+        payload: agentCapabilityPayload(updateGrant, {
+          kind: "reorganize",
+          ops: [{ op: "rename", nodeId: "node-1", title: "Renamed" }],
+          creates: [],
+          updates: [{ id: "node-1", placement: null, title: "Renamed" }],
+        }),
+      },
+      719,
+    ).payload as { authorityRoute?: string };
+    expect(updateBound.authorityRoute).toBe("");
+  });
+
+  it("revokes the real IPC capability when Stop follows approval", async () => {
+    const port = new FakeAgentRunApprovalPort();
+    port.createRunningRun("run-stop");
+    const modelInput = { id: "entry-stop", summary: "Updated" };
+    const target = {
+      summary: "Update entry",
+      basis: null,
+      baseVersions: [{ id: "entry-stop", version: 4 }],
+      expected: null,
+    } as const;
+    const run = {
+      runId: "run-stop",
+      transact: <T>(op: (version: number) => Promise<T>) =>
+        op(port.readRun("run-stop").version),
+    };
+    await port.appendToolCall("run-stop", {
+      toolCallId: "call-stop",
+      name: "update_codex_entry",
+      canonicalArgs: modelInput,
+      argsDigest: agentToolInputDigest("update_codex_entry", modelInput)!,
+      executionId: "execution-stop",
+      chatMessageId: "message-stop",
+      mainOwnedProvenanceId: "",
+      model: "gpt-test",
+      capabilityState: "not_issued",
+      executionState: "pending",
+    });
+    const controller = new AbortController();
+    const exchange = createAgentApprovalExchange({
+      port,
+      isPolicyAllowed: () => true,
+      inputDigest: (name, input) => agentToolInputDigest(name, input),
+      readTarget: () => target,
+      prepareCapability: (request, approvedTarget) => {
+        const prepared = prepareAgentAuthorityCapability({
+          senderId: request.senderId,
+          projectId: request.projectId,
+          toolName: request.toolName,
+          toolCallId: request.toolCallId,
+          executionId: request.executionId,
+          chatMessageId: request.chatMessageId,
+          model: request.model,
+          modelInput: request.modelInput,
+          canonicalInputDigest: agentToolInputDigest(
+            request.toolName,
+            request.modelInput,
+          )!,
+          ttlMs: AGENT_APPROVAL_CAPABILITY_TTL_MS,
+          origin: "approval-exchange",
+          approvedTarget: {
+            baseVersions: approvedTarget.baseVersions,
+            expected: approvedTarget.expected,
+          },
+        });
+        return prepared;
+      },
+      onPending: () => {},
+      setTimer: () => () => {},
+      newId: () => "interaction-stop",
+    });
+    const request = {
+      senderId: 719,
+      projectId: "p1",
+      executionId: "execution-stop",
+      chatMessageId: "message-stop",
+      toolCallId: "call-stop",
+      toolName: "update_codex_entry",
+      model: "gpt-test",
+      modelInput,
+      observed: target,
+      run,
+      signal: controller.signal,
+    };
+    const completion = exchange.request(request);
+    await vi.waitFor(() =>
+      expect(port.readRun("run-stop").status).toBe("waiting_approval"),
+    );
+    exchange.resolve({
+      interactionId: "interaction-stop",
+      senderId: 719,
+      projectId: "p1",
+      decision: "approved",
+    });
+    const result = await completion;
+    expect(result.kind).toBe("approved");
+    if (result.kind !== "approved") return;
+    controller.abort();
+    const payload = agentCapabilityPayload(
+      {
+        ...result.grant,
+        requestId: agentAuthorityRequestId(
+          "update_codex_entry",
+          "p1",
+          "call-stop",
+        ),
+      },
+      {
+        entryId: "entry-stop",
+        summary: "Updated",
+        baseVersion: 4,
+      },
+    );
+    expect(
+      consumeAgentAuthorityCapability("agent_codex_update", payload, 719),
+    ).toBeNull();
+
+    port.createRunningRun("run-failed");
+    await port.appendToolCall("run-failed", {
+      toolCallId: "call-failed",
+      name: "update_codex_entry",
+      canonicalArgs: modelInput,
+      argsDigest: agentToolInputDigest("update_codex_entry", modelInput)!,
+      executionId: "execution-failed",
+      chatMessageId: "message-failed",
+      mainOwnedProvenanceId: "",
+      model: "gpt-test",
+      capabilityState: "not_issued",
+      executionState: "pending",
+    });
+    const secondExchange = createAgentApprovalExchange({
+      port,
+      isPolicyAllowed: () => true,
+      inputDigest: (name, input) => agentToolInputDigest(name, input),
+      readTarget: () => target,
+      prepareCapability: (inputRequest, approvedTarget) => {
+        const prepared = prepareAgentAuthorityCapability({
+          senderId: inputRequest.senderId,
+          projectId: inputRequest.projectId,
+          toolName: inputRequest.toolName,
+          toolCallId: inputRequest.toolCallId,
+          executionId: inputRequest.executionId,
+          chatMessageId: inputRequest.chatMessageId,
+          model: inputRequest.model,
+          modelInput: inputRequest.modelInput,
+          canonicalInputDigest: agentToolInputDigest(
+            inputRequest.toolName,
+            inputRequest.modelInput,
+          )!,
+          ttlMs: AGENT_APPROVAL_CAPABILITY_TTL_MS,
+          origin: "approval-exchange",
+          approvedTarget: {
+            baseVersions: approvedTarget.baseVersions,
+            expected: approvedTarget.expected,
+          },
+        });
+        return prepared;
+      },
+      onPending: () => {},
+      setTimer: () => () => {},
+      newId: () => "interaction-failed",
+    });
+    const failedRequest = {
+      ...request,
+      executionId: "execution-failed",
+      chatMessageId: "message-failed",
+      toolCallId: "call-failed",
+      run: {
+        runId: "run-failed",
+        transact: <T>(op: (version: number) => Promise<T>) =>
+          op(port.readRun("run-failed").version),
+      },
+      signal: new AbortController().signal,
+    };
+    const secondCompletion = secondExchange.request(failedRequest);
+    await vi.waitFor(() =>
+      expect(port.readRun("run-failed").status).toBe("waiting_approval"),
+    );
+    secondExchange.resolve({
+      interactionId: "interaction-failed",
+      senderId: 719,
+      projectId: "p1",
+      decision: "approved",
+    });
+    const failedResult = await secondCompletion;
+    expect(failedResult.kind).toBe("approved");
+    if (failedResult.kind !== "approved") return;
+    await secondExchange.recordExecution("run-failed", "call-failed", "failed");
+    expect(
+      consumeAgentAuthorityCapability(
+        "agent_codex_update",
+        agentCapabilityPayload(
+          {
+            ...failedResult.grant,
+            requestId: agentAuthorityRequestId(
+              "update_codex_entry",
+              "p1",
+              "call-failed",
+            ),
+          },
+          { entryId: "entry-stop", summary: "Updated", baseVersion: 4 },
+        ),
+        719,
+      ),
+    ).toBeNull();
+  });
+
+  it.each([
+    [
+      "stamp_scene_event",
+      "agent_scene_event_link",
+      { sceneId: "scene-1", eventId: "event-1" },
+      {
+        kind: "scene_event_link",
+        linkIncarnation: "link-incarnation-1",
+        eventVersion: 9,
+      },
+    ],
+    [
+      "unstamp_scene_event",
+      "agent_scene_event_unlink",
+      { sceneId: "scene-1", eventId: "event-1" },
+      {
+        kind: "scene_event_link",
+        linkIncarnation: null,
+        eventVersion: 9,
+      },
+    ],
+    [
+      "unstamp_scene_event",
+      "agent_scene_event_unlink",
+      { sceneId: "scene-1", eventId: "event-1" },
+      {
+        kind: "scene_event_link",
+        linkIncarnation: "",
+        eventVersion: 9,
+      },
+    ],
+    [
+      "add_event_relation",
+      "agent_event_relation_add",
+      { causeEventId: "cause-1", effectEventId: "effect-1" },
+      {
+        kind: "event_relation",
+        related: false,
+        causeVersion: 5,
+        effectVersion: 7,
+      },
+    ],
+    [
+      "remove_event_relation",
+      "agent_event_relation_remove",
+      { causeEventId: "cause-1", effectEventId: "effect-1" },
+      {
+        kind: "event_relation",
+        related: true,
+        causeVersion: 5,
+        effectVersion: 7,
+      },
+    ],
+  ] as const)(
+    "binds %s expected state from the approved target",
+    (toolName, command, input, expected) => {
+      const grant = prepareApprovalCapability(
+        toolName,
+        input,
+        [],
+        719,
+        expected,
+      );
+      const bound = bindRendererAuthorityForIpc(
+        command,
+        {
+          payload: agentCapabilityPayload(grant, {
+            ...input,
+            expected: { forged: true },
+          }),
+        },
+        719,
+      ).payload as Record<string, unknown>;
+
+      expect(bound.authorityRoute).toBe("interactive-agent-command");
+      const { kind: _kind, ...nativeExpected } = expected;
+      expect(bound.expected).toStrictEqual(nativeExpected);
+    },
+  );
+
+  it("rejects exchange binding when any versioned tool lacks an approved target version", () => {
+    const missingVersionCases = [
+      [
+        "update_codex_entry",
+        "agent_codex_update",
+        { id: "entry-1", summary: "edit" },
+        { entryId: "entry-1", summary: "edit" },
+      ],
+      [
+        "update_foreshadow",
+        "agent_foreshadow_update",
+        { id: "foreshadow-1", baseVersion: 3, title: "edit" },
+        { foreshadowId: "foreshadow-1", baseVersion: 3, title: "edit" },
+      ],
+      [
+        "update_event",
+        "agent_event_update",
+        { eventId: "event-1", title: "edit" },
+        { eventId: "event-1", baseVersion: 99, title: "edit" },
+      ],
+      [
+        "delete_event",
+        "agent_event_delete",
+        { eventId: "event-1" },
+        { eventId: "event-1", baseVersion: 99 },
+      ],
+      [
+        "set_event_participants",
+        "agent_event_set_participants",
+        { eventId: "event-1", codexEntryIds: ["entry-1"] },
+        { eventId: "event-1", codexEntryIds: ["entry-1"], baseVersion: 99 },
+      ],
+      [
+        "apply_ai_tree_plan",
+        "ai_tree_plan_apply",
+        {
+          kind: "reorganize",
+          ops: [{ op: "rename", nodeId: "node-1", title: "Renamed" }],
+        },
+        {
+          kind: "reorganize",
+          ops: [{ op: "rename", nodeId: "node-1", title: "Renamed" }],
+          creates: [],
+          updates: [{ id: "node-1", placement: null, title: "Renamed" }],
+        },
+      ],
+    ] as const;
+    for (const [
+      toolName,
+      command,
+      input,
+      payloadFields,
+    ] of missingVersionCases) {
+      for (const [versions, includeApprovedTarget] of [
+        [[], true],
+        [null, true],
+        [[], false],
+      ] as const) {
+        const grant = prepareApprovalCapability(
+          toolName,
+          input,
+          versions,
+          719,
+          null,
+          includeApprovedTarget,
+        );
+        const bound = bindRendererAuthorityForIpc(
+          command,
+          {
+            payload: agentCapabilityPayload(grant, payloadFields),
+          },
+          719,
+        ).payload as { authorityRoute?: string };
+        expect(bound.authorityRoute).toBe("");
+      }
+    }
+
+    const invalidVersion = prepareApprovalCapability(
+      "delete_event",
+      { eventId: "event-1" },
+      [{ id: "event-1", version: 1.5 }],
+    );
+    const invalidBound = bindRendererAuthorityForIpc(
+      "agent_event_delete",
+      {
+        payload: agentCapabilityPayload(invalidVersion, {
+          eventId: "event-1",
+          baseVersion: 99,
+        }),
+      },
+      719,
+    ).payload as { authorityRoute?: string };
+    expect(invalidBound.authorityRoute).toBe("");
+  });
 });
 
 describe("registerIpcRouter fail-soft logging", () => {
