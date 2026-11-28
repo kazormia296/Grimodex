@@ -54,7 +54,7 @@ const EXECUTION_ID: &str = "execution";
 fn ledger_entry(id: &str) -> LedgerEntry {
     LedgerEntry {
         tool_call_id: id.into(),
-        name: "read_scene".into(),
+        name: "write_scene".into(),
         canonical_args: json!({"id":"scene"}),
         args_digest: "digest".into(),
         execution_id: EXECUTION_ID.into(),
@@ -232,17 +232,18 @@ fn terminal_paths_clear_run_and_all_interaction_payloads() {
         )
         .expect("checkpoint");
         let result = if run_id == "stop-without-messages" {
-            let finished = agent_runs::finish_run_without_messages(
+            let running = agent_runs::decide_approval(
                 &db,
                 run_id,
                 "owner",
-                ActiveStatus::WaitingApproval,
                 5,
-                target,
+                &approval_id,
+                0,
+                ApprovalDecision::Approved,
             )
-            .expect("finish without messages");
-            assert_eq!(finished.version, 6);
-            finished
+            .expect("resolve pending approval");
+            agent_runs::finish_run_without_messages(&db, run_id, "owner", running.version, target)
+                .expect("finish without messages")
         } else if expected_status == "discarded" {
             let interrupted = agent_runs::interrupt_run(
                 &db,
@@ -322,15 +323,7 @@ fn terminal_paths_clear_run_and_all_interaction_payloads() {
                 result.version,
                 result.status.as_str()
             ),
-            (
-                run_id,
-                if run_id == "stop-without-messages" {
-                    6
-                } else {
-                    7
-                },
-                expected_status
-            )
+            (run_id, 7, expected_status)
         );
         db.with_conn(|conn| {
             let run_payload: (Option<String>, String) = conn.query_row(
@@ -338,7 +331,8 @@ fn terminal_paths_clear_run_and_all_interaction_payloads() {
                 [run_id], |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
             assert_eq!(run_payload, (None, "[]".into()), "{run_id}");
-            for (id, expected_status) in [(&question_id, "resolved"), (&resolved_id, "resolved"), (&approval_id, "cancelled")] {
+            let approval_status = if run_id == "stop-without-messages" { "resolved" } else { "cancelled" };
+            for (id, expected_status) in [(&question_id, "resolved"), (&resolved_id, "resolved"), (&approval_id, approval_status)] {
                 let payload: (String, String, Option<String>, String, i64) = conn.query_row(
                     "SELECT request,resolution,target_basis,status,version FROM agent_run_interactions WHERE interaction_id=?1",
                     [id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
@@ -1340,100 +1334,55 @@ fn state_occ_and_terminal_are_single_winner() {
 }
 
 #[test]
-fn finish_without_messages_checks_active_status_owner_version_and_outcome() {
+fn finish_without_messages_checks_owner_version_and_outcome() {
     let db = current_schema_memory().expect("schema");
-    seed(&db, &["r", "q"]);
-    for id in ["r", "q"] {
-        agent_runs::start_run(&db, &start(id, id, "owner")).expect("start");
-    }
-    let finish = |owner, status, version, target| {
-        agent_runs::finish_run_without_messages(&db, "r", owner, status, version, target)
+    seed(&db, &["r"]);
+    agent_runs::start_run(&db, &start("r", "r", "owner")).expect("start");
+    let finish = |owner, version, target| {
+        agent_runs::finish_run_without_messages(&db, "r", owner, version, target)
     };
-    for (owner, status, version, target, marker) in [
+    for (owner, version, target, marker) in [
         (
             "other",
-            ActiveStatus::Running,
             0,
             TerminalOutcome::UserStop,
             "AGENT_RUN_OWNER_MISMATCH",
         ),
         (
             "owner",
-            ActiveStatus::WaitingUser,
-            0,
-            TerminalOutcome::UserStop,
-            "AGENT_RUN_VERSION_OR_STATUS_MISMATCH",
-        ),
-        (
-            "owner",
-            ActiveStatus::Running,
             1,
             TerminalOutcome::UserStop,
             "AGENT_RUN_VERSION_OR_STATUS_MISMATCH",
         ),
         (
             "owner",
-            ActiveStatus::Running,
             0,
             TerminalOutcome::DiscardedByAuthor,
             "AGENT_RUN_INVALID_TERMINAL_TARGET",
         ),
         (
             "owner",
-            ActiveStatus::Running,
             0,
             TerminalOutcome::SupersededByNewTurn,
             "AGENT_RUN_INVALID_TERMINAL_TARGET",
         ),
     ] {
         assert_eq!(
-            finish(owner, status, version, target)
-                .unwrap_err()
-                .to_string(),
+            finish(owner, version, target).unwrap_err().to_string(),
             marker
         );
     }
-    let finished =
-        finish("owner", ActiveStatus::Running, 0, TerminalOutcome::UserStop).expect("stop");
+    let finished = finish("owner", 0, TerminalOutcome::UserStop).expect("stop");
     assert_eq!(
         (finished.status.as_str(), finished.version),
         ("cancelled", 1)
     );
     assert_eq!(
-        finish("owner", ActiveStatus::Running, 0, TerminalOutcome::UserStop)
+        finish("owner", 0, TerminalOutcome::UserStop)
             .unwrap_err()
             .to_string(),
         "AGENT_RUN_TERMINAL"
     );
-    record_tools(&db, "q", "owner", &["tool"]);
-    agent_runs::open_user_question(
-        &db,
-        &OpenQuestion {
-            interaction_id: "question",
-            run_id: "q",
-            owner: "owner",
-            expected_version: 0,
-            execution_id: EXECUTION_ID,
-            tool_call_id: "tool",
-            args_digest: "digest",
-            request: "Question?",
-        },
-    )
-    .expect("open");
-    let finished = agent_runs::finish_run_without_messages(
-        &db,
-        "q",
-        "owner",
-        ActiveStatus::WaitingUser,
-        1,
-        TerminalOutcome::UserStop,
-    )
-    .expect("stop while waiting");
-    assert_eq!(
-        (finished.status.as_str(), finished.version),
-        ("cancelled", 2)
-    );
-    assert_eq!(interaction_state(&db, "question").1, "cancelled");
 }
 
 #[test]
@@ -1840,7 +1789,7 @@ fn pending_interactions_bind_to_latest_matching_tool_call() {
                 .collect();
             agent_runs::append_tool_calls(&db, id, "owner", entries)
         };
-        let open = |execution_id| {
+        let open = |execution_id, args_digest, tool_name| {
             if id == "question" {
                 agent_runs::open_user_question(
                     &db,
@@ -1851,7 +1800,7 @@ fn pending_interactions_bind_to_latest_matching_tool_call() {
                         expected_version: 0,
                         execution_id,
                         tool_call_id: "tool",
-                        args_digest: "digest",
+                        args_digest,
                         request: "Question?",
                     },
                 )
@@ -1860,24 +1809,77 @@ fn pending_interactions_bind_to_latest_matching_tool_call() {
                     &db,
                     &OpenApproval {
                         execution_id,
+                        args_digest,
+                        tool_name,
                         ..approval(id, id, "owner", 0)
                     },
                 )
             }
         };
         assert_eq!(
-            open("first").unwrap_err().to_string(),
+            open("first", "digest", "write_scene")
+                .unwrap_err()
+                .to_string(),
             "AGENT_RUN_UNKNOWN_TOOL_CALL_ID"
         );
         append("first", &["tool"]).expect("first response");
         append("latest", &["tool", "other"]).expect("latest matching response");
         assert_eq!(
-            open("first").unwrap_err().to_string(),
+            open("first", "digest", "write_scene")
+                .unwrap_err()
+                .to_string(),
             "AGENT_RUN_TOOL_CALL_EXECUTION_MISMATCH"
         );
+        assert_eq!(
+            open("latest", "changed-digest", "write_scene")
+                .unwrap_err()
+                .to_string(),
+            "AGENT_RUN_TOOL_CALL_MISMATCH"
+        );
+        if id == "approval" {
+            assert_eq!(
+                open("latest", "digest", "other-tool")
+                    .unwrap_err()
+                    .to_string(),
+                "AGENT_RUN_TOOL_CALL_MISMATCH"
+            );
+        }
         assert_eq!(run_state(&db, id), ("running".into(), 0, "owner".into()));
-        let opened = open("latest").expect("open latest match");
+        let opened = open("latest", "digest", "write_scene").expect("open latest match");
         assert_eq!((opened.status.as_str(), opened.version), (waiting, 1));
+        agent_runs::write_checkpoint(&db, id, "owner", 1, &json!({"text":"body"}), "digest")
+            .expect("checkpoint");
+        assert_eq!(
+            agent_runs::finish_run_without_messages(&db, id, "owner", 1, TerminalOutcome::UserStop)
+                .unwrap_err()
+                .to_string(),
+            "AGENT_RUN_VERSION_OR_STATUS_MISMATCH"
+        );
+        assert_eq!(run_state(&db, id), (waiting.into(), 1, "owner".into()));
+        db.with_conn(|conn| {
+            let payload: (String, String, String, i64) = conn.query_row(
+                "SELECT r.checkpoint,i.request,i.status,i.version FROM agent_runs r
+                  JOIN agent_run_interactions i ON i.run_id=r.run_id WHERE r.run_id=?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            let request = if id == "question" {
+                "Question?"
+            } else {
+                "Approve?"
+            };
+            assert_eq!(
+                payload,
+                (
+                    json!({"text":"body"}).to_string(),
+                    request.into(),
+                    "pending".into(),
+                    0
+                )
+            );
+            Ok(())
+        })
+        .expect("preserve waiting interaction and checkpoint");
         assert_eq!(
             append("blocked", &["independent", "tool"])
                 .unwrap_err()
@@ -2711,20 +2713,34 @@ fn run_start_and_superseding_start_persist_assistant_message_id() {
         owned()[0].origin_assistant_message_id.as_deref(),
         Some("reserved-new")
     );
-    agent_runs::begin_finalizing(
-        &db,
-        "new",
-        "new-owner",
-        ActiveStatus::Running,
-        0,
-        TerminalOutcome::Completed,
-        "final-id",
-    )
-    .expect("begin finalizing");
+    let begin = |id| {
+        agent_runs::begin_finalizing(
+            &db,
+            "new",
+            "new-owner",
+            ActiveStatus::Running,
+            0,
+            TerminalOutcome::Completed,
+            id,
+        )
+    };
+    assert_eq!(
+        begin("final-id").unwrap_err().to_string(),
+        "AGENT_RUN_ASSISTANT_MESSAGE_ID_MISMATCH"
+    );
+    assert_eq!(
+        run_state(&db, "new"),
+        ("running".into(), 0, "new-owner".into())
+    );
+    assert_eq!(
+        owned()[0].origin_assistant_message_id.as_deref(),
+        Some("reserved-new")
+    );
+    begin("reserved-new").expect("begin finalizing");
     let finalizing = owned().pop().expect("finalizing row");
     assert_eq!(
         finalizing.origin_assistant_message_id.as_deref(),
-        Some("final-id")
+        Some("reserved-new")
     );
     assert_eq!(
         finalizing.finalizing_target_status.as_deref(),
@@ -2951,6 +2967,17 @@ fn finalizing_recovery_observes_activity_age_and_uses_supplied_reason() {
     let workspace = temp_workspace();
     seed(&db, &["s"]);
     agent_runs::start_run(&db, &start("r", "s", "owner")).expect("start");
+    let age_run = || {
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE agent_runs SET activity_at=datetime('now','-25 hours') WHERE run_id='r'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("age run");
+    };
+    age_run();
     agent_runs::begin_finalizing(
         &db,
         "r",
@@ -2998,14 +3025,7 @@ fn finalizing_recovery_observes_activity_age_and_uses_supplied_reason() {
         run_state(&db, "r"),
         ("finalizing".into(), 1, "owner".into())
     );
-    db.with_conn(|conn| {
-        conn.execute(
-            "UPDATE agent_runs SET activity_at=datetime('now','-25 hours') WHERE run_id='r'",
-            [],
-        )?;
-        Ok(())
-    })
-    .expect("age finalizing run");
+    age_run();
     evidence.assistant_message_complete = false;
     let result = agent_runs::recover_finalizing(
         &db,

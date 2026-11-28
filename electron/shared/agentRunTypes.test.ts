@@ -220,6 +220,12 @@ describe("AgentRun vocabulary matches Rust and the migration", () => {
       "utf8",
     );
     const markers = captures(rust + napi, /"(AGENT_RUN_[A-Z0-9_]+)\b/gu);
+    expect(markers).toEqual(
+      expect.arrayContaining([
+        "AGENT_RUN_ASSISTANT_MESSAGE_ID_MISMATCH",
+        "AGENT_RUN_TOOL_CALL_MISMATCH",
+      ]),
+    );
     expect([...AGENT_RUN_ERROR_CODES].sort()).toEqual(
       [...new Set(markers)].sort(),
     );

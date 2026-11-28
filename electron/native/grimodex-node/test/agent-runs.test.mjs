@@ -119,7 +119,13 @@ async function withOwnerProcess(
 
 test("AgentRun starts, answers a question, and completes finalization", async (t) => {
   const backend = await openWorkspace(t);
-  const started = JSON.parse(await backend.agentRunStart(startPayload));
+  const assistantMessageId = "assistant-message-1";
+  const started = JSON.parse(
+    await backend.agentRunStart({
+      ...startPayload,
+      originAssistantMessageId: assistantMessageId,
+    }),
+  );
   assert.deepEqual(started, runState(0, "running"));
 
   const questionPayload = {
@@ -132,6 +138,10 @@ test("AgentRun starts, answers a question, and completes finalization", async (t
     /AGENT_RUN_UNKNOWN_TOOL_CALL_ID/,
   );
   await backend.agentRunAppendToolCalls({ runId, entries: [ledgerEntry] });
+  await assert.rejects(
+    backend.agentRunOpenQuestion({ ...questionPayload, argsDigest: "wrong" }),
+    /AGENT_RUN_TOOL_CALL_MISMATCH/,
+  );
   const question = JSON.parse(
     await backend.agentRunOpenQuestion(questionPayload),
   );
@@ -139,6 +149,14 @@ test("AgentRun starts, answers a question, and completes finalization", async (t
     ...runState(1, "waiting_user"),
     interactionVersion: 0,
   });
+  await assert.rejects(
+    backend.agentRunFinishWithoutMessages({
+      runId,
+      expectedVersion: question.version,
+      target: "user_stop",
+    }),
+    /AGENT_RUN_VERSION_OR_STATUS_MISMATCH/,
+  );
 
   const answerPayload = {
     runId,
@@ -154,16 +172,18 @@ test("AgentRun starts, answers a question, and completes finalization", async (t
     /AGENT_RUN_VERSION_OR_STATUS_MISMATCH/,
   );
 
-  const assistantMessageId = "assistant-message-1";
-  const finalizing = JSON.parse(
-    await backend.agentRunBeginFinalizing({
-      runId,
-      expectedStatus: answered.status,
-      version: answered.version,
-      target: "completed",
-      assistantMessageId,
-    }),
+  const begin = {
+    runId,
+    expectedStatus: answered.status,
+    version: answered.version,
+    target: "completed",
+    assistantMessageId,
+  };
+  await assert.rejects(
+    backend.agentRunBeginFinalizing({ ...begin, assistantMessageId: "wrong" }),
+    /AGENT_RUN_ASSISTANT_MESSAGE_ID_MISMATCH/,
   );
+  const finalizing = JSON.parse(await backend.agentRunBeginFinalizing(begin));
   assert.deepEqual(finalizing, runState(3, "finalizing"));
   assert.deepEqual(JSON.parse(await backend.agentRunListFinalizing({})), [
     {
@@ -230,16 +250,31 @@ test("AgentRun binds pending approval to the latest ledger entry and returns its
     backend.agentRunOpenApproval(approvalPayload),
     /AGENT_RUN_TOOL_CALL_EXECUTION_MISMATCH/,
   );
+  const latestApproval = { ...approvalPayload, executionId: newerExecutionId };
+  for (const mismatch of [
+    { toolName: "other_tool" },
+    { argsDigest: "wrong" },
+  ]) {
+    await assert.rejects(
+      backend.agentRunOpenApproval({ ...latestApproval, ...mismatch }),
+      /AGENT_RUN_TOOL_CALL_MISMATCH/,
+    );
+  }
   const approval = JSON.parse(
-    await backend.agentRunOpenApproval({
-      ...approvalPayload,
-      executionId: newerExecutionId,
-    }),
+    await backend.agentRunOpenApproval(latestApproval),
   );
   assert.deepEqual(approval, {
     ...runState(1, "waiting_approval"),
     interactionVersion: 0,
   });
+  await assert.rejects(
+    backend.agentRunFinishWithoutMessages({
+      runId,
+      expectedVersion: approval.version,
+      target: "user_stop",
+    }),
+    /AGENT_RUN_VERSION_OR_STATUS_MISMATCH/,
+  );
   assert.deepEqual(
     JSON.parse(await backend.agentRunGetPendingApproval({ runId })),
     {
@@ -645,10 +680,16 @@ test("AgentRun lists owned unfinished runs, records audit IDs and finishes witho
   );
   const finish = {
     runId,
-    expectedStatus: "running",
     expectedVersion: 0,
     target: "user_stop",
   };
+  await assert.rejects(
+    backend.agentRunFinishWithoutMessages({
+      ...finish,
+      expectedStatus: "running",
+    }),
+    /unknown field `expectedStatus`/,
+  );
   await assert.rejects(
     backend.agentRunFinishWithoutMessages({ ...finish, expectedVersion: 1 }),
     /AGENT_RUN_VERSION_OR_STATUS_MISMATCH/,

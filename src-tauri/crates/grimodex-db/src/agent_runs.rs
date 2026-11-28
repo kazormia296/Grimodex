@@ -305,7 +305,7 @@ fn interrupt_in_tx(
         owner,
         tx.execute(
             "UPDATE agent_runs SET status='interrupted',interrupt_reason=?1,
-                version=version+1,updated_at=datetime('now')
+                version=version+1,activity_at=datetime('now'),updated_at=datetime('now')
           WHERE run_id=?2 AND execution_owner=?3 AND status=?4 AND version=?5",
             params![reason.sql(), run_id, owner, expected, version],
         )?,
@@ -325,25 +325,27 @@ pub fn begin_finalizing(
     let (status, reason) = target.sql();
     ensure!(status != "discarded", "AGENT_RUN_INVALID_FINALIZING_TARGET");
     immediate(db, |tx| {
-        require_cas(
-            tx,
-            run_id,
-            owner,
-            tx.execute(
-                "UPDATE agent_runs SET status='finalizing',finalizing_target_status=?1,
-                    finalizing_target_reason=?2,origin_assistant_message_id=?3,
-                    version=version+1,updated_at=datetime('now')
-              WHERE run_id=?4 AND execution_owner=?5 AND status=?6 AND version=?7",
-                params![
-                    status,
-                    reason,
-                    assistant_message_id,
-                    run_id,
-                    owner,
-                    expected.sql(),
-                    version
-                ],
-            )?,
+        let origin_id = tx
+            .query_row(
+                "SELECT origin_assistant_message_id FROM agent_runs
+                  WHERE run_id=?1 AND execution_owner=?2 AND status=?3 AND version=?4",
+                params![run_id, owner, expected.sql(), version],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?;
+        let origin_id = require_match(tx, run_id, owner, origin_id)?;
+        ensure!(
+            origin_id
+                .as_deref()
+                .is_none_or(|id| id == assistant_message_id),
+            "AGENT_RUN_ASSISTANT_MESSAGE_ID_MISMATCH"
+        );
+        tx.execute(
+            "UPDATE agent_runs SET status='finalizing',finalizing_target_status=?1,
+                finalizing_target_reason=?2,origin_assistant_message_id=COALESCE(origin_assistant_message_id,?3),
+                version=version+1,activity_at=datetime('now'),updated_at=datetime('now')
+              WHERE run_id=?4",
+            params![status, reason, assistant_message_id, run_id],
         )?;
         Ok(RunState::new(run_id, version + 1, "finalizing"))
     })
@@ -538,7 +540,7 @@ fn finish_finalizing_in_tx(
             "UPDATE agent_runs SET status=finalizing_target_status,
                 terminal_reason=finalizing_target_reason,checkpoint=NULL,
                 checkpoint_digest=NULL,checkpoint_step=0,tool_call_ledger='[]',
-                version=version+1,updated_at=datetime('now')
+                version=version+1,activity_at=datetime('now'),updated_at=datetime('now')
           WHERE run_id=?1 AND execution_owner=?2 AND status='finalizing' AND version=?3
           RETURNING status",
             params![run_id, owner, version],
@@ -563,7 +565,6 @@ pub fn finish_run_without_messages(
     db: &Database,
     run_id: &str,
     owner: &str,
-    expected: ActiveStatus,
     version: i64,
     outcome: TerminalOutcome,
 ) -> Result<RunState> {
@@ -572,7 +573,7 @@ pub fn finish_run_without_messages(
         "AGENT_RUN_INVALID_TERMINAL_TARGET"
     );
     immediate(db, |tx| {
-        finish_without_messages_in_tx(tx, run_id, owner, expected.sql(), version, outcome)
+        finish_without_messages_in_tx(tx, run_id, owner, "running", version, outcome)
     })
 }
 
@@ -592,7 +593,7 @@ fn finish_without_messages_in_tx(
         tx.execute(
             "UPDATE agent_runs SET status=?1,terminal_reason=?2,
                 checkpoint=NULL,checkpoint_digest=NULL,checkpoint_step=0,tool_call_ledger='[]',
-                version=version+1,updated_at=datetime('now')
+                version=version+1,activity_at=datetime('now'),updated_at=datetime('now')
           WHERE run_id=?3 AND execution_owner=?4 AND status=?5 AND version=?6",
             params![status, reason, run_id, owner, expected, version],
         )?,
@@ -1149,6 +1150,8 @@ fn open_interaction_target(
     owner: &str,
     execution_id: &str,
     tool_call_id: &str,
+    args_digest: &str,
+    tool_name: Option<&str>,
 ) -> Result<(String, String)> {
     let target = tx.query_row(
         "SELECT root_run_id,chat_session_id FROM agent_runs WHERE run_id=?1 AND execution_owner=?2
@@ -1163,9 +1166,14 @@ fn open_interaction_target(
     ensure!(!exists, "AGENT_RUN_PENDING_INTERACTION_EXISTS");
     validate_tool_call_key(execution_id, tool_call_id)?;
     let ledger = read_ledger(tx, run_id, owner, false)?;
+    let entry = latest_tool_call(&ledger, tool_call_id)?;
     ensure!(
-        latest_tool_call(&ledger, tool_call_id)?.execution_id == execution_id,
+        entry.execution_id == execution_id,
         "AGENT_RUN_TOOL_CALL_EXECUTION_MISMATCH"
+    );
+    ensure!(
+        entry.args_digest == args_digest && tool_name.is_none_or(|name| entry.name == name),
+        "AGENT_RUN_TOOL_CALL_MISMATCH"
     );
     Ok(target)
 }
@@ -1192,12 +1200,20 @@ pub fn open_user_question(db: &Database, question: &OpenQuestion<'_>) -> Result<
             question.owner,
             question.execution_id,
             question.tool_call_id,
+            question.args_digest,
+            None,
         )?;
-        require_cas(tx, question.run_id, question.owner, tx.execute(
-            "UPDATE agent_runs SET status='waiting_user',version=version+1,updated_at=datetime('now')
+        require_cas(
+            tx,
+            question.run_id,
+            question.owner,
+            tx.execute(
+                "UPDATE agent_runs SET status='waiting_user',version=version+1,
+                    activity_at=datetime('now'),updated_at=datetime('now')
               WHERE run_id=?1 AND execution_owner=?2 AND status='running' AND version=?3",
-            params![question.run_id, question.owner, question.expected_version],
-        )?)?;
+                params![question.run_id, question.owner, question.expected_version],
+            )?,
+        )?;
         tx.execute(
             "INSERT INTO agent_run_interactions
                 (interaction_id,run_id,root_run_id,chat_session_id,kind,tool_call_id,tool_name,args_digest,request,status)
@@ -1341,12 +1357,20 @@ pub fn open_approval(db: &Database, approval: &OpenApproval<'_>) -> Result<RunSt
             approval.owner,
             approval.execution_id,
             approval.tool_call_id,
+            approval.args_digest,
+            Some(approval.tool_name),
         )?;
-        require_cas(tx, approval.run_id, approval.owner, tx.execute(
-            "UPDATE agent_runs SET status='waiting_approval',version=version+1,updated_at=datetime('now')
+        require_cas(
+            tx,
+            approval.run_id,
+            approval.owner,
+            tx.execute(
+                "UPDATE agent_runs SET status='waiting_approval',version=version+1,
+                    activity_at=datetime('now'),updated_at=datetime('now')
               WHERE run_id=?1 AND execution_owner=?2 AND status='running' AND version=?3",
-            params![approval.run_id, approval.owner, approval.expected_version],
-        )?)?;
+                params![approval.run_id, approval.owner, approval.expected_version],
+            )?,
+        )?;
         tx.execute(
             "INSERT INTO agent_run_interactions
                 (interaction_id,run_id,root_run_id,chat_session_id,kind,tool_call_id,tool_name,args_digest,request,target_basis,status)
@@ -1489,11 +1513,17 @@ fn close_approval(
                 ],
             )?,
         )?;
-        require_cas(tx, run_id, owner, tx.execute(
-            "UPDATE agent_runs SET status='running',version=version+1,updated_at=datetime('now')
+        require_cas(
+            tx,
+            run_id,
+            owner,
+            tx.execute(
+                "UPDATE agent_runs SET status='running',version=version+1,
+                    activity_at=datetime('now'),updated_at=datetime('now')
               WHERE run_id=?1 AND execution_owner=?2 AND status='waiting_approval' AND version=?3",
-            params![run_id, owner, run_version],
-        )?)?;
+                params![run_id, owner, run_version],
+            )?,
+        )?;
         Ok(RunState::new(run_id, run_version + 1, "running"))
     })
 }
@@ -1562,11 +1592,17 @@ pub fn answer_live(
                 run_version
             ],
         )?)?;
-        require_cas(tx, run_id, owner, tx.execute(
-            "UPDATE agent_runs SET status='running',version=version+1,updated_at=datetime('now')
+        require_cas(
+            tx,
+            run_id,
+            owner,
+            tx.execute(
+                "UPDATE agent_runs SET status='running',version=version+1,
+                    activity_at=datetime('now'),updated_at=datetime('now')
               WHERE run_id=?1 AND execution_owner=?2 AND status='waiting_user' AND version=?3",
-            params![run_id, owner, run_version],
-        )?)?;
+                params![run_id, owner, run_version],
+            )?,
+        )?;
         Ok(RunState::new(run_id, run_version + 1, "running"))
     })
 }
@@ -1821,7 +1857,8 @@ pub(crate) fn scrub_snapshot_copy_on_connection(conn: &mut Connection) -> Result
                 interrupt_reason=CASE WHEN status IN ('completed','failed','cancelled','discarded') THEN interrupt_reason ELSE 'copied_snapshot' END,
                 resumable=CASE WHEN status IN ('completed','failed','cancelled','discarded') THEN resumable ELSE 0 END,
                 not_resumable_reason=CASE WHEN status IN ('completed','failed','cancelled','discarded') THEN not_resumable_reason ELSE 'restored_from_copy' END,
-                version=CASE WHEN status IN ('completed','failed','cancelled','discarded') THEN version ELSE version+1 END
+                version=CASE WHEN status IN ('completed','failed','cancelled','discarded') THEN version ELSE version+1 END,
+                activity_at=CASE WHEN status IN ('completed','failed','cancelled','discarded') THEN activity_at ELSE datetime('now') END
           WHERE checkpoint IS NOT NULL OR checkpoint_step != 0 OR checkpoint_digest IS NOT NULL
              OR tool_call_ledger != '[]'
              OR (status NOT IN ('completed','failed','cancelled','discarded')

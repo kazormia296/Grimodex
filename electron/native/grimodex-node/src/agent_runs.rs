@@ -230,8 +230,6 @@ struct FinishFinalizingPayload {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FinishWithoutMessagesPayload {
     run_id: String,
-    #[serde(with = "ActiveStatusWire")]
-    expected_status: ActiveStatus,
     expected_version: i64,
     #[serde(with = "TerminalOutcomeWire")]
     target: TerminalOutcome,
@@ -751,7 +749,6 @@ impl Backend {
                 db,
                 &input.run_id,
                 &owner.id,
-                input.expected_status,
                 input.expected_version,
                 input.target,
             )
