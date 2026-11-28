@@ -6,11 +6,16 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentRunErrorCode } from "../shared/agentRunTypes.js";
 import type { NapiBackendLike } from "../shared/ipcContract.js";
+import {
+  createAgentApprovalExchange,
+  type AgentApprovalPendingInfo,
+} from "./agentApprovalExchange.js";
 import { createAgentRunRecorder } from "./agentRunRecorder.js";
 import type {
   AgentRunApprovalPort,
   AgentRunLedgerEntry,
 } from "./agentRunRecorderPort.js";
+import { agentToolInputDigest } from "./agentToolInputDigest.js";
 
 vi.mock("electron", () => ({ dialog: {} }));
 
@@ -45,7 +50,15 @@ afterEach(async () => {
   }
 });
 
-async function openFixture(readPersistence = false) {
+const fixtureDigest = "a".repeat(64);
+
+async function openFixture({
+  readPersistence = false,
+  toolInputDigest = () => fixtureDigest,
+}: {
+  readPersistence?: boolean;
+  toolInputDigest?: typeof agentToolInputDigest;
+} = {}) {
   root = await mkdtemp(path.join(os.tmpdir(), "grimodex-agentrun-"));
   const appData = path.join(root, "app-data");
   await mkdir(appData);
@@ -70,11 +83,10 @@ async function openFixture(readPersistence = false) {
     modelId: "fixture-model",
     endpointHash: "fixture-endpoint-hash",
   } as const;
-  const digest = "a".repeat(64);
   const recorder = createAgentRunRecorder({
     backend: native,
     isEnabled: () => true,
-    toolInputDigest: () => digest,
+    toolInputDigest,
     newRunId: randomUUID,
     readTurnPersistence: readPersistence
       ? async ({
@@ -122,7 +134,7 @@ async function openFixture(readPersistence = false) {
     native,
     recorder,
     turn,
-    digest,
+    digest: fixtureDigest,
     runId,
     status,
     startAnotherRun: (label: string) =>
@@ -239,6 +251,95 @@ async function saveTurnMessages(
 }
 
 describe("AgentRun recorder against the real Native addon", () => {
+  it("opens and decides a recorded tool call through the real approval exchange", async () => {
+    const { native, recorder, turn, runId, status } = await openFixture({
+      toolInputDigest: agentToolInputDigest,
+    });
+    const executionId = "execution";
+    const toolCallId = "tool-call";
+    const toolName = "update_codex_entry";
+    // Padding makes the model digest differ from the recorder's raw-input fallback.
+    const modelInput = { id: "entry-1", name: " Revised " };
+    const invocation = {
+      executionId,
+      chatMessageId: turn.assistantMessageId,
+      model: turn.modelId,
+    };
+    expect(
+      await recorder.recordResponse({
+        ...turn,
+        ...invocation,
+        toolUses: [{ id: toolCallId, name: toolName, input: modelInput }],
+      }),
+    ).toBe("recorded");
+    const owner = { senderId: turn.senderId, projectId: turn.projectId };
+    const run = recorder.resolveRun({ ...owner, executionId });
+    if (run.kind !== "recorded") throw new Error("expected ledger binding");
+
+    const interactionId = "approval";
+    const target = {
+      summary: "Rename the codex entry",
+      basis: null,
+      baseVersions: [{ id: modelInput.id, version: 1 }],
+      expected: null,
+    };
+    const grant = { mainOwnedProvenanceId: "provenance" };
+    let notify!: (info: AgentApprovalPendingInfo) => void;
+    const pending = new Promise<AgentApprovalPendingInfo>((resolve) => {
+      notify = resolve;
+    });
+    const controller = new AbortController();
+    const exchange = createAgentApprovalExchange({
+      port: recorder,
+      inputDigest: agentToolInputDigest,
+      isPolicyAllowed: () => true,
+      readTarget: () => target,
+      prepareCapability: () => ({ grant, activate() {}, revoke() {} }),
+      onPending: notify,
+      setTimer: () => () => {},
+      newId: () => interactionId,
+    });
+    const request = exchange.request({
+      ...owner,
+      ...invocation,
+      toolCallId,
+      toolName,
+      modelInput,
+      observed: target,
+      run,
+      signal: controller.signal,
+    });
+    try {
+      expect(await Promise.race([pending, request])).toMatchObject({
+        interactionId,
+        executionId,
+        toolCallId,
+        toolName,
+      });
+      expect(await status()).toMatchObject({
+        runId,
+        version: 1,
+        status: "waiting_approval",
+      });
+      expect(
+        exchange.resolve({ ...owner, interactionId, decision: "approved" }),
+      ).toBe("accepted");
+      expect(await request).toEqual({ kind: "approved", interactionId, grant });
+      expect(await status()).toMatchObject({
+        runId,
+        version: 2,
+        status: "running",
+      });
+      expect(await readInteraction(native, interactionId)).toMatchObject({
+        status: "resolved",
+        resolution: "approved",
+      });
+    } finally {
+      controller.abort();
+      await request;
+    }
+  });
+
   it("records a response, approves its tool, updates the ledger and finalizes", async () => {
     const { native, recorder, turn, digest, runId, status } =
       await openFixture();
@@ -388,7 +489,9 @@ describe("AgentRun recorder against the real Native addon", () => {
   });
 
   it("recovers a Stop after both messages are saved and the renderer is lost", async () => {
-    const { native, recorder, turn, runId, status } = await openFixture(true);
+    const { native, recorder, turn, runId, status } = await openFixture({
+      readPersistence: true,
+    });
     await recorder.beginFinalizing(turn, "user_stop", turn.assistantMessageId);
     for (const [id, role, content] of [
       [turn.userMessageId, "user", "Fixture user message"],
@@ -426,27 +529,24 @@ describe("AgentRun recorder against the real Native addon", () => {
 });
 
 describe("AgentRun approval port contract against Native", () => {
-  it.todo(
-    "invalidates an approval with an empty resolution (Native stores null)",
-    async () => {
-      const { native, recorder, runId, approval, pending } =
-        await approvalFixture();
-      await recorder.openApproval(approval);
-      expect(
-        await recorder.invalidateApproval({
-          ...pending,
-          outcome: "superseded",
-        }),
-      ).toEqual({ runId, version: 2, status: "running" });
-      expect(
-        await readInteraction(native, approval.interactionId),
-      ).toMatchObject({
+  it("stores a null resolution when an approval is superseded", async () => {
+    const { native, recorder, runId, approval, pending } =
+      await approvalFixture();
+    await recorder.openApproval(approval);
+    expect(
+      await recorder.invalidateApproval({
+        ...pending,
+        outcome: "superseded",
+      }),
+    ).toEqual({ runId, version: 2, status: "running" });
+    expect(await readInteraction(native, approval.interactionId)).toMatchObject(
+      {
         status: "superseded",
         request: approval.request,
-        resolution: "",
-      });
-    },
-  );
+        resolution: null,
+      },
+    );
+  });
 
   it("rejects an approval whose tool call has no ledger row", async () => {
     const { recorder, approval } = await approvalFixture(false);
