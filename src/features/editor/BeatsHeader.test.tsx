@@ -3,6 +3,9 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { BeatsHeader } from "./BeatsHeader";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { useProjectStore } from "@/features/project/projectStore";
+import { setAiProviderReady } from "@/test-utils/aiProviderReady";
 
 // TipTap の useEditor はモック（Unplaced beat editor の初期化が複雑なため）
 vi.mock("@tiptap/react", async (importOriginal) => {
@@ -129,5 +132,41 @@ describe("BeatsHeader", () => {
     fireEvent.click(screen.getByTestId("beat-menu-delete-b1"));
     // ストアから削除されていること
     expect(useUnplacedBeatsStore.getState().getBeats("s1")).toHaveLength(0);
+  });
+});
+
+describe("BeatsHeader の「あらすじからビートを生成」と利用方針", () => {
+  const button = () => screen.queryByTestId("beats-generate-from-synopsis");
+  const renderWithPolicy = (aiPolicy: string) => {
+    setAiProviderReady();
+    useTreeStore.setState({
+      nodes: [{ id: "s1", nodeType: "scene", synopsis: "あらすじ" } as never],
+    });
+    useProjectStore.setState({
+      currentProjectId: "p1",
+      projects: [{ id: "p1", aiPolicy } as never],
+    });
+    render(
+      <BeatsHeader
+        sceneId="s1"
+        editor={mockEditor}
+        setMentionPopup={vi.fn()}
+      />,
+    );
+  };
+
+  it("本文の提案がオンなら出す", () => {
+    renderWithPolicy(
+      '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true}}',
+    );
+    expect(button()).toBeTruthy();
+  });
+
+  it.each([
+    '{"preset":"off","toggles":{"chat":false,"bodyWrite":false,"analysis":false}}',
+    "not-json",
+  ])("本文の提案が不可（%s）なら出さない", (aiPolicy) => {
+    renderWithPolicy(aiPolicy);
+    expect(button()).toBeNull();
   });
 });

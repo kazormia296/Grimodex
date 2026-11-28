@@ -88,6 +88,8 @@ vi.mock("@/features/workspace/store", () => ({
 }));
 
 import { generateBeatsFromSynopsis } from "./generateBeatsFromSynopsis";
+import { seedWritableProject } from "@/test-utils/writableProject";
+import { useProjectStore } from "@/features/project/projectStore";
 
 function emit(event: string, payload: unknown) {
   listeners.get(event)?.({
@@ -125,6 +127,48 @@ describe("generateBeatsFromSynopsis", () => {
     invokeMock.mockReset();
     invokeMock.mockResolvedValue(undefined);
     addBeatMock.mockReset();
+    seedWritableProject();
+  });
+
+  it("本文の提案がオフの作品では AI を呼ばず、ビートを足さない", async () => {
+    useProjectStore.setState((state) => ({
+      projects: state.projects.map((project) => ({
+        ...project,
+        aiPolicy:
+          '{"preset":"off","toggles":{"chat":false,"bodyWrite":false,"analysis":false}}',
+      })),
+    }));
+    const onDone = vi.fn();
+    await generateBeatsFromSynopsis("scene-1", { onDone });
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(
+      invokeMock.mock.calls.some(
+        ([command]) => command === "send_inline_ai_stream",
+      ),
+    ).toBe(false);
+    expect(addBeatMock).not.toHaveBeenCalled();
+  });
+
+  it("生成の途中で本文の提案がオフになったら、ビートを足さない", async () => {
+    const onDone = vi.fn();
+    const promise = generateBeatsFromSynopsis("scene-1", { onDone });
+    await waitForStreamListeners();
+    useProjectStore.setState((state) => ({
+      projects: state.projects.map((project) => ({
+        ...project,
+        aiPolicy:
+          '{"preset":"off","toggles":{"chat":false,"bodyWrite":false,"analysis":false}}',
+      })),
+    }));
+    emit("inline-ai:stream-chunk", { delta: validJson, block_type: "text" });
+    emit("inline-ai:stream-done", {
+      stop_reason: "end_turn",
+      input_tokens: 0,
+      output_tokens: 0,
+    });
+    await promise;
+    expect(addBeatMock).not.toHaveBeenCalled();
+    expect(onDone).toHaveBeenCalledTimes(1);
   });
 
   it("ストリーム完了後に addBeat が各ビートごとに呼ばれる", async () => {

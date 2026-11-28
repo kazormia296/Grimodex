@@ -5,6 +5,8 @@ import { useTreeStore } from "./treeStore";
 import { loadSceneContent } from "./api";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
+import { useAiGate } from "@/features/ai-policy/useAiGate";
+import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { toast } from "sonner";
 import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
 
@@ -25,10 +27,13 @@ export function SynopsisArea({ nodeId, bare = false }: SynopsisAreaProps) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [confirmOverwrite, setConfirmOverwrite] = useState(false);
   const { t } = useTranslation();
+  // AI のあらすじは本文の提案（bodyWrite）。オフなら入口を隠し、実行も止める。
+  const bodyWriteGate = useAiGate("bodyWrite");
 
   const doGenerate = useCallback(async () => {
     if (!node) return;
     setConfirmOverwrite(false);
+    if (blockIfPolicyOff("bodyWrite")) return;
     setIsGenerating(true);
     try {
       const rawContent = await loadSceneContent(nodeId);
@@ -37,7 +42,10 @@ export function SynopsisArea({ nodeId, bare = false }: SynopsisAreaProps) {
         toast.warning(t("tree.synopsis.emptySceneWarning"));
         return;
       }
+      // 読込みと生成の待ちの間にオフになり得るため、AI の呼び出し前と保存前に読む。
+      if (blockIfPolicyOff("bodyWrite")) return;
       const generated = await generateSynopsisFromContent(node.title, content);
+      if (blockIfPolicyOff("bodyWrite")) return;
       const trimmed = generated.trim();
       await updateSynopsis(nodeId, trimmed);
       toast.success(t("tree.synopsis.generated"));
@@ -50,6 +58,7 @@ export function SynopsisArea({ nodeId, bare = false }: SynopsisAreaProps) {
 
   const handleGenerate = useCallback(async () => {
     if (!node) return;
+    if (blockIfPolicyOff("bodyWrite")) return;
     const rawContent = await loadSceneContent(nodeId);
     const content = prosemirrorToText(rawContent);
     if (!content?.trim()) {
@@ -80,7 +89,7 @@ export function SynopsisArea({ nodeId, bare = false }: SynopsisAreaProps) {
             {isFolder ? t("tree.outline.label") : "Synopsis"}
           </span>
         )}
-        {!isFolder && (
+        {!isFolder && bodyWriteGate.presentation !== "hidden" && (
           <button
             type="button"
             onClick={handleGenerate}
