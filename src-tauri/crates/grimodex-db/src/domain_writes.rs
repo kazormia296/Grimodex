@@ -5049,11 +5049,11 @@ fn tree_order_integer_part(key: &str) -> anyhow::Result<&str> {
     let bytes = key.as_bytes();
     anyhow::ensure!(!bytes.is_empty(), "tree order key is empty");
     let length = tree_order_integer_length(bytes[0])?;
-    anyhow::ensure!(length <= bytes.len(), "invalid tree order key");
-    Ok(&key[..length])
+    key.get(..length)
+        .ok_or_else(|| anyhow::anyhow!("invalid tree order key"))
 }
 
-fn tree_validate_order_key(key: &str) -> anyhow::Result<()> {
+pub(crate) fn validate_order_key(key: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         key != format!("A{}", "0".repeat(26)),
         "invalid tree order key"
@@ -5232,10 +5232,10 @@ fn tree_midpoint(a: &str, b: Option<&str>) -> anyhow::Result<String> {
 
 fn tree_generate_key_between(a: Option<&str>, b: Option<&str>) -> anyhow::Result<String> {
     if let Some(a) = a {
-        tree_validate_order_key(a)?;
+        validate_order_key(a)?;
     }
     if let Some(b) = b {
-        tree_validate_order_key(b)?;
+        validate_order_key(b)?;
     }
     if let (Some(a), Some(b)) = (a, b) {
         anyhow::ensure!(a < b, "tree order bounds are invalid");
@@ -5283,7 +5283,7 @@ fn tree_generate_key_between(a: Option<&str>, b: Option<&str>) -> anyhow::Result
     }
 }
 
-fn tree_generate_n_keys_between(
+pub(crate) fn generate_n_keys_between(
     a: Option<&str>,
     b: Option<&str>,
     count: usize,
@@ -5315,9 +5315,9 @@ fn tree_generate_n_keys_between(
     }
     let middle_count = count / 2;
     let middle = tree_generate_key_between(a, b)?;
-    let mut result = tree_generate_n_keys_between(a, Some(&middle), middle_count)?;
+    let mut result = generate_n_keys_between(a, Some(&middle), middle_count)?;
     result.push(middle.clone());
-    result.extend(tree_generate_n_keys_between(
+    result.extend(generate_n_keys_between(
         Some(&middle),
         b,
         count - middle_count - 1,
@@ -5687,7 +5687,7 @@ fn validate_ai_tree_native_projection_in_tx(
         let inserted_ids: HashSet<String> = inserted.iter().map(|item| item.id.clone()).collect();
         let mut anchors = children_by_parent.remove(&parent).unwrap_or_default();
         anchors.retain(|node| {
-            !moved_ids.contains(&node.id) && tree_validate_order_key(&node.sort_order).is_ok()
+            !moved_ids.contains(&node.id) && validate_order_key(&node.sort_order).is_ok()
         });
         anchors.sort_by(|left, right| left.sort_order.cmp(&right.sort_order));
         let anchor_ids: HashSet<String> = anchors.iter().map(|node| node.id.clone()).collect();
@@ -5756,7 +5756,7 @@ fn validate_ai_tree_native_projection_in_tx(
             } else {
                 None
             };
-            let keys = tree_generate_n_keys_between(before, after, end - index)?;
+            let keys = generate_n_keys_between(before, after, end - index)?;
             for (offset, (id, _)) in ordered[index..end].iter().enumerate() {
                 expected_placements.insert(id.clone(), (parent.clone(), keys[offset].clone()));
             }
