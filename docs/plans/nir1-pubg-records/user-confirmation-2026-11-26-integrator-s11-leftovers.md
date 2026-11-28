@@ -224,3 +224,28 @@
 [2026-11-28T01:38:56.927Z] 回答：Your questions have been answered: "同梱の C-query worker は、#1172 で Linux の release が 91.7 MB から 7.8 MB になりました（macOS／Windows は未測定）。元の大きさに戻っても、自動で気づく検査はありません。戻ると install 後のディスクが約 84 MB 増えますが、動作は変わりません。検査を足すと新しい gate になるので、どうするか選んでください。"="足さない (Recommended)". You can now continue with these answers in mind.
 ```
 - 効力：大きさの退行検査は足さない。DR-S11-5 (1) のまま閉じる。
+
+## 問 26（2026-11-28 12:18、統合者の AskUserQuestion。問 7 の例外を条件つきで戻す。回答 12:29）
+- 背景：直し（#1213、master 3a0505d5c。祖先の試験の command と suite を末尾へ移した）が入った。問 24 の「直るまでは取り直す」の区切り。
+- tool_use toolu_01Dts2fygonRauQgiBbpTdmD。
+
+問いの原文：
+
+> 問 7 の例外を戻しますか？直し（#1213）を master に merge したので、これを含む枝では、「master が枝の祖先」の試験が落ちても後ろの試験がすべて走ります。戻す場合は、次がそろうときに限り、その 1 件の失敗があっても merge してよいことにします：head が #1213 を含む／Quick の失敗がその 1 件だけで、走らなかった試験が 0／ほかの part と ci.yml が success／head が Quick の candidate_base を含む／run と理由を PR 本文に書く。
+
+選択肢の原文：
+
+- 「条件つきで戻す (Recommended)」：上の条件がそろえば merge してよい。Mastra の merge が続いても、取り直しを繰り返さずに済む。走らなかった試験が無いので、検査の抜けは出ない。
+- 「戻さず取り直す」：この試験が落ちたら、毎回 master を取り込んで Quick と ci.yml を取り直す。例外は無くなる。
+- （ほかに、自由記述の「Other」が出る）
+
+回答の原文（tool_result の全文）：
+
+```
+Your questions have been answered: "問 7 の例外を戻しますか？直し（#1213）を master に merge したので、これを含む枝では、「master が枝の祖先」の試験が落ちても後ろの試験がすべて走ります。戻す場合は、次がそろうときに限り、その 1 件の失敗があっても merge してよいことにします：head が #1213 を含む／Quick の失敗がその 1 件だけで、走らなかった試験が 0／ほかの part と ci.yml が success／head が Quick の candidate_base を含む／run と理由を PR 本文に書く。"="条件つきで戻す (Recommended)". You can now continue with these answers in mind.
+```
+
+- 効力（Mastra を除く全 lane の製品 PR）：
+  - 次がそろうときに限り、observation-prep の祖先の試験の 1 件の失敗があっても merge してよい：head が #1213（3a0505d5c）を含む／Quick の失敗がその 1 件だけで、not-run の step が 0／ほかの part と ci.yml がすべて success／head が Quick の candidate_base を含む／run と理由を PR 本文に書く。
+  - not-run の有無は、落ちた part の impact の報告（impact-<part>.json の execution の steps）で確かめる。
+  - それ以外の失敗は、今までどおり merge しない。問 24 の「直るまでは取り直す」は終わる。
