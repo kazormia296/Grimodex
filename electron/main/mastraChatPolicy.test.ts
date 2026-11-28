@@ -6,16 +6,14 @@ import {
 } from "./mastraChatPolicy.js";
 
 describe("Mastra main chat policy", () => {
-  it("matches the renderer for absent, empty, and boolean policies", async () => {
+  it("allows NULL and valid policies, but rejects undefined and empty values", async () => {
     const renderer = await vi.importActual<{
       parseAiPolicy(raw: string | null | undefined): {
         toggles: { chat: boolean };
       };
     }>("../../src/features/ai-policy/parse");
     const policies = [
-      undefined,
       null,
-      "",
       JSON.stringify({
         preset: "full",
         toggles: { chat: true, bodyWrite: true, analysis: true },
@@ -31,6 +29,8 @@ describe("Mastra main chat policy", () => {
         renderer.parseAiPolicy(raw).toggles.chat,
       );
     }
+    expect(aiPolicyAllowsChat(undefined)).toBe(false);
+    expect(aiPolicyAllowsChat("")).toBe(false);
   });
 
   it("rejects corrupted chat toggles instead of the renderer's Boolean(t.chat) coercion", async () => {
@@ -75,6 +75,22 @@ describe("Mastra main chat policy", () => {
     expect(aiPolicyAllowsChat(0)).toBe(false);
   });
 
+  it("rejects an invalid policy even when its chat toggle reads true", () => {
+    expect(
+      aiPolicyAllowsChat(
+        JSON.stringify({
+          preset: "full",
+          toggles: {
+            chat: true,
+            bodyWrite: true,
+            analysis: true,
+            structureWrite: null,
+          },
+        }),
+      ),
+    ).toBe(false);
+  });
+
   it("requires one object row with an ai_policy column", () => {
     for (const result of [
       "not-json",
@@ -92,6 +108,6 @@ describe("Mastra main chat policy", () => {
     ).toBe(true);
     expect(
       projectAiChatPolicyAllows(JSON.stringify({ rows: [{ ai_policy: "" }] })),
-    ).toBe(true);
+    ).toBe(false);
   });
 });

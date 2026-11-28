@@ -28,6 +28,7 @@ import {
   isNir1LocalGenerationCommand,
   toErrorString,
 } from "../shared/ipcContract.js";
+import { classifyAiPolicy } from "../shared/aiPolicy/classifyAiPolicy.js";
 import { isAgentEventSecretInputSupported } from "../shared/agentEventSecretWritePolicy.js";
 import { isAgentForeshadowSecretInputSupported } from "../shared/agentForeshadowSecretWritePolicy.js";
 import {
@@ -1030,49 +1031,8 @@ function parsePolicyAllows(
   raw: unknown,
   policy: AgentAuthorityPolicy,
 ): boolean {
-  // `parseAiPolicy` treats a legacy NULL policy as the documented default
-  // (full). Keep this main-side gate aligned with that canonical policy
-  // contract while still failing closed for an unknown serialized preset.
-  if (raw === null || raw === undefined) return true;
-  if (typeof raw !== "string" || raw.trim().length === 0) return false;
-  try {
-    const parsed = JSON.parse(raw) as {
-      preset?: unknown;
-      toggles?: Record<string, unknown>;
-    };
-    const preset = parsed.preset;
-    const toggles = parsed.toggles;
-    if (toggles && typeof toggles === "object") {
-      if (typeof toggles[policy] === "boolean") return toggles[policy] === true;
-    }
-    const presetDefaults: Record<
-      string,
-      Record<AgentAuthorityPolicy, boolean>
-    > = {
-      full: { knowledgeWrite: true, structureWrite: true, bodyWrite: true },
-      "assist-off": {
-        knowledgeWrite: true,
-        structureWrite: true,
-        bodyWrite: false,
-      },
-      "review-only": {
-        knowledgeWrite: false,
-        structureWrite: false,
-        bodyWrite: false,
-      },
-      off: { knowledgeWrite: false, structureWrite: false, bodyWrite: false },
-      custom: {
-        knowledgeWrite: false,
-        structureWrite: false,
-        bodyWrite: false,
-      },
-    };
-    return typeof preset !== "string"
-      ? false
-      : (presetDefaults[preset]?.[policy] ?? false);
-  } catch {
-    return false;
-  }
+  // NULL は新しい作品の既定（bodyWrite だけ可）。読めない値・壊れた値は 3 軸とも不可。
+  return classifyAiPolicy(raw).toggles[policy];
 }
 
 function pruneAgentAuthorityCapabilities(now = Date.now()): void {
@@ -1122,10 +1082,11 @@ async function policyAllowsAgentTool(
         );
   const parsed = JSON.parse(raw) as { rows?: unknown };
   const rows = Array.isArray(parsed.rows) ? parsed.rows : [];
-  if (rows.length === 0) return false;
+  // A missing row or more than one row is a broken answer, not a policy.
+  if (rows.length !== 1) return false;
   const column = aiPolicyColumn(rows[0]);
   // A row whose shape cannot be read is never treated as a NULL policy: that
-  // would grant the default (full) to a project whose real policy is unknown.
+  // would grant the NULL default to a project whose real policy is unknown.
   if (column === UNREADABLE_POLICY_ROW) return false;
   return parsePolicyAllows(column, policy);
 }

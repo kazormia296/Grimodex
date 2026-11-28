@@ -129,7 +129,12 @@ async function issueAgentCapability(
     }),
   );
   const dbExecute = vi.fn(async () =>
-    nativeDbReadResult([{ ai_policy: JSON.stringify({ preset: "full" }) }]),
+    nativeDbReadResult([
+      {
+        ai_policy:
+          '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true,"knowledgeWrite":true}}',
+      },
+    ]),
   );
   registerIpcRouter(
     {
@@ -655,7 +660,13 @@ describe("registerIpcRouter fail-soft logging", () => {
         {
           ai_policy: JSON.stringify({
             preset: "full",
-            toggles: { chat: true },
+            toggles: {
+              chat: true,
+              bodyWrite: true,
+              analysis: true,
+              structureWrite: true,
+              knowledgeWrite: true,
+            },
           }),
         },
       ]),
@@ -1157,13 +1168,24 @@ describe("registerIpcRouter fail-soft logging", () => {
       },
     );
 
-    it("withholds the capability when an object row carries a restrictive policy", async () => {
-      for (const preset of ["off", "review-only", "custom"]) {
-        mocks.handlers.clear();
-        const grants = await capabilitiesFor(
-          nativeDbReadResult([{ ai_policy: JSON.stringify({ preset }) }]),
-        );
-        expect(grants, preset).toBeUndefined();
+    it("withholds every write capability for missing or wrong-type required toggles", async () => {
+      const invalidPolicies = [
+        JSON.stringify({ preset: "full" }),
+        JSON.stringify({
+          preset: "full",
+          toggles: { chat: true, bodyWrite: "true", analysis: true },
+        }),
+      ];
+      for (const aiPolicy of invalidPolicies) {
+        for (const [toolName, input] of GATED_TOOLS) {
+          mocks.handlers.clear();
+          const grants = await capabilitiesFor(
+            nativeDbReadResult([{ ai_policy: aiPolicy }]),
+            toolName,
+            input,
+          );
+          expect(grants, `${toolName}: ${aiPolicy}`).toBeUndefined();
+        }
       }
     });
 
@@ -1171,37 +1193,66 @@ describe("registerIpcRouter fail-soft logging", () => {
       const grants = await capabilitiesFor(
         nativeDbReadResult([
           {
-            ai_policy: JSON.stringify({
-              preset: "full",
-              toggles: { knowledgeWrite: false },
-            }),
+            ai_policy: policyWith({ knowledgeWrite: false }, "full"),
           },
         ]),
       );
       expect(grants).toBeUndefined();
     });
 
-    it("issues the capability for an object row with the full preset", async () => {
+    it("issues the capability for an object row with a valid full policy", async () => {
       const grants = await capabilitiesFor(
-        nativeDbReadResult([{ ai_policy: JSON.stringify({ preset: "full" }) }]),
+        nativeDbReadResult([
+          {
+            ai_policy:
+              '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true,"knowledgeWrite":true}}',
+          },
+        ]),
       );
       expect(grants).toMatchObject({
         "call-1": { capability: expect.any(String) },
       });
     });
 
-    it("keeps the documented NULL default (full) for an object row", async () => {
-      const grants = await capabilitiesFor(
-        nativeDbReadResult([{ ai_policy: null }]),
+    it("allows only bodyWrite for an object row with NULL policy", async () => {
+      for (const [toolName, input, toggle] of GATED_TOOLS) {
+        mocks.handlers.clear();
+        const grants = await capabilitiesFor(
+          nativeDbReadResult([{ ai_policy: null }]),
+          toolName,
+          input,
+        );
+        if (toggle === "bodyWrite") {
+          expect(grants).toMatchObject({
+            "call-1": { capability: expect.any(String) },
+          });
+        } else {
+          expect(grants).toBeUndefined();
+        }
+      }
+    });
+
+    it("rejects a two-row answer even where the NULL default would allow", async () => {
+      // The query is LIMIT 1, so two rows is a broken answer. bodyWrite is the
+      // one axis a NULL row allows, so only this tool can tell the two apart.
+      const bodyWriteTools = GATED_TOOLS.filter(
+        ([, , toggle]) => toggle === "bodyWrite",
       );
-      expect(grants).toMatchObject({
-        "call-1": { capability: expect.any(String) },
-      });
+      expect(bodyWriteTools.length).toBeGreaterThan(0);
+      for (const [toolName, input] of bodyWriteTools) {
+        mocks.handlers.clear();
+        const grants = await capabilitiesFor(
+          nativeDbReadResult([{ ai_policy: null }, { ai_policy: null }]),
+          toolName,
+          input,
+        );
+        expect(grants, toolName).toBeUndefined();
+      }
     });
 
     it("still reads a positional array row", async () => {
       const restrictive = await capabilitiesFor(
-        JSON.stringify({ rows: [[JSON.stringify({ preset: "off" })]] }),
+        JSON.stringify({ rows: [[DB_DEFAULT_AI_POLICY]] }),
       );
       expect(restrictive).toBeUndefined();
     });

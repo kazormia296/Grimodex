@@ -137,7 +137,8 @@ async function startWorkspace(): Promise<{
   const seeded = ok<{ path: string; projectId: string }>(
     await route("seed_sample_workspace", {
       language: "ja",
-      aiPolicy: '{"preset":"full"}',
+      aiPolicy:
+        '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true,"knowledgeWrite":true}}',
     }),
   );
   ok(await route("open_workspace", { path: seeded.path }));
