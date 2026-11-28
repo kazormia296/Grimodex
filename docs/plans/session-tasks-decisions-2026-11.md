@@ -1,6 +1,6 @@
 # SessionTasks（Release B）の判断記録（2026-11）
 
-- 作成：2026-11-26。基点：`origin/master` `1306198db`。
+- 作成：2026-11-26。基点：`origin/master` `1306198db`。追記：2026-11-28（§9）。
 - 対象：[Agent Collaboration Roadmap](agent-collaboration-roadmap.md) の Release B（SessionTasks Minimal）と Decision Gate A、[Mastra 移行計画](mastra-migration-plan.md) の MP-6・MP-9 との接続。
 - 前提の正本：[ADR 007](../adr/007-agent-collaboration-execution-boundary.md)、[ADR 008](../adr/008-agent-default-mode-and-write-approval.md)、[ADR 012](../adr/012-work-focus-chat-and-context-boundary.md)、[Agent Auto／Write-Safety Roadmap](agent-auto-write-safety-roadmap.md)、[MP-4 の判断記録](mastra-mp4-decisions.md) の DR-MP4-57、[MP-5 の判断記録](mastra-mp5-decisions.md) の DR-MP5-7・DR-MP5-11。
 - DR-ST-3・DR-ST-6 は ADR 007 と ADR 012 の記述と、DR-ST-9 は ADR 012 の記述と衝突するので、同じ PR で両 ADR に 2026-11-26 の追補を足した（利用者の回答「追補を足す (推奨)」）。それ以外は ADR を変えない。ADR と衝突する場合は ADR（追補を含む）が優先する。
@@ -54,7 +54,7 @@
 
 - 範囲と承認の正本は ADR 008（`mutate / task-scope` は承認済みの Task Grant の範囲の中なら確認なしで実行、範囲の外は個別の承認、`destructive / always` は毎回確認）と ADR 007 §6。SessionTasks はこれを使い、別の承認の仕組みを作らない。
 - 前提：ADR 008 の承認の境界（`effect`／`approvalMode`、main の承認の検証と Capability の発行の時点）は Write-Safety Roadmap の Gate A（A1・A2）で作る。Task Grant（承認した範囲の定義と保存）は同じ roadmap で Gate C、つまり Release B に置かれている。Mastra には無い（§3）。
-- MP-6 で Mastra の承認（`requireApproval`／`beforeApproval`／approve・decline）を、「止めて、人が押したら再開する」部品として使う案を、**候補**として MP-6 の設計に載せる。条件：
+- MP-6 で Mastra の承認（`requireApproval`／`beforeApproval`／approve・decline）を、「止めて、人が押したら再開する」部品として使う案を、**候補**として MP-6 の設計に載せる（2026-11-28 追記：この候補は採らないと決まった。§9）。条件：
   - `resumeData` と、モデル入力の `approved` を、回答・承認・認可の根拠にしない。
   - `mutate`・`destructive` の Capability は、承認が確定した後にだけ発行する。承認待ちの間に既発行の Capability を延命しない（ADR 008 §4）。Mastra の承認は ApprovalRequest（ADR 008 §5）の画面側の手段で、記録、再検証、一回限りの Capability への交換は main が持つ。one-shot、sender・project・入力 digest の束縛は維持する。Mastra の承認で置き換えると製品の認可の削除になり、委任の外。
   - 承認した時点の引数の digest を固定し、承認の後に引数が変わったら拒否する。
@@ -82,7 +82,7 @@
 
 - Release B は、Decision Gate A（Release A を約 10 件使った記録）を待たない。Gate A の問いは、Release B を作った後の振り返りの観点として残す。
 - 確認待ちを会話の外に保存すること（Release B の product promise の一部）は、Release A の A3（durable AgentRun と durable interaction）と、その前提の R1・F0-lite を先に作って使う。Release A のうち A4a 以降（Background Session、UI、hardening）は待たない。Roadmap の principle 2（Task の進捗の表示より前に Background execution を成立させる）の例外として扱う。
-- Release B の前提：Write-Safety Roadmap の Gate A（A1・A2）、Release A の A3（と R1・F0-lite）、Mastra 移行の MP-6（write tool と capability）と MP-9（履歴の持ち主と保存の移動）。担当と範囲は DR-ST-10。
+- Release B の前提：Write-Safety Roadmap の Gate A（A1・A2）、Release A の A3（と R1・F0-lite）、Mastra 移行の MP-6（write tool と capability）と MP-9（履歴の持ち主と保存の移動）。担当と範囲は DR-ST-10。（2026-11-28 追記：「F0-lite」は F0-lite-A と読む。§9）
 - ADR 007 と ADR 012 の Consequences（実運用で問題が観測された後に評価、既存の Decision Gate を維持）は、この決定に合わせて追補した。
 
 ### DR-ST-10 前提の範囲と担当（2026-11-27）
@@ -90,8 +90,8 @@
 利用者の回答（統合者の構造化質問、2026-11-27。記録は `claude/nir1-contracts` の commit `e5d93dca8` の問 8〜10）：
 
 - 問 8「SessionTasks の試験」は「Release B の機能まるごと」（書き換えの承認、連続実行、再起動をまたぐ確認待ち、続行の引き継ぎまで）。DR-ST-6 の前提 4 つ（Write-Safety の Gate A、Release A の A3、MP-6、MP-9）は全部要る。
-- 問 9 Write-Safety の Gate A（A1・A2）は Release B の前提として確定した（「前提にする、担当は Mastra (Recommended)」）。担当は Mastra 移行の lane で、MP-6 の後に続けて持つ。authority の変更なので、設計ができたら利用者に伺う。
-- 問 10 Release A の A3（R1・F0-lite を含む）は「新しい lane で実装まで」。保存の範囲の拡大と DR-MP5-11 の変更は、その lane が起案の段で利用者に伺う（委任の外）。
+- 問 9 Write-Safety の Gate A（A1・A2）は Release B の前提として確定した（「前提にする、担当は Mastra (Recommended)」）。担当は Mastra 移行の lane で、MP-6 の後に続けて持つ。authority の変更なので、設計ができたら利用者に伺う。（2026-11-28 追記：設計は確認済み。§9）
+- 問 10 Release A の A3（R1・F0-lite を含む）は「新しい lane で実装まで」。保存の範囲の拡大と DR-MP5-11 の変更は、その lane が起案の段で利用者に伺う（委任の外）。（2026-11-28 追記：確認済み。§9）
 
 ### DR-ST-9 作者が書く目的と条件の欄は作らない
 
@@ -114,7 +114,7 @@
 | 承認した範囲での連続実行（Task Grant の定義と保存）と、その測定 | ADR 008 §3・権限の層構造・不変条件 2〜3、Write-Safety Roadmap の Gate C（Task Grant は Release B。ADR 008 §8 の Run Tool Grant とは別） | MP-6 に候補（DR-ST-4）、測定は §5 |
 | 親の turn の tool 回数の上限の撤廃 | DR-ST-5 | Mastra の経路は 4c-2（送信中の停止）の後。loop の規則と wire の検証の上限を変える |
 | 手順と進み具合の保存・AI が書く tool・画面 | Release B | 依存だけ |
-| 確認待ちを会話の外に保存 | ADR 007 §5、Release A の A3 | 依存だけ：DR-MP5-11 と W12 の「再起動の後に復元しない」を変える継ぎ目。保存の範囲の拡大なので、変えるときに利用者の確認が要る |
+| 確認待ちを会話の外に保存 | ADR 007 §5、Release A の A3 | 依存だけ：DR-MP5-11 と W12 の「再起動の後に復元しない」を変える継ぎ目。保存の範囲の拡大なので、変えるときに利用者の確認が要る。2026-11-28 追記：確認は済んだ（§9） |
 | 古い Task の更新を拒む（OCC） | ADR 007 §2・§4（WorkTask は独立した authority で、OCC version を Native が持つ SQLite に置く） | 依存だけ。Task は Native の独立した表に置き、Mastra の thread metadata には置かない |
 | Task を手で片付けなくて済む | Release B の出口条件 | Release B |
 | 続行のときに読んだ内容を引き継ぐ | Release B | MP-9（履歴の持ち主）。続行を出す条件は wire（P14 の Q4）と renderer。DR-ST-1 で質が下がった形をそのまま採らない |
@@ -142,18 +142,34 @@ Mastra 組込みの task／plan の tool、Goals、AgentController は使わな�
 
 - この文書は要件と順序の記録で、製品の挙動、wire、保存、送信先を変えない。脅威モデルの確定文書も変えない。
 - 新しい送信先は無い。実 API の測定は Anthropic の API だけに送る。
-- 確認待ちの保存（DR-ST-6・DR-ST-7）と、suspend の snapshot の永続化（DR-ST-4）は保存の範囲の拡大にあたり、実装の前に利用者の確認が要る。確認待ちの保存は、A3 の lane が起案の段で DR-MP5-11 の変更と合わせて伺う（DR-ST-10）。
-- Write-Safety の Gate A（A1・A2）は承認と Capability の発行の authority を変える。Mastra の lane が設計を終えた段で利用者に伺う（DR-ST-10）。
+- 確認待ちの保存（DR-ST-6・DR-ST-7）と、suspend の snapshot の永続化（DR-ST-4）は保存の範囲の拡大にあたり、実装の前に利用者の確認が要る。確認待ちの保存は、A3 の lane が起案の段で DR-MP5-11 の変更と合わせて伺う（DR-ST-10）。（2026-11-28 追記：確認待ちの保存は確認済み。§9）
+- Write-Safety の Gate A（A1・A2）は承認と Capability の発行の authority を変える。Mastra の lane が設計を終えた段で利用者に伺う（DR-ST-10）。（2026-11-28 追記：確認済み。§9）
 - 回数の上限の撤廃（DR-ST-5）は製品の挙動と wire の契約の変更で、撤廃の PR で条件を満たしてから行う。
 
 ## 8. 未確認
 
-- DR-ST-4 の mock は Mastra の担当が 2026-11-26 に回した（作業記録はリポジトリの外）。報告の要点：モデルの `approved`・`resumeData` では承認は解けない。承認の後も `resumeData` と引数はモデルの値なので、引数の digest の固定と実行の直前の照合が要る。承認待ちは同じ turn の読み取りも止める。abort しても run は suspended のままで、保留は main の側で閉じる。MP-6 で採るかと W12・DR-MP5-7 の改訂は、MP-6 の設計で利用者に伺う。
+- DR-ST-4 の mock は Mastra の担当が 2026-11-26 に回した（作業記録はリポジトリの外）。報告の要点：モデルの `approved`・`resumeData` では承認は解けない。承認の後も `resumeData` と引数はモデルの値なので、引数の digest の固定と実行の直前の照合が要る。承認待ちは同じ turn の読み取りも止める。abort しても run は suspended のままで、保留は main の側で閉じる。MP-6 で採るかと W12・DR-MP5-7 の改訂は、MP-6 の設計で利用者に伺う。（2026-11-28 追記：採らないと決まった。§9）
 - Task の保存先（Native の独立した表。schema の版上げ）。
 - `limit_tokens` で止まったとき・文脈が埋まったときの扱い（DR-ST-5 の条件 2）の方式。
 - 結果の小さい tool を繰り返し呼ぶ turn は `limit_tokens` に届きにくい。回数の上限を外した後に、これを止める手段を置くか。
 - wire で「上限なし」をどう表すか。
 - Run 単位の費用や時間の grant を新しく置くか。
-- Write-Safety Roadmap の Gate A は 2026-11-27 の時点で Planned（統合者の確認）。担当と順序は DR-ST-10。
+- Write-Safety Roadmap の Gate A は 2026-11-27 の時点で Planned（統合者の確認）。担当と順序は DR-ST-10。（2026-11-28 追記：§9）
 - 実 API の測定の API キーの置き場所と、費用の上限。
 - Release B を作った後の振り返り（Gate A の問い）の時期と方法。
+
+## 9. 追記（2026-11-28）：前提の側で決まったこと
+
+2026-11-27 に、Release A の A3 と Write-Safety の Gate A の判断記録が、利用者の回答を得て master に入った。正本は [A3 の判断記録](a3-durable-agentrun-decisions.md)（#1198）と [Gate A の判断記録](gate-a-write-safety-decisions.md)（#1201・#1203・#1206）で、この節と食い違うときはそちらを優先する。上の節の当時の記述は残し、変わった点だけを書く。`origin/master` `b0ec3cd18` の時点で、Gate A（A1・A2）と A3 の実装は master に入っていない。
+
+- **承認の仕組み（DR-ST-4）**：利用者は Gate A の問 3 で「作者の出来事の承認（AWA/1）と同じ仕組み」を選んだ。Mastra の組込みの承認を MP-6 の候補にする案は採らず、そのための W12 の改訂も要らない。main は、承認の要求を作る時点で入力の digest と base version を固定し、承認の後に確かめ直してから一回限りの Capability に交換する（DR-GA-3）。Task Grant が入るまで、`mutate`／`task-scope` は毎回個別の承認になる（同 第 1 節）。
+- **確認待ちの保存（DR-ST-6・DR-ST-7）**：保存の範囲の拡大と、再起動の後の扱いの変更は、A3 の lane が利用者の確認を得た（A3 の判断記録 第 7 節）。
+  - 中断した Run は、作者が「続ける」を押すか確認待ちの質問に答えたときに、保存した途中の状態から同じ Run として再開する。起動時に自動では続けない。再開には門と、今の状態に照らした結果の選り分けがあり、再開できない Run もある（DR-A3-6）。
+  - Mastra の経路の Run は、MP-9 と再入の実証が済むまで途中再開できない（`resumable` を偽で記録する。DR-A3-8）。Release B の確認待ちを Mastra の経路で再起動をまたいで続けるには、これが済む必要がある。
+  - 承認待ちも記録し、再起動の後は承認のカードを出し直す。保存した承認は認可に使わない（DR-A3-14）。
+  - 脅威モデルの W12 と DR-MP5-11 の「再起動の後に復元しない」の改訂は Mastra の担当の PR で行う予定で、上の時点の master では改訂前。
+  - Mastra の workflows store を永続化しないことは変わらない。A3 が保存するのは、製品が持つ別の途中の状態（DR-A3-4）。
+- **F0-lite（DR-ST-6）**：Release B の前提の「F0-lite」は F0-lite-A（A3 の lane）と読む。F0-lite-B（`WorkTaskStatus`、minimal `TaskContractSnapshotV1`、`AnalysisReadBasisV1`）は Release B の lane が持つ（DR-A3-13）。
+- **未確認に加える**：
+  - DR-ST-9 で作者が書く目的と条件の欄を外したので、`TaskContractSnapshotV1` の中身は定め直す必要がある（DR-A3-13）。
+  - Gate A の判断記録は、旗 L を A2 の完了の前に開けないとする（第 2 節）。旗 L の経路で測る第 5 節の実 API の測定が A2 の後になるかは、測定を設計するときに Mastra の担当と確かめる。
