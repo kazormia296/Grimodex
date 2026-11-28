@@ -1,5 +1,6 @@
 //! Native-owned durable AgentRun operations. No renderer SQL is accepted here.
 
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::Path;
 
@@ -156,6 +157,7 @@ pub struct RunStart<'a> {
     pub turn_id: &'a str,
     pub route: RunRoute,
     pub origin_user_message_id: &'a str,
+    pub origin_assistant_message_id: Option<&'a str>,
     pub model_provider_id: &'a str,
     pub model_id: &'a str,
     pub endpoint_hash: &'a str,
@@ -163,6 +165,10 @@ pub struct RunStart<'a> {
 }
 
 fn insert_run(tx: &Transaction<'_>, run: &RunStart<'_>) -> Result<()> {
+    ensure!(
+        run.origin_assistant_message_id != Some(""),
+        "AGENT_RUN_ASSISTANT_MESSAGE_ID_INVALID"
+    );
     let belongs: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE id = ?1 AND project_id = ?2)",
         params![run.chat_session_id, run.project_id],
@@ -172,8 +178,9 @@ fn insert_run(tx: &Transaction<'_>, run: &RunStart<'_>) -> Result<()> {
     tx.execute(
         "INSERT INTO agent_runs
             (run_id,root_run_id,project_id,chat_session_id,turn_id,route,
-             origin_user_message_id,model_provider_id,model_id,endpoint_hash,execution_owner,status)
-         VALUES (?1,?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'running')",
+             origin_user_message_id,origin_assistant_message_id,model_provider_id,model_id,
+             endpoint_hash,execution_owner,status)
+         VALUES (?1,?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'running')",
         params![
             run.run_id,
             run.project_id,
@@ -181,6 +188,7 @@ fn insert_run(tx: &Transaction<'_>, run: &RunStart<'_>) -> Result<()> {
             run.turn_id,
             run.route.sql(),
             run.origin_user_message_id,
+            run.origin_assistant_message_id,
             run.model_provider_id,
             run.model_id,
             run.endpoint_hash,
@@ -476,6 +484,49 @@ pub fn get_unfinished_run_for_session(
     })
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub struct UnfinishedRun {
+    pub run_id: String,
+    pub project_id: String,
+    pub chat_session_id: String,
+    pub turn_id: String,
+    pub status: String,
+    pub version: i64,
+    pub interrupt_reason: Option<String>,
+    pub finalizing_target_status: Option<String>,
+    pub origin_user_message_id: String,
+    pub origin_assistant_message_id: Option<String>,
+    pub activity_at: String,
+}
+
+pub fn list_unfinished_runs_for_owner(db: &Database, owner: &str) -> Result<Vec<UnfinishedRun>> {
+    db.with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT run_id,project_id,chat_session_id,turn_id,status,version,interrupt_reason,
+                    finalizing_target_status,origin_user_message_id,origin_assistant_message_id,activity_at
+               FROM agent_runs WHERE execution_owner=?1
+                AND status IN ('running','waiting_user','waiting_approval','finalizing','interrupted')
+              ORDER BY run_id",
+        )?;
+        let rows = stmt.query_map([owner], |row| {
+            Ok(UnfinishedRun {
+                run_id: row.get(0)?,
+                project_id: row.get(1)?,
+                chat_session_id: row.get(2)?,
+                turn_id: row.get(3)?,
+                status: row.get(4)?,
+                version: row.get(5)?,
+                interrupt_reason: row.get(6)?,
+                finalizing_target_status: row.get(7)?,
+                origin_user_message_id: row.get(8)?,
+                origin_assistant_message_id: row.get(9)?,
+                activity_at: row.get(10)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    })
+}
+
 fn finish_finalizing_in_tx(
     tx: &Transaction<'_>,
     run_id: &str,
@@ -508,25 +559,42 @@ pub fn finish_finalizing(
     immediate(db, |tx| finish_finalizing_in_tx(tx, run_id, owner, version))
 }
 
-fn discard_in_tx(
+pub fn finish_run_without_messages(
+    db: &Database,
+    run_id: &str,
+    owner: &str,
+    expected: ActiveStatus,
+    version: i64,
+    outcome: TerminalOutcome,
+) -> Result<RunState> {
+    ensure!(
+        outcome.sql().0 != "discarded",
+        "AGENT_RUN_INVALID_TERMINAL_TARGET"
+    );
+    immediate(db, |tx| {
+        finish_without_messages_in_tx(tx, run_id, owner, expected.sql(), version, outcome)
+    })
+}
+
+fn finish_without_messages_in_tx(
     tx: &Transaction<'_>,
     run_id: &str,
     owner: &str,
+    expected: &str,
     version: i64,
-    reason: TerminalOutcome,
+    outcome: TerminalOutcome,
 ) -> Result<RunState> {
-    let (status, why) = reason.sql();
-    ensure!(status == "discarded", "AGENT_RUN_INVALID_DISCARD_REASON");
+    let (status, reason) = outcome.sql();
     require_cas(
         tx,
         run_id,
         owner,
         tx.execute(
-            "UPDATE agent_runs SET status='discarded',terminal_reason=?1,
+            "UPDATE agent_runs SET status=?1,terminal_reason=?2,
                 checkpoint=NULL,checkpoint_digest=NULL,checkpoint_step=0,tool_call_ledger='[]',
                 version=version+1,updated_at=datetime('now')
-          WHERE run_id=?2 AND execution_owner=?3 AND status='interrupted' AND version=?4",
-            params![why, run_id, owner, version],
+          WHERE run_id=?3 AND execution_owner=?4 AND status=?5 AND version=?6",
+            params![status, reason, run_id, owner, expected, version],
         )?,
     )?;
     clear_terminal_interactions(tx, run_id)?;
@@ -535,10 +603,11 @@ fn discard_in_tx(
 
 pub fn discard_run(db: &Database, run_id: &str, owner: &str, version: i64) -> Result<RunState> {
     immediate(db, |tx| {
-        discard_in_tx(
+        finish_without_messages_in_tx(
             tx,
             run_id,
             owner,
+            "interrupted",
             version,
             TerminalOutcome::DiscardedByAuthor,
         )
@@ -572,10 +641,11 @@ pub fn start_superseding_run(
             old_session == new_run.chat_session_id,
             "AGENT_RUN_SESSION_MISMATCH"
         );
-        let discarded = discard_in_tx(
+        let discarded = finish_without_messages_in_tx(
             tx,
             old_run_id,
             old_owner,
+            "interrupted",
             old_version,
             TerminalOutcome::SupersededByNewTurn,
         )?;
@@ -588,9 +658,34 @@ pub fn start_superseding_run(
 }
 
 #[derive(Clone, Copy)]
-pub enum ResumeGate<'a> {
+pub enum ResumeGate {
     Allowed,
-    Blocked(&'a str),
+    Blocked(ResumeBlockReason),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResumeBlockReason {
+    LicenseRestricted,
+    AiPolicy,
+    ProfileEgress,
+    RouteUnavailable,
+    ProviderUnavailable,
+    ModelUnavailable,
+    EndpointChanged,
+}
+
+impl ResumeBlockReason {
+    fn sql(self) -> &'static str {
+        match self {
+            Self::LicenseRestricted => "license_restricted",
+            Self::AiPolicy => "ai_policy",
+            Self::ProfileEgress => "profile_egress",
+            Self::RouteUnavailable => "route_unavailable",
+            Self::ProviderUnavailable => "provider_unavailable",
+            Self::ModelUnavailable => "model_unavailable",
+            Self::EndpointChanged => "endpoint_changed",
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -608,7 +703,7 @@ pub struct ClaimRequest<'a> {
     pub new_owner: &'a str,
     pub expected_version: i64,
     pub request_id: &'a str,
-    pub gate: ResumeGate<'a>,
+    pub gate: ResumeGate,
     pub answer: Option<&'a ClaimAnswer<'a>>,
 }
 
@@ -657,7 +752,7 @@ pub fn claim_run(db: &Database, claim: ClaimRequest<'_>) -> Result<Option<ClaimR
                 require_cas(tx, run_id, old_owner, tx.execute(
                     "UPDATE agent_runs SET resume_block_detail=?1,resume_blocked_at=datetime('now')
                       WHERE run_id=?2 AND execution_owner=?3 AND status='interrupted' AND version=?4",
-                    params![detail, run_id, old_owner, expected_version],
+                    params![detail.sql(), run_id, old_owner, expected_version],
                 )?)
             })?;
             Ok(None)
@@ -777,32 +872,72 @@ pub struct LedgerEntry {
     pub execution_state: ExecutionState,
 }
 
-pub fn append_tool_call(
+fn validate_tool_call_key(execution_id: &str, tool_call_id: &str) -> Result<()> {
+    ensure!(!execution_id.is_empty(), "AGENT_RUN_EXECUTION_ID_INVALID");
+    ensure!(!tool_call_id.is_empty(), "AGENT_RUN_TOOL_CALL_ID_INVALID");
+    Ok(())
+}
+
+pub fn append_tool_calls(
     db: &Database,
     run_id: &str,
     owner: &str,
-    entry: LedgerEntry,
+    entries: Vec<LedgerEntry>,
 ) -> Result<()> {
     immediate(db, |tx| {
-        let mut ledger = read_ledger(tx, run_id, owner)?;
-        ensure!(
-            !ledger
-                .iter()
-                .any(|old| old.tool_call_id == entry.tool_call_id),
-            "AGENT_RUN_DUPLICATE_TOOL_CALL_ID"
-        );
-        ledger.push(entry);
-        write_ledger(tx, run_id, &ledger)
+        let execution_id = entries
+            .first()
+            .context("AGENT_RUN_EMPTY_TOOL_CALL_BATCH")?
+            .execution_id
+            .as_str();
+        let mut ledger = read_ledger(tx, run_id, owner, true)?;
+        let pending_tool_call_id: Option<String> = tx
+            .query_row(
+                "SELECT tool_call_id FROM agent_run_interactions
+                  WHERE run_id=?1 AND status='pending'",
+                [run_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let mut tool_call_ids: HashSet<_> = ledger
+            .iter()
+            .filter(|entry| entry.execution_id == execution_id)
+            .map(|entry| entry.tool_call_id.as_str())
+            .collect();
+        for entry in &entries {
+            validate_tool_call_key(&entry.execution_id, &entry.tool_call_id)?;
+            ensure!(
+                entry.execution_id == execution_id,
+                "AGENT_RUN_TOOL_CALL_BATCH_EXECUTION_MISMATCH"
+            );
+            ensure!(
+                pending_tool_call_id.as_deref() != Some(entry.tool_call_id.as_str()),
+                "AGENT_RUN_PENDING_INTERACTION_EXISTS"
+            );
+            ensure!(
+                tool_call_ids.insert(entry.tool_call_id.as_str()),
+                "AGENT_RUN_DUPLICATE_TOOL_CALL_ID"
+            );
+        }
+        add_audit_execution_id_in_tx(tx, run_id, owner, execution_id)?;
+        ledger.extend(entries);
+        write_ledger(tx, run_id, owner, &ledger)
     })
 }
 
-fn read_ledger(tx: &Transaction<'_>, run_id: &str, owner: &str) -> Result<Vec<LedgerEntry>> {
+fn read_ledger(
+    tx: &Transaction<'_>,
+    run_id: &str,
+    owner: &str,
+    active_only: bool,
+) -> Result<Vec<LedgerEntry>> {
     let ledger = tx
         .query_row(
             "SELECT tool_call_ledger FROM agent_runs
           WHERE run_id=?1 AND execution_owner=?2 AND status IN
-            ('running','waiting_user','waiting_approval','finalizing','interrupted')",
-            params![run_id, owner],
+            ('running','waiting_user','waiting_approval','finalizing','interrupted')
+            AND (?3=0 OR status IN ('running','waiting_user','waiting_approval'))",
+            params![run_id, owner, active_only],
             |row| row.get::<_, String>(0),
         )
         .optional()?;
@@ -810,10 +945,58 @@ fn read_ledger(tx: &Transaction<'_>, run_id: &str, owner: &str) -> Result<Vec<Le
     Ok(serde_json::from_str(&ledger)?)
 }
 
-fn write_ledger(tx: &Transaction<'_>, run_id: &str, ledger: &[LedgerEntry]) -> Result<()> {
+fn write_ledger(
+    tx: &Transaction<'_>,
+    run_id: &str,
+    owner: &str,
+    ledger: &[LedgerEntry],
+) -> Result<()> {
     tx.execute(
-        "UPDATE agent_runs SET tool_call_ledger=?1,activity_at=datetime('now') WHERE run_id=?2",
-        params![serde_json::to_string(ledger)?, run_id],
+        "UPDATE agent_runs SET tool_call_ledger=?1,activity_at=datetime('now')
+          WHERE run_id=?2 AND execution_owner=?3",
+        params![serde_json::to_string(ledger)?, run_id, owner],
+    )?;
+    Ok(())
+}
+
+const MAX_AUDIT_EXECUTION_IDS: usize = 512;
+
+pub fn add_audit_execution_id(
+    db: &Database,
+    run_id: &str,
+    owner: &str,
+    execution_id: &str,
+) -> Result<()> {
+    immediate(db, |tx| {
+        require_nonterminal_state(tx, run_id, owner)?;
+        add_audit_execution_id_in_tx(tx, run_id, owner, execution_id)
+    })
+}
+
+fn add_audit_execution_id_in_tx(
+    tx: &Transaction<'_>,
+    run_id: &str,
+    owner: &str,
+    execution_id: &str,
+) -> Result<()> {
+    ensure!(!execution_id.is_empty(), "AGENT_RUN_EXECUTION_ID_INVALID");
+    let stored: String = tx.query_row(
+        "SELECT audit_execution_ids FROM agent_runs WHERE run_id=?1 AND execution_owner=?2",
+        params![run_id, owner],
+        |row| row.get(0),
+    )?;
+    let mut ids: Vec<String> = serde_json::from_str(&stored)?;
+    if ids.iter().any(|id| id == execution_id) {
+        return Ok(());
+    }
+    ensure!(
+        ids.len() < MAX_AUDIT_EXECUTION_IDS,
+        "AGENT_RUN_AUDIT_EXECUTION_IDS_LIMIT"
+    );
+    ids.push(execution_id.into());
+    tx.execute(
+        "UPDATE agent_runs SET audit_execution_ids=?1 WHERE run_id=?2 AND execution_owner=?3",
+        params![serde_json::to_string(&ids)?, run_id, owner],
     )?;
     Ok(())
 }
@@ -821,6 +1004,7 @@ fn write_ledger(tx: &Transaction<'_>, run_id: &str, ledger: &[LedgerEntry]) -> R
 pub struct ToolCallUpdate<'a> {
     pub run_id: &'a str,
     pub owner: &'a str,
+    pub execution_id: &'a str,
     pub tool_call_id: &'a str,
     pub main_owned_provenance_id: Option<&'a str>,
     pub capability_state: Option<CapabilityState>,
@@ -831,16 +1015,18 @@ pub fn update_tool_call(db: &Database, update: ToolCallUpdate<'_>) -> Result<()>
     let ToolCallUpdate {
         run_id,
         owner,
+        execution_id,
         tool_call_id,
         main_owned_provenance_id,
         capability_state,
         execution_state,
     } = update;
+    validate_tool_call_key(execution_id, tool_call_id)?;
     immediate(db, |tx| {
-        let mut ledger = read_ledger(tx, run_id, owner)?;
+        let mut ledger = read_ledger(tx, run_id, owner, false)?;
         let entry = ledger
             .iter_mut()
-            .find(|entry| entry.tool_call_id == tool_call_id)
+            .find(|entry| entry.execution_id == execution_id && entry.tool_call_id == tool_call_id)
             .context("AGENT_RUN_UNKNOWN_TOOL_CALL_ID")?;
         ensure!(
             main_owned_provenance_id.is_some()
@@ -876,7 +1062,7 @@ pub fn update_tool_call(db: &Database, update: ToolCallUpdate<'_>) -> Result<()>
             );
             entry.execution_state = next;
         }
-        write_ledger(tx, run_id, &ledger)
+        write_ledger(tx, run_id, owner, &ledger)
     })
 }
 
@@ -918,29 +1104,21 @@ pub fn mark_not_resumable(
     db: &Database,
     run_id: &str,
     owner: &str,
+    expected: &str,
     reason: NotResumableReason,
 ) -> Result<RunState> {
     immediate(db, |tx| {
-        let state = tx
-            .query_row(
-                "UPDATE agent_runs SET resumable=0,not_resumable_reason=?1
-              WHERE run_id=?2 AND execution_owner=?3 AND resumable=1 AND status IN
-                ('running','waiting_user','waiting_approval','finalizing','interrupted')
-              RETURNING version,status",
-                params![reason.sql(), run_id, owner],
-                |row| {
-                    Ok(RunState {
-                        run_id: run_id.into(),
-                        version: row.get(0)?,
-                        status: row.get(1)?,
-                    })
-                },
-            )
-            .optional()?;
-        match state {
-            Some(state) => Ok(state),
-            None => require_nonterminal_state(tx, run_id, owner),
-        }
+        let state = require_nonterminal_state(tx, run_id, owner)?;
+        ensure!(
+            state.status == expected,
+            "AGENT_RUN_VERSION_OR_STATUS_MISMATCH"
+        );
+        tx.execute(
+            "UPDATE agent_runs SET resumable=0,not_resumable_reason=?1
+              WHERE run_id=?2 AND execution_owner=?3 AND status=?4 AND resumable=1",
+            params![reason.sql(), run_id, owner, expected],
+        )?;
+        Ok(state)
     })
 }
 
@@ -959,6 +1137,7 @@ pub struct OpenQuestion<'a> {
     pub run_id: &'a str,
     pub owner: &'a str,
     pub expected_version: i64,
+    pub execution_id: &'a str,
     pub tool_call_id: &'a str,
     pub args_digest: &'a str,
     pub request: &'a str,
@@ -968,6 +1147,8 @@ fn open_interaction_target(
     tx: &Transaction<'_>,
     run_id: &str,
     owner: &str,
+    execution_id: &str,
+    tool_call_id: &str,
 ) -> Result<(String, String)> {
     let target = tx.query_row(
         "SELECT root_run_id,chat_session_id FROM agent_runs WHERE run_id=?1 AND execution_owner=?2
@@ -980,7 +1161,21 @@ fn open_interaction_target(
         [&target.0], |row| row.get(0),
     )?;
     ensure!(!exists, "AGENT_RUN_PENDING_INTERACTION_EXISTS");
+    validate_tool_call_key(execution_id, tool_call_id)?;
+    let ledger = read_ledger(tx, run_id, owner, false)?;
+    ensure!(
+        latest_tool_call(&ledger, tool_call_id)?.execution_id == execution_id,
+        "AGENT_RUN_TOOL_CALL_EXECUTION_MISMATCH"
+    );
     Ok(target)
+}
+
+fn latest_tool_call<'a>(ledger: &'a [LedgerEntry], tool_call_id: &str) -> Result<&'a LedgerEntry> {
+    ledger
+        .iter()
+        .rev()
+        .find(|entry| entry.tool_call_id == tool_call_id)
+        .context("AGENT_RUN_UNKNOWN_TOOL_CALL_ID")
 }
 
 const MAX_INTERACTION_REQUEST_BYTES: usize = 65_536;
@@ -991,8 +1186,13 @@ pub fn open_user_question(db: &Database, question: &OpenQuestion<'_>) -> Result<
         "AGENT_RUN_REQUEST_TOO_LARGE"
     );
     immediate(db, |tx| {
-        let (root_run_id, chat_session_id) =
-            open_interaction_target(tx, question.run_id, question.owner)?;
+        let (root_run_id, chat_session_id) = open_interaction_target(
+            tx,
+            question.run_id,
+            question.owner,
+            question.execution_id,
+            question.tool_call_id,
+        )?;
         require_cas(tx, question.run_id, question.owner, tx.execute(
             "UPDATE agent_runs SET status='waiting_user',version=version+1,updated_at=datetime('now')
               WHERE run_id=?1 AND execution_owner=?2 AND status='running' AND version=?3",
@@ -1120,6 +1320,7 @@ pub struct OpenApproval<'a> {
     pub run_id: &'a str,
     pub owner: &'a str,
     pub expected_version: i64,
+    pub execution_id: &'a str,
     pub tool_call_id: &'a str,
     pub tool_name: &'a str,
     pub args_digest: &'a str,
@@ -1134,8 +1335,13 @@ pub fn open_approval(db: &Database, approval: &OpenApproval<'_>) -> Result<RunSt
     );
     let target_basis = approval.target_basis.map(encode_target_basis).transpose()?;
     immediate(db, |tx| {
-        let (root_run_id, chat_session_id) =
-            open_interaction_target(tx, approval.run_id, approval.owner)?;
+        let (root_run_id, chat_session_id) = open_interaction_target(
+            tx,
+            approval.run_id,
+            approval.owner,
+            approval.execution_id,
+            approval.tool_call_id,
+        )?;
         require_cas(tx, approval.run_id, approval.owner, tx.execute(
             "UPDATE agent_runs SET status='waiting_approval',version=version+1,updated_at=datetime('now')
               WHERE run_id=?1 AND execution_owner=?2 AND status='running' AND version=?3",
@@ -1160,6 +1366,7 @@ pub fn open_approval(db: &Database, approval: &OpenApproval<'_>) -> Result<RunSt
 pub struct PendingApproval {
     pub interaction_id: String,
     pub version: i64,
+    pub execution_id: String,
     pub tool_call_id: String,
     pub tool_name: String,
     pub args_digest: String,
@@ -1170,31 +1377,46 @@ pub fn get_pending_approval(db: &Database, run_id: &str) -> Result<Option<Pendin
     db.with_conn(|conn| {
         let pending = conn
             .query_row(
-                "SELECT interaction_id,version,tool_call_id,tool_name,args_digest,target_basis
-                   FROM agent_run_interactions
-                  WHERE root_run_id=(SELECT root_run_id FROM agent_runs WHERE run_id=?1)
-                    AND run_id=?1 AND kind='approval' AND status='pending'",
+                "SELECT i.interaction_id,i.version,i.tool_call_id,i.tool_name,i.args_digest,
+                        i.target_basis,r.tool_call_ledger
+                   FROM agent_run_interactions i JOIN agent_runs r
+                     ON r.run_id=i.run_id AND r.root_run_id=i.root_run_id
+                  WHERE i.run_id=?1 AND i.kind='approval' AND i.status='pending'",
                 [run_id],
                 |row| {
                     Ok((
                         row.get(0)?,
                         row.get(1)?,
-                        row.get(2)?,
+                        row.get::<_, String>(2)?,
                         row.get(3)?,
                         row.get(4)?,
                         row.get::<_, Option<String>>(5)?,
+                        row.get::<_, String>(6)?,
                     ))
                 },
             )
             .optional()?;
-        let Some((interaction_id, version, tool_call_id, tool_name, args_digest, target_basis)) =
-            pending
+        let Some((
+            interaction_id,
+            version,
+            tool_call_id,
+            tool_name,
+            args_digest,
+            target_basis,
+            ledger,
+        )) = pending
         else {
             return Ok(None);
         };
+        let ledger: Vec<LedgerEntry> = serde_json::from_str(&ledger)?;
+        let execution_id = latest_tool_call(&ledger, &tool_call_id)?
+            .execution_id
+            .clone();
+        validate_tool_call_key(&execution_id, &tool_call_id)?;
         Ok(Some(PendingApproval {
             interaction_id,
             version,
+            execution_id,
             tool_call_id,
             tool_name,
             args_digest,
@@ -1419,29 +1641,46 @@ fn recover_run_in_tx(
     })
 }
 
-/// A live owner uses this after losing the renderer during finalization.
 pub fn recover_finalizing(
     db: &Database,
     owner: &str,
     evidence: &FinalizingEvidence<'_>,
+    interrupt_reason: InterruptReason,
+    min_activity_age_secs: Option<u32>,
 ) -> Result<RecoveryResult> {
     immediate(db, |tx| {
-        let cancelled_target = tx
+        let target = tx
             .query_row(
-                "SELECT finalizing_target_status='cancelled' FROM agent_runs
+                "SELECT finalizing_target_status='cancelled',
+                        COALESCE(?4 IS NULL OR unixepoch(activity_at)<=unixepoch('now')-?4,0)
+                   FROM agent_runs
                   WHERE run_id=?1 AND execution_owner=?2 AND status='finalizing' AND version=?3",
-                params![evidence.run_id, owner, evidence.version],
-                |row| row.get(0),
+                params![
+                    evidence.run_id,
+                    owner,
+                    evidence.version,
+                    min_activity_age_secs
+                ],
+                |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?)),
             )
             .optional()?;
-        let cancelled_target = require_match(tx, evidence.run_id, owner, cancelled_target)?;
+        let (cancelled_target, old_enough) = require_match(tx, evidence.run_id, owner, target)?;
+        if !old_enough {
+            return Ok(RecoveryResult {
+                run_id: evidence.run_id.into(),
+                version: evidence.version,
+                outcome: RecoveryOutcome::Skipped {
+                    reason: "AGENT_RUN_ACTIVITY_TOO_RECENT",
+                },
+            });
+        }
         recover_run_in_tx(
             tx,
             owner,
             RunState::new(evidence.run_id, evidence.version, "finalizing"),
             cancelled_target,
             Some(evidence),
-            InterruptReason::RendererLost,
+            interrupt_reason,
         )
     })
 }
@@ -1451,7 +1690,7 @@ pub fn recover_owner(
     db: &Database,
     workspace: &Path,
     owner: &str,
-    min_activity_age_secs: Option<u32>,
+    min_activity_age_secs: u32,
     finalizing_evidence: &[FinalizingEvidence<'_>],
 ) -> Result<Vec<RecoveryResult>> {
     let Some(_lock) = acquire_owner_lock(workspace, owner)? else {
@@ -1463,7 +1702,7 @@ pub fn recover_owner(
                 "SELECT run_id,version,status,COALESCE(finalizing_target_status='cancelled',0)
                    FROM agent_runs WHERE execution_owner=?1 AND status IN
                     ('running','waiting_user','waiting_approval','finalizing')
-                    AND (?2 IS NULL OR unixepoch(activity_at)<=unixepoch('now')-?2)
+                    AND unixepoch(activity_at)<=unixepoch('now')-?2
                   ORDER BY run_id",
             )?;
             let rows = stmt.query_map(params![owner, min_activity_age_secs], |row| {
