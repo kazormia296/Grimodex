@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { createChatTurnRuntime } from "./chatTurnRuntime";
+import {
+  createChatTurnRuntime,
+  shouldAbortMastraTurn,
+} from "./chatTurnRuntime";
 import {
   collectQuiescenceProviderRecovery,
   discardQuiescenceProviders,
@@ -48,6 +51,22 @@ function completedTurnInput(turnId: string, retry: () => Promise<void>) {
 }
 
 describe("createChatTurnRuntime", () => {
+  it("uses the production Mastra abort decision", () => {
+    const input = {
+      explicitlyAborted: false,
+      isCurrentTurn: false,
+      workspaceIsCurrent: true,
+      projectIsCurrent: true,
+      chatPolicyAllows: true,
+      licenseAllows: true,
+      quiescenceAllowsMutation: true,
+    };
+    expect(shouldAbortMastraTurn(input)).toBe(true);
+    expect(createChatTurnRuntime().shouldAbortMastraTurn(input)).toBe(
+      shouldAbortMastraTurn(input),
+    );
+  });
+
   it("keeps quiescence pending until the tracked turn resolves", async () => {
     const runtime = createChatTurnRuntime();
     const turn = deferred<void>();

@@ -7,6 +7,7 @@ import {
   createQuiescenceProviderId,
   registerQuiescenceProvider,
 } from "@/lib/quiescenceProviders";
+import { debugLog, errorDetail } from "@/lib/debugLog";
 import {
   createPendingCompletedTurnPersistenceRegistry,
   pendingCompletedTurnPersistence as productionPendingCompletedTurnPersistence,
@@ -14,6 +15,9 @@ import {
   type PendingCompletedTurnPersistenceRegistry,
   type PendingCompletedTurnPersistenceTarget,
 } from "./pendingCompletedTurnPersistence";
+import { shouldAbortMastraTurn } from "./shouldAbortMastraTurn";
+import { DEFAULT_MAX_USER_QUESTIONS } from "@/features/chat/agent/agentLoopDefaults";
+export { shouldAbortMastraTurn } from "./shouldAbortMastraTurn";
 
 export interface ChatTurnRuntime {
   coordinator: TurnCoordinator;
@@ -38,6 +42,21 @@ export interface ChatTurnRuntime {
   setActiveRoute: (route: ResolvedChatTurnRoute | null) => void;
   activeRoute: () => ResolvedChatTurnRoute | null;
   clearActiveRouteIf: (route: ResolvedChatTurnRoute | null) => void;
+  shouldAbortMastraTurn: (input: {
+    explicitlyAborted: boolean;
+    isCurrentTurn: boolean;
+    workspaceIsCurrent: boolean;
+    projectIsCurrent: boolean;
+    chatPolicyAllows: boolean;
+    licenseAllows: boolean;
+    quiescenceAllowsMutation: boolean;
+  }) => boolean;
+  tryMastraTurn: (
+    input: import("./chatTurnMastraEngine").MastraTurnAdmissionInput,
+  ) => Promise<import("./chatTurnMastraEngine").MastraTurnAttempt | null>;
+  claimMastraTurn: (turnId: string) => boolean;
+  hasActiveMastraTurn: () => boolean;
+  releaseMastraTurn: (turnId: string) => void;
   setStreamCleanup: (cleanup: (() => void) | null) => void;
   clearStreamCleanupIf: (cleanup: () => void) => void;
   runStreamCleanup: () => void;
@@ -64,6 +83,7 @@ export function createChatTurnRuntime(options?: {
   let sendPreflightClaimId: string | null = null;
   let sendPreflightClaimScopeKey: string | null = null;
   let activeTurnRoute: ResolvedChatTurnRoute | null = null;
+  let activeMastraTurnId: string | null = null;
   let streamCleanup: (() => void) | null = null;
   let flushPendingDelta: (() => void) | null = null;
   let finalizeStoppedStream: (() => void) | null = null;
@@ -197,6 +217,44 @@ export function createChatTurnRuntime(options?: {
 
     clearActiveRouteIf(route) {
       if (activeTurnRoute === route) activeTurnRoute = null;
+    },
+
+    shouldAbortMastraTurn(input) {
+      return shouldAbortMastraTurn(input);
+    },
+
+    async tryMastraTurn(input) {
+      try {
+        const { createMastraTurnAttempt, loadMastraTurnEngineDependencies } =
+          await import("./chatTurnMastraEngine");
+        const dependencies = await loadMastraTurnEngineDependencies();
+        return createMastraTurnAttempt(input, runtime, dependencies, {
+          debugLog,
+          errorDetail,
+          defaultMaxUserQuestions: DEFAULT_MAX_USER_QUESTIONS,
+        });
+      } catch (error) {
+        debugLog.warn(
+          "ChatStore",
+          "Mastra turn setup failed",
+          errorDetail(error),
+        );
+        return null;
+      }
+    },
+
+    claimMastraTurn(turnId) {
+      if (activeMastraTurnId !== null) return false;
+      activeMastraTurnId = turnId;
+      return true;
+    },
+
+    hasActiveMastraTurn() {
+      return activeMastraTurnId !== null;
+    },
+
+    releaseMastraTurn(turnId) {
+      if (activeMastraTurnId === turnId) activeMastraTurnId = null;
     },
 
     setStreamCleanup(cleanup) {
