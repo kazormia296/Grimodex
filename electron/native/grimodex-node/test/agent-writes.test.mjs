@@ -981,3 +981,160 @@ test("agentChronicleBulkMutate: mixed selection は1 journalで原子的に往�
     chronicle_end_granularity: "none",
   });
 });
+
+test("版の列が無い関係の書き込みは、N-API 越しでも期待状態を照らす", async () => {
+  const agent = (requestId, payload) => ({
+    ...canonical(requestId, "ai-apply"),
+    ...payload,
+  });
+  const sceneId = "napi-expected-scene";
+  await backend.treeNodeCreate({
+    ...canonical(`tree-create:${sceneId}`, "human"),
+    id: sceneId,
+    projectId: PROJECT,
+    parentId: null,
+    nodeType: "scene",
+    title: "Expected state scene",
+    sortOrder: "z-expected",
+    content: "{}",
+  });
+  const createEvent = async (eventId) =>
+    JSON.parse(
+      await backend.agentEventCreate(
+        agent(`agent-tool:${eventId}`, {
+          eventId,
+          startTime: 0,
+          title: eventId,
+        }),
+      ),
+    );
+  const cause = await createEvent("napi-expected-cause");
+  const effect = await createEvent("napi-expected-effect");
+  const link = async () =>
+    (
+      await rows(
+        "SELECT incarnation_token FROM scene_events WHERE scene_id = ? AND event_id = ?",
+        [sceneId, cause.entityId],
+      )
+    ).map((row) => row.incarnation_token);
+  const relation = async () =>
+    (
+      await rows(
+        "SELECT COUNT(*) AS n FROM event_relations WHERE cause_event_id = ? AND effect_event_id = ?",
+        [cause.entityId, effect.entityId],
+      )
+    )[0].n;
+  const changeEvents = async () =>
+    (await rows("SELECT COUNT(*) AS n FROM change_events"))[0].n;
+  const rejects = async (call, pattern) => {
+    const before = [await link(), await relation(), await changeEvents()];
+    await assert.rejects(call, pattern);
+    assert.deepEqual(
+      [await link(), await relation(), await changeEvents()],
+      before,
+    );
+  };
+
+  const stampTarget = { sceneId, eventId: cause.entityId };
+  await rejects(
+    () =>
+      backend.agentSceneEventLink(
+        agent("agent-tool:expected-stamp-stale", {
+          ...stampTarget,
+          expected: { linkIncarnation: null, eventVersion: cause.version + 1 },
+        }),
+      ),
+    /version conflict/,
+  );
+  const stamp = agent("agent-tool:expected-stamp", {
+    ...stampTarget,
+    expected: { linkIncarnation: null, eventVersion: cause.version },
+  });
+  const stamped = await backend.agentSceneEventLink(stamp);
+  const [incarnation] = await link();
+  assert.equal(typeof incarnation, "string");
+  assert.equal(await backend.agentSceneEventLink(stamp), stamped);
+
+  const unstamp = (requestId, expected) =>
+    backend.agentSceneEventUnlink(
+      agent(requestId, { ...stampTarget, expected }),
+    );
+  await rejects(
+    () =>
+      unstamp("agent-tool:expected-unstamp-other", {
+        linkIncarnation: "not-the-approved-link",
+        eventVersion: cause.version,
+      }),
+    /version conflict/,
+  );
+  for (const [index, malformed] of [
+    {},
+    { eventVersion: cause.version },
+    { linkIncarnation: incarnation, eventVersion: cause.version, extra: 1 },
+  ].entries()) {
+    await rejects(
+      () => unstamp(`agent-tool:expected-unstamp-shape-${index}`, malformed),
+      /missing field|unknown field/,
+    );
+  }
+  await unstamp("agent-tool:expected-unstamp", {
+    linkIncarnation: incarnation,
+    eventVersion: cause.version,
+  });
+  assert.deepEqual(await link(), []);
+
+  const pair = {
+    causeEventId: cause.entityId,
+    effectEventId: effect.entityId,
+  };
+  const versions = {
+    causeVersion: cause.version,
+    effectVersion: effect.version,
+  };
+  await rejects(
+    () =>
+      backend.agentEventRelationAdd(
+        agent("agent-tool:expected-add-stale", {
+          ...pair,
+          expected: { related: true, ...versions },
+        }),
+      ),
+    /version conflict/,
+  );
+  await backend.agentEventRelationAdd(
+    agent("agent-tool:expected-add", {
+      ...pair,
+      expected: { related: false, ...versions },
+    }),
+  );
+  assert.equal(await relation(), 1);
+  await rejects(
+    () =>
+      backend.agentEventRelationRemove(
+        agent("agent-tool:expected-remove-stale", {
+          ...pair,
+          expected: {
+            related: true,
+            causeVersion: cause.version,
+            effectVersion: effect.version + 1,
+          },
+        }),
+      ),
+    /version conflict/,
+  );
+  await backend.agentEventRelationRemove(
+    agent("agent-tool:expected-remove", {
+      ...pair,
+      expected: { related: true, ...versions },
+    }),
+  );
+  assert.equal(await relation(), 0);
+
+  // expected を送らない呼び手は今のまま。
+  await backend.agentEventRelationAdd(agent("agent-tool:plain-add", pair));
+  assert.equal(await relation(), 1);
+  await backend.agentSceneEventLink(
+    agent("agent-tool:plain-stamp", stampTarget),
+  );
+  assert.equal((await link()).length, 1);
+});
