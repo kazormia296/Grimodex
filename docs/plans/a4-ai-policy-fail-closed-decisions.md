@@ -1,6 +1,6 @@
 # Write-Safety A4（AI ポリシー parse）の判断記録（起案）
 
-- 状態：**起案（draft）**。第 7 節の利用者確認前であり、判断案は確定していない。
+- 状態：DR-A4-1〜4 は技術判断として確定（持ち主は Mastra の lane、実装は M3。2026-11-28）。第 7 節の画面の表示は利用者の確認前。
 - 基点：`463df3cb5`。変更対象は本書のみ。実装・試験・他文書は変更しない。
 - 前提：ADR 008 §9・Invariant 11、Write-Safety Roadmap A4、Gate A DR-GA-3・DR-GA-5。
 
