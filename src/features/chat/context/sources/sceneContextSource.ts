@@ -89,6 +89,8 @@ import type {
   RecalledMessageForPromotion,
 } from "../contextPlannerDeps";
 import type { SceneTurnContextRequest } from "../turnContextRequest";
+import { CHAT_APPROVED_CODEX_RANK_ENABLED } from "../approvedCodexRankAvailability";
+import { loadApprovedCodexRanker } from "../approvedCodexRankReader";
 import {
   orderEntriesByIds,
   stripCodexContent,
@@ -891,6 +893,13 @@ export async function collectSceneContext(
   );
   deps.markEnd("buildSceneCtx.enrichWithCustomDetails");
   const codexEntries = enrichedCodexEntries;
+  const approvedCodexRanker = CHAT_APPROVED_CODEX_RANK_ENABLED
+    ? await loadApprovedCodexRanker(
+        request.workspaceIdentity?.workspaceKey,
+        request.projectId,
+        codexEntries.slice(0, 64).map((entry) => entry.id),
+      )
+    : undefined;
 
   const buildPinnedContext = (
     entry: CodexContextEntry,
@@ -1497,6 +1506,7 @@ export async function collectSceneContext(
 
   const promptInput: BuildSystemPromptInput = {
     scene: sceneWithSemanticLinks,
+    approvedCodexRanker,
     contextTemporal,
     contextTemporalBySourceId,
     project: project ?? undefined,

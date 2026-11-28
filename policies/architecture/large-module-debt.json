@@ -11,7 +11,7 @@
       "maxLines": 1235
     },
     "src/features/chat/contextBuilder.ts": {
-      "maxLines": 2389
+      "maxLines": 2365
     },
     "src/features/concurrency/externalWriteFeed.ts": {
       "maxLines": 662
