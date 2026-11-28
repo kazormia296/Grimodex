@@ -622,7 +622,7 @@ N-API の owner と lock を Fable（read-only、effort high）が読んだ。me
   - **4c**：legacy の配線（画面からの開始と終端の通知、台帳の追記、切替と終了での中断、回収）。旗は閉じる。
 - **鍵と version の持ち主**：
   - Run は（sender、`operationId`）で引く。assistant の message の ID は、開始のときに main が受け、`origin_assistant_message_id` に書く（再起動の後も保存先が分かる。列は足さない）。
-  - 台帳の鍵は（`executionId`、`toolCallId`）。同じ応答の中の重複と空の ID は記録できない扱いにする。
+  - 台帳の鍵は（`executionId`、`toolCallId`）。同じ応答の中の重複は記録できない扱いにする。空の ID の呼出しは台帳から除く（下の訂正）。
   - 確認待ち（承認と質問）と台帳の対応（Mastra の担当の指摘）：開くときに `executionId` も受け、Native が「台帳にその対があり、その `toolCallId` の最後の行である」ことを確かめる。確認待ちがある間は、同じ `toolCallId` の追記を拒む。承認の読みは、その行の `executionId` を返す。質問の読み戻しは、画面の PR（PR 5）で足す。開くときは、台帳の行の引数の照合値（承認は tool の名前も）との一致も求める。台帳の `argsDigest` は、書込み系の 15 本（保護対象の 14 本と `propose_scene_body`）では Gate A の `agentToolInputDigest` の値、それが null の呼出し（読み取りや `ask_user`）では記録の側の正規形の digest にする。null を理由に追記を失敗させない。記録の部品は digest の関数を引数で受け取り、`ipc.ts` を import しない。列は足さない。返事待ちの間もほかを進める形（DR-A3-18）を入れる版で、`agent_run_interactions` に列を足す。
   - Run の version は記録の持ち主が持ち、Run ごとに直列にする。Interaction の version は Gate A が持つ。
   - Gate A へは `resolveRun({senderId, projectId, executionId})` が `recorded`（`runId`、`transact`）／`not_recording`／`unrecorded` を返す。対応は台帳の追記で作る。Gate A は `recorded` のときだけ交換を開く。
@@ -664,7 +664,7 @@ N-API の owner と lock を Fable（read-only、effort high）が読んだ。me
   - 切替と窓の close の Stop は、今は途中の行を会話に保存する。DR-A3-2 は「中断の間は行が無い」。どちらにするかを決めて、利用者に見せる。
   - 承認の 30 分で中断した後、画面の loop を誰が止めるか。
   - Stop は、`begin_finalizing` より前に、承認の signal を abort する（Mastra の担当の指摘。Native では `finalizing` の間も `updateToolCall` が通るため）。記録の部品の呼び手の順序として固定する。
-  - ID を返さない provider（空の tool の ID）は、台帳の追記が必ず失敗し、その応答に書換えの権限が出なくなる。今は書換えが動くなら、旗を開けると見える退行になる。main で ID を補うか、利用者に見せるかを決める。
+  - （訂正、2026-11-29）ID の無い呼出し（空、前後に空白）は、main が今も capability を出さない（`ipc.ts` の `isNonEmptyTrimmedString`）。OpenAI 互換・Ollama・AI のべりすとの接続先は、書換えの tool をもともと落とす（`grimodex-ai` の `is_low_trust_native_provider`）。以前ここに書いた「旗を開けると見える退行になる」は誤りだった。記録の部品（4b）はその呼出しだけを台帳から除き、残りを記録して Run を再開不可にする。代わりの ID は作らない（接続先が知らない ID を送り返すと、次の要求が失敗するおそれがある。未確認）。
 - **確かめた上限**：`audit_execution_ids` の 512 件は、1 回の返答の provider の要求の最大の見積もり（親の呼出し 25 回と質問 8 回、下位の agent は呼出しごとに 13 回までで約 360）に届かない。届くようになった場合は、監査の追加の失敗で台帳の追記を落とさない形にする。
 - **PR 5 の前**：再起動の後は `executionId` との対応が無いので、`runId` から引く口が要る。
 
