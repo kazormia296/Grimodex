@@ -796,8 +796,9 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// gone, and the repair sweeps the orphaned `_en` rows the guard left behind.
 /// Version 47 adds six closed Mastra memory tables and their cascade edges.
 /// Version 48 adds the five immutable ERM tables (DR-M3-39).
+/// Version 49 records repaired Chronicle events and completion of the date migration.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 48
+    Ok(SCHEMA_VERSION == 49
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -867,7 +868,37 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         // SCHEMA 48 / DR-M3-39: all five immutable ERM tables, their exact
         // column names, lookup indexes, and unconditional UPDATE guards must
         // exist before either open fast path can advance the marker.
-        && has_v48_identity_correction_storage(conn)?)
+        && has_v48_identity_correction_storage(conn)?
+        && has_chronicle_date_migration_marker(conn)?
+        && has_chronicle_date_migration_table(conn)?)
+}
+
+pub const CHRONICLE_DATE_MIGRATION_ID: &str = "chronicle-event-date-v49";
+
+pub fn has_chronicle_date_migration_marker(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "schema_data_migrations")? {
+        return Ok(false);
+    }
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_data_migrations
+                        WHERE migration_id = ?1 AND contract_version = 1)",
+        [CHRONICLE_DATE_MIGRATION_ID],
+        |row| row.get(0),
+    )?)
+}
+
+fn has_chronicle_date_migration_table(conn: &Connection) -> anyhow::Result<bool> {
+    let table = "chronicle_date_migration_events";
+    if !table_exists(conn, table)? {
+        return Ok(false);
+    }
+    let columns = table_columns(conn, table)?;
+    Ok(columns.iter().all(|c| c.not_null && c.declared_type == "TEXT")
+        && columns
+            .iter()
+            .map(|c| (c.name.as_str(), c.primary_key))
+            .eq([("project_id", 1), ("event_id", 2), ("recorded_at", 0)])
+        && foreign_key_matches(conn, table, "project_id", "projects", "id")?)
 }
 
 fn has_v47_mastra_memory_storage(conn: &Connection) -> anyhow::Result<bool> {

@@ -51,6 +51,7 @@ type SchemaContract = {
 };
 
 const RUST_ONLY_TABLES = new Set([
+  "chronicle_date_migration_events",
   "fts_meta",
   "codex_fts",
   "codex_fts_en",

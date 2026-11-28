@@ -1058,6 +1058,43 @@ fn add_second_project(db: &Database, project: &str) {
 // =====================================================================
 
 #[test]
+fn n4a_snapshot_restore_keeps_the_undated_row_until_the_next_forward_edit() {
+    let db = new_db();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO events (id, project_id, title, precision)
+                      VALUES ('legacy', ?1, 'before', 'exact')",
+            [P],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    snapshot(&db, "undated");
+    let date = || {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT start_time, precision FROM events WHERE id = 'legacy'",
+                [],
+                |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, String>(1)?)),
+            )?)
+        })
+        .unwrap()
+    };
+    must(
+        ev_update(&db, "legacy", "date-first", "first"),
+        "first edit",
+    );
+    assert!(date().0.is_some());
+    must(body(&db, "restore-undated", "undated"), "restore");
+    assert_eq!(date(), (None, "exact".into()));
+    must(
+        ev_update(&db, "legacy", "date-second", "second"),
+        "edit after restore",
+    );
+    assert!(date().0.is_some());
+}
+
+#[test]
 fn event_edited_after_the_snapshot_can_be_updated_and_deleted_after_the_restore() {
     for last in ["update", "delete"] {
         let db = new_db();

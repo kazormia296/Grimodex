@@ -172,8 +172,8 @@ fn shape_populated_v40_workspace(conn: &rusqlite::Connection) -> anyhow::Result<
 #[test]
 fn previous_release_shaped_database_migrates_and_preserves_rows() {
     assert_eq!(
-        SCHEMA_VERSION, 48,
-        "Gate C1 migration target was SCHEMA 22; later schemas through 48 migrate on top -- this guard exists so the next schema bump revisits this fixture too"
+        SCHEMA_VERSION, 49,
+        "Gate C1 migration target was SCHEMA 22; later schemas through 49 migrate on top -- this guard exists so the next schema bump revisits this fixture too"
     );
     assert_eq!(
         LAST_PUBLIC_RELEASE_SCHEMA_VERSION, 2,
@@ -182,6 +182,14 @@ fn previous_release_shaped_database_migrates_and_preserves_rows() {
     let workspace = temp_workspace("release-shaped");
     let db_path = seed_previous_release_workspace(&workspace);
     assert_previous_release_fixture_shape(&db_path);
+
+    rusqlite::Connection::open(&db_path)
+        .expect("open schema 2")
+        .execute(
+            "INSERT INTO events(id, project_id) VALUES ('ced-undated', ?1)",
+            [release_schema_fixture::PROJECT_ID],
+        )
+        .expect("seed an undated release event");
 
     let outcome =
         migration_supervisor::open_or_migrate_workspace_db(&workspace).expect("shadow migrate");
@@ -222,6 +230,19 @@ fn previous_release_shaped_database_migrates_and_preserves_rows() {
     );
     assert_eq!(manifest["targetSchemaVersion"], Value::from(SCHEMA_VERSION));
 
+    let live = rusqlite::Connection::open(&db_path).expect("open migrated release DB");
+    let repaired: bool = live
+        .query_row(
+            "SELECT e.start_time > 42 AND e.start_granularity = 'day' AND e.precision = 'unknown'
+           FROM events e JOIN chronicle_date_migration_events m
+             ON (e.project_id, e.id) = (m.project_id, m.event_id)
+          WHERE e.id = 'ced-undated'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the public upgrade recorded the repaired event");
+    assert!(repaired);
+    assert!(grimodex_core::workspace_schema::has_chronicle_date_migration_marker(&live).unwrap());
     assert_release_fixture_rows(&db_path);
     assert_release_scope_vocabulary_without_default(&db_path);
 }
