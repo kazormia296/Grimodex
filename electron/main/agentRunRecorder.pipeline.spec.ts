@@ -224,6 +224,42 @@ describe("AgentRun recorder against the real Native addon", () => {
     ).toEqual({ kind: "unrecorded" });
   });
 
+  it("records only valid tool call IDs and marks a partially recorded Run as non-resumable", async () => {
+    const { native, recorder, turn, runId, status } = await openFixture();
+    const executionId = "execution";
+    expect(
+      await recorder.recordResponse({
+        ...turn,
+        executionId,
+        chatMessageId: turn.assistantMessageId,
+        model: turn.modelId,
+        toolUses: ["", " \t", " padded", "padded ", "tool-call"].map((id) => ({
+          id,
+          name: "update_fixture",
+          input: { title: "Revised" },
+        })),
+      }),
+    ).toBe("recorded");
+    const { rows } = JSON.parse(
+      await native.dbExecute(
+        "SELECT tool_call_ledger FROM agent_runs WHERE run_id = ?",
+        [runId],
+        "all",
+      ),
+    ) as { rows: { tool_call_ledger: string }[] };
+    expect(JSON.parse(rows[0].tool_call_ledger)).toEqual([
+      expect.objectContaining({ toolCallId: "tool-call", executionId }),
+    ]);
+    expect(recorder.resolveRun({ ...turn, executionId })).toMatchObject({
+      kind: "recorded",
+      runId,
+    });
+    expect(await status()).toMatchObject({
+      resumable: false,
+      notResumableReason: "ledger_write_failed",
+    });
+  });
+
   it("recovers finalizing as interrupted when the messages are incomplete", async () => {
     const { recorder, turn, status } = await openFixture();
     await recorder.beginFinalizing(turn, "completed", turn.assistantMessageId);

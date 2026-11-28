@@ -648,40 +648,53 @@ export function createAgentRunRecorder({
           scope,
           input,
           async (run) => {
-            if (toolUses.length === 0) {
-              await prepare(scope, run);
-              await addAudit(scope, run, executionId);
-              return "recorded";
-            }
+            const validToolUses = toolUses.filter(
+              ({ id }) =>
+                typeof id === "string" && id !== "" && id === id.trim(),
+            );
+            let result: ResponseResult = "recorded";
             try {
-              const entries = toolUses.map(
-                ({ id, name, input }): AgentRunLedgerEntry => ({
-                  toolCallId: id,
-                  name,
-                  canonicalArgs: input,
-                  argsDigest:
-                    toolInputDigest(name, input) ??
-                    sha256Hex(canonicalJson(input)),
-                  executionId,
-                  chatMessageId,
-                  mainOwnedProvenanceId: "",
-                  model,
-                  capabilityState: "not_issued",
-                  executionState: "pending",
-                }),
-              );
-              await append(scope, run, entries);
-              return "recorded";
+              if (validToolUses.length === 0) {
+                await prepare(scope, run);
+                await addAudit(scope, run, executionId);
+              } else {
+                const entries = validToolUses.map(
+                  ({ id, name, input }): AgentRunLedgerEntry => ({
+                    toolCallId: id,
+                    name,
+                    canonicalArgs: input,
+                    argsDigest:
+                      toolInputDigest(name, input) ??
+                      sha256Hex(canonicalJson(input)),
+                    executionId,
+                    chatMessageId,
+                    mainOwnedProvenanceId: "",
+                    model,
+                    capabilityState: "not_issued",
+                    executionState: "pending",
+                  }),
+                );
+                await append(scope, run, entries);
+              }
             } catch (error) {
-              if (error instanceof ExecutionCollisionError) throw error;
+              result =
+                validToolUses.length === 0 ||
+                error instanceof ExecutionCollisionError
+                  ? "failed"
+                  : "marked_not_resumable";
+            }
+            if (
+              result === "marked_not_resumable" ||
+              validToolUses.length !== toolUses.length
+            ) {
               await prepare(scope, run);
               await writeState(scope, run, "agentRunMarkNotResumable", {
                 runId: run.state.runId,
                 expectedStatus: run.state.status,
                 reason: "ledger_write_failed",
               });
-              return "marked_not_resumable";
             }
+            return result;
           },
           false,
         );

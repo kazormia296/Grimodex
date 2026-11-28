@@ -397,6 +397,43 @@ describe("AgentRun recorder", () => {
     expect(backend.agentRunAppendToolCalls).toHaveBeenCalledTimes(1);
   });
 
+  it("adds only the audit execution ID when all tool call IDs are blank", async () => {
+    const { backend, recorder } = fixture();
+    await recorder.start(turn);
+    expect(
+      await recorder.recordResponse({
+        ...response,
+        toolUses: ["", " \t"].map((id) => ({ ...response.toolUses[0], id })),
+      }),
+    ).toBe("recorded");
+    expect(backend.agentRunAppendToolCalls).not.toHaveBeenCalled();
+    expect(backend.agentRunAddAuditExecutionId).toHaveBeenCalledExactlyOnceWith(
+      {
+        runId: "run-1",
+        executionId: response.executionId,
+      },
+    );
+    expect(backend.agentRunMarkNotResumable).toHaveBeenCalledExactlyOnceWith({
+      runId: "run-1",
+      expectedStatus: "running",
+      reason: "ledger_write_failed",
+    });
+    expect(recorder.resolveRun(resolveInput)).toEqual({ kind: "unrecorded" });
+  });
+
+  it("returns failed when the non-resumable mark fails after a filtered append", async () => {
+    const { backend, recorder } = fixture();
+    await recorder.start(turn);
+    backend.agentRunMarkNotResumable.mockRejectedValueOnce(new Error());
+    expect(
+      await recorder.recordResponse({
+        ...response,
+        toolUses: [{ ...response.toolUses[0], id: "" }, response.toolUses[0]],
+      }),
+    ).toBe("failed");
+    expect(backend.agentRunAppendToolCalls).toHaveBeenCalledOnce();
+  });
+
   it("refreshes status after ledger failure, reports fallback failure and logs only IDs and markers", async () => {
     const { backend, recorder, rows, warn } = fixture();
     await recorder.start(turn);
