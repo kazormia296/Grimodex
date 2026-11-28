@@ -33,6 +33,8 @@ feature-private な要約や Freshness の store の削除は個別に伺う。
 
 - **DR-M2R-12（B1b の独立レビューを受けた判断）**：Opus の read-only のレビュー（2026-11-27、P1 1 件・P2 2 件）を受けて決めた。(1) 並べ替えの枠を stability の値でなく **cache の区分**（`planContextCache` が位置で決める stable の prefix と volatile の tail）にする。stability の値ごとだと、session-stable の項目どうしが prefix と tail をまたいで入れ替わり、前の turn まで cache されていた項目が tail に落ちる（集合は同じでも「順序だけ」の約束を超える）。(2) 並べ替えの後に予算があるときは `systemTokens <= exactSystemBudget` を確かめ、超えたら元の順に戻す（heuristic の token の見積もりが segment ごとの切り上げで ±1 ずれうるため）。(3) 順序が変わらないときは materialize し直さない。(4) `contextBuilder.ts` の行数の上限（`policies/architecture/large-module-debt.json`、2389 行）は上げない（閾値の緩和で委任の外）。増える行は helper に移し、上限の内に収める。(5) 照会の時間の上限（main の handler が応答しないと文脈の収集が止まる）は、旗が閉じている間は影響しないので、旗を開ける PR で扱う。
 
+- **DR-M2R-13（起動時の JS の上限に合わせた作り替え、2026-11-28）**：B1b を master に合わせて build すると、起動時の JS が raw +861 byte／gzip +311 byte 増え、上限（残り 88 byte）を超えた。上限は上げない（閾値の緩和で委任の外）。旗が閉じた／開いたときの振る舞いは変えずに、次のように作り替える。(1) builder は承認済みの id の集合でなく、並べ替えの関数（`ApprovedCodexRanker`）を任意の引数で受ける。builder は引き続き旗を読まず、試験と評価は関数を注入する。並べ替えの本体は source の側からだけ参照するので、旗が閉じた build では消える。(2) 旗の分岐は source の呼び出し側に置き、source は reader を静的 import する。消える分岐や使わない関数の中の `import()` も chunk の分割に数えられ、参照されない chunk と起動時の chunk の分離ができたため。(3) reader は読み口（`nir1EntityRelationRevisionApi`）を動的 import する。静的 import では、読み口の module が別の依存を持つので、旗が閉じた build にも依存が残る。作り替えの後は raw +177 byte／gzip +88 byte（`contextBuilder` の chunk +125、起動時の chunk の依存表 +52）。照会だけを別の module に分ければ raw +122 byte まで下がるが、`quality-manifest`／`impact-map` の登録まで広がるので採らない。旗の意味、AI に届く項目の集合、並べ替えの規則（DR-M2R-6〜9、12）は変えない。
+
 ## 信頼境界
 
 - 送信：旗が閉じている間は変えない。旗を開けると、AI に届く Codex の項目の集合は変わらず、prompt の中の順序だけが変わる（DR-M2R-6）。可否の判定は今の `codexVisibilityPolicy` のまま。
