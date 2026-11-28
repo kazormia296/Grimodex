@@ -139,6 +139,8 @@ const flush = async (): Promise<void> => {
 
 const PROJECT_ID = "project-1";
 const CHAT_POLICY_SQL = "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1";
+const FULL_AI_POLICY_JSON =
+  '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true,"knowledgeWrite":true}}';
 
 function startRequest(
   turnId: string,
@@ -322,7 +324,7 @@ function harness(
         if (policyDbExecute) return policyDbExecute(...args);
         return JSON.stringify({
           __grimodexDbResultKind: "read",
-          rows: [{ ai_policy: null }],
+          rows: [{ ai_policy: FULL_AI_POLICY_JSON }],
         });
       }
       if (overrides.readDbExecute) return overrides.readDbExecute(...args);
@@ -5347,7 +5349,21 @@ describe("MP-5 main-owned question holds", () => {
           policyDbExecute: async () => {
             policyChecks += 1;
             return readAnswer([
-              { ai_policy: policyChecks === 3 ? "off" : null },
+              {
+                ai_policy:
+                  policyChecks === 3
+                    ? JSON.stringify({
+                        preset: "off",
+                        toggles: {
+                          chat: false,
+                          bodyWrite: false,
+                          analysis: false,
+                          structureWrite: false,
+                          knowledgeWrite: false,
+                        },
+                      })
+                    : null,
+              },
             ]);
           },
         },
@@ -5476,10 +5492,7 @@ describe("MP-5 main-owned question holds", () => {
         }),
       },
       policyDbExecute: async () =>
-        JSON.stringify({
-          __grimodexDbResultKind: "read",
-          rows: [{ ai_policy: null }],
-        }),
+        readAnswer([{ ai_policy: FULL_AI_POLICY_JSON }]),
       issueWriteCapabilities: (senderId, args, response, backend, identity) =>
         issueAgentAuthorityCapabilitiesForSender(
           senderId,
@@ -5575,10 +5588,7 @@ describe("MP-5 main-owned question holds", () => {
         }),
       },
       policyDbExecute: async () =>
-        JSON.stringify({
-          __grimodexDbResultKind: "read",
-          rows: [{ ai_policy: null }],
-        }),
+        readAnswer([{ ai_policy: FULL_AI_POLICY_JSON }]),
       issueWriteCapabilities: (senderId, args, response, backend, identity) =>
         issueAgentAuthorityCapabilitiesForSender(
           senderId,
@@ -5662,10 +5672,7 @@ describe("MP-5 main-owned question holds", () => {
       responses: [writeResponse],
       nativeWriterMethods: { agentEventCreate: eventWriter },
       policyDbExecute: async () =>
-        JSON.stringify({
-          __grimodexDbResultKind: "read",
-          rows: [{ ai_policy: null }],
-        }),
+        readAnswer([{ ai_policy: FULL_AI_POLICY_JSON }]),
       issueWriteCapabilities: (senderId, args, response, backend, identity) =>
         issueAgentAuthorityCapabilitiesForSender(
           senderId,

@@ -95,7 +95,8 @@ async function openSampleWorkspace() {
   };
   const seeded = await route("seed_sample_workspace", {
     language: "ja",
-    aiPolicy: '{"preset":"full"}',
+    aiPolicy:
+      '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true,"knowledgeWrite":true}}',
   });
   await route("open_workspace", { path: seeded.path });
   return { backend, projectId: seeded.projectId as string };

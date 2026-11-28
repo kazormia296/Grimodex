@@ -243,7 +243,8 @@ function workspace(): Promise<Seeded> {
     const seeded = ok<{ path: string; projectId: string }>(
       await rig.route("seed_sample_workspace", {
         language: "ja",
-        aiPolicy: '{"preset":"full"}',
+        aiPolicy:
+          '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true,"knowledgeWrite":true}}',
       }),
     );
     ok(await rig.route("open_workspace", { path: seeded.path }));

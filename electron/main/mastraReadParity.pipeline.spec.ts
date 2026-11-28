@@ -279,7 +279,8 @@ async function startSeededWorkspace(
   const seeded = ok<{ path: string; projectId: string }>(
     await route("seed_sample_workspace", {
       language: "ja",
-      aiPolicy: '{"preset":"full"}',
+      aiPolicy:
+        '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true,"knowledgeWrite":true}}',
     }),
   );
   // Before the workspace is opened: the generic SQL may not create a project
