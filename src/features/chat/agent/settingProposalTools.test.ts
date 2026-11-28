@@ -265,6 +265,8 @@ describe("propose_setting_change の manifest・定義", () => {
     expect(entry).toEqual({
       name: "propose_setting_change",
       capability: "write",
+      effect: "ui",
+      approvalMode: "none",
       requiredPolicy: "chat",
       allowedChannels: ["agent", "native"],
       requiresUserConfirmation: true,

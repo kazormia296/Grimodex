@@ -316,3 +316,16 @@ Agent Auto既定化後、設定破損が自動書き込み許可へ変換され�
    - 台帳には、capability の token を保存しない。保存するのは、状態（未発行・承認待ち・発行・消費）だけ。
    - 保存した回答や承認は、認可に使わない。
 4. **2026-11-23 の追補 5（ApprovalRequest はメモリだけ）を改める**（利用者の回答、問 22・23）。ApprovalRequest の durable な実体は、A3 の `approval` の AgentRunInteraction とする。交換の状態（capability の発行・消費）は、memory の中だけに置く。再起動の後は、A3 の記録から承認のカードを出し直し、交換で確かめ直す。AWA/1 の承認にも及ぼす（AWA/1 の判断記録 DR-AWA-2）。
+
+## 追補（2026-11-28）：画面の操作の分類 `ui`（Gate A の A1）
+
+判断の経緯と規則の正本は [Gate A の判断記録](../plans/gate-a-write-safety-decisions.md)（DR-GA-6）。本 ADR の本文は書き換えない。§3 の `effect` に、画面の操作を表す `ui` を足す。
+
+1. **理由。** §3 の 4 値には、作品の内容を変えず、画面の表示や設定の提案だけを行う tool に当たる値が無い。利用者は、画面の操作（UI 系の 3 本）を承認なしのままにすると決めた（Gate A の判断記録の第 7 節の問 2、2026-11-27）。
+2. **範囲。** `ui` は次の 3 本の名指しに限る。TS と Rust の build の検査が、ほかの tool の `ui` を拒む。
+   - `run_app_command`：登録簿で `agent: true` かつ `risk: "view"` の command だけを実行する。
+   - `apply_layout_preset`：組み込みと利用者の既存の preset を適用するだけ。
+   - `propose_setting_change`：提案を返すだけで、適用は利用者の操作だけ。
+3. **扱い。** `ui` の `approvalMode` は `none`。正規状態（Canonical SQLite）は変えない。
+4. **変えないもの。** §4 の Capability の発行の時点、Invariants、`requiresUserConfirmation`（A1 では読まない）。
+5. **広げる場合。** この 3 本以外へ `ui` を広げる、承認の有無を変える、または 3 本のどれかが作品の内容を変えうるようになる場合は、利用者に確認し、本 ADR を改める。
