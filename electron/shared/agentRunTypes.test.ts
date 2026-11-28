@@ -7,6 +7,7 @@ import {
   AGENT_RUN_INTERACTION_STATUSES,
   AGENT_RUN_INTERRUPT_REASONS,
   AGENT_RUN_NOT_RESUMABLE_REASONS,
+  AGENT_RUN_RESUME_BLOCK_REASONS,
   AGENT_RUN_STATUSES,
   AGENT_RUN_TERMINAL_REASONS,
   APPROVAL_RESOLUTIONS,
@@ -163,6 +164,29 @@ describe("AgentRun vocabulary matches Rust and the migration", () => {
     );
   });
 
+  it("matches the resume gate reasons in DB and N-API", () => {
+    const napi = readFileSync(
+      new URL("../native/grimodex-node/src/agent_runs.rs", import.meta.url),
+      "utf8",
+    );
+    const napiVariants =
+      /#\[serde\(remote = "ResumeBlockReason", rename_all = "snake_case"\)\]\s*enum ResumeBlockReasonWire \{([^}]*)\}/u.exec(
+        napi,
+      )?.[1];
+    expect(napiVariants).toBeDefined();
+    const expected = [...AGENT_RUN_RESUME_BLOCK_REASONS].sort();
+    expect(
+      captures(napiVariants!, /^[ \t]*(\w+),[ \t]*$/gmu)
+        .map((variant) =>
+          variant.replace(/([a-z])([A-Z])/gu, "$1_$2").toLowerCase(),
+        )
+        .sort(),
+    ).toEqual(expected);
+    expect(
+      captures(sqlArms("ResumeBlockReason"), /=>\s*"([^"]+)"/gu).sort(),
+    ).toEqual(expected);
+  });
+
   it.each([
     ["CapabilityState", AGENT_RUN_CAPABILITY_STATES],
     ["ExecutionState", AGENT_RUN_EXECUTION_STATES],
@@ -196,6 +220,12 @@ describe("AgentRun vocabulary matches Rust and the migration", () => {
       "utf8",
     );
     const markers = captures(rust + napi, /"(AGENT_RUN_[A-Z0-9_]+)\b/gu);
+    expect(markers).toEqual(
+      expect.arrayContaining([
+        "AGENT_RUN_ASSISTANT_MESSAGE_ID_MISMATCH",
+        "AGENT_RUN_TOOL_CALL_MISMATCH",
+      ]),
+    );
     expect([...AGENT_RUN_ERROR_CODES].sort()).toEqual(
       [...new Set(markers)].sort(),
     );

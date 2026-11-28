@@ -9,8 +9,8 @@ use grimodex_db::agent_runs::{
     self as db_runs, ActiveStatus, AnalysisReadBasisEntryV1, ApprovalDecision,
     ApprovalInvalidation, CapabilityState, ClaimAnswer, ClaimRequest, ExecutionState,
     FinalizingEvidence, FinalizingRun, InterruptReason, LedgerEntry, NotResumableReason,
-    OpenApproval, OpenQuestion, RecoveryOutcome, RecoveryResult, ResumeGate, RunRoute, RunStart,
-    RunState, RunStatus, TerminalOutcome, ToolCallUpdate,
+    OpenApproval, OpenQuestion, RecoveryOutcome, RecoveryResult, ResumeBlockReason, ResumeGate,
+    RunRoute, RunStart, RunState, RunStatus, TerminalOutcome, ToolCallUpdate, UnfinishedRun,
 };
 use grimodex_db::{state::active_workspace_snapshot, Database};
 use napi::Result;
@@ -50,6 +50,23 @@ impl WorkspaceOwner {
             return Ok(None);
         }
         db_runs::try_lock_owner(&self.path, id).map(Some)
+    }
+
+    fn recover_finalizing(
+        &self,
+        db: &Database,
+        evidence: &FinalizingEvidence<'_>,
+        reason: InterruptReason,
+        min_activity_age_secs: Option<u32>,
+    ) -> anyhow::Result<RecoveryResult> {
+        let old_owner = row_owner(db, evidence.run_id)?;
+        let min_age = if old_owner == self.id {
+            None
+        } else {
+            Some(min_activity_age_secs.context("AGENT_RUN_ACTIVITY_AGE_REQUIRED")?)
+        };
+        let _lock = self.lock_foreign_owner(&old_owner)?;
+        db_runs::recover_finalizing(db, &old_owner, evidence, reason, min_age)
     }
 }
 
@@ -100,6 +117,7 @@ struct StartPayload {
     #[serde(with = "RunRouteWire")]
     route: RunRoute,
     origin_user_message_id: String,
+    origin_assistant_message_id: Option<String>,
     model_provider_id: String,
     model_id: String,
     endpoint_hash: String,
@@ -114,6 +132,7 @@ impl StartPayload {
             turn_id: &self.turn_id,
             route: self.route,
             origin_user_message_id: &self.origin_user_message_id,
+            origin_assistant_message_id: self.origin_assistant_message_id.as_deref(),
             model_provider_id: &self.model_provider_id,
             model_id: &self.model_id,
             endpoint_hash: &self.endpoint_hash,
@@ -200,10 +219,42 @@ struct RunVersionPayload {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FinishFinalizingPayload {
+    run_id: String,
+    version: i64,
+    min_activity_age_secs: Option<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FinishWithoutMessagesPayload {
+    run_id: String,
+    expected_version: i64,
+    #[serde(with = "TerminalOutcomeWire")]
+    target: TerminalOutcome,
+}
+
+#[derive(Deserialize)]
+#[serde(remote = "ResumeBlockReason", rename_all = "snake_case")]
+enum ResumeBlockReasonWire {
+    LicenseRestricted,
+    AiPolicy,
+    ProfileEgress,
+    RouteUnavailable,
+    ProviderUnavailable,
+    ModelUnavailable,
+    EndpointChanged,
+}
+
+#[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum ClaimGatePayload {
     Allowed {},
-    Blocked { detail: String },
+    Blocked {
+        #[serde(with = "ResumeBlockReasonWire")]
+        detail: ResumeBlockReason,
+    },
 }
 
 #[derive(Deserialize)]
@@ -240,17 +291,21 @@ struct LedgerEntryWire {
 }
 
 #[derive(Deserialize)]
+#[serde(transparent)]
+struct LedgerEntryPayload(#[serde(with = "LedgerEntryWire")] LedgerEntry);
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct AppendToolCallPayload {
+struct AppendToolCallsPayload {
     run_id: String,
-    #[serde(with = "LedgerEntryWire")]
-    entry: LedgerEntry,
+    entries: Vec<LedgerEntryPayload>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct UpdateToolCallPayload {
     run_id: String,
+    execution_id: String,
     tool_call_id: String,
     main_owned_provenance_id: Option<String>,
     capability_state: Option<CapabilityState>,
@@ -279,6 +334,7 @@ enum NotResumableReasonWire {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct NotResumablePayload {
     run_id: String,
+    expected_status: String,
     #[serde(with = "NotResumableReasonWire")]
     reason: NotResumableReason,
 }
@@ -287,6 +343,13 @@ struct NotResumablePayload {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RunIdPayload {
     run_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AuditExecutionIdPayload {
+    run_id: String,
+    execution_id: String,
 }
 
 #[derive(Deserialize)]
@@ -301,6 +364,7 @@ struct OpenQuestionPayload {
     run_id: String,
     interaction_id: String,
     expected_version: i64,
+    execution_id: String,
     tool_call_id: String,
     args_digest: String,
     request: String,
@@ -322,6 +386,7 @@ struct OpenApprovalPayload {
     run_id: String,
     interaction_id: String,
     expected_version: i64,
+    execution_id: String,
     tool_call_id: String,
     tool_name: String,
     args_digest: String,
@@ -388,8 +453,20 @@ impl EvidencePayload {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RecoverPayload {
-    min_activity_age_secs: Option<u32>,
+    min_activity_age_secs: u32,
     finalizing_evidence: Vec<EvidencePayload>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RecoverFinalizingPayload {
+    run_id: String,
+    version: i64,
+    user_message_complete: bool,
+    assistant_message_complete: bool,
+    #[serde(with = "InterruptReasonWire")]
+    reason: InterruptReason,
+    min_activity_age_secs: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -437,6 +514,7 @@ struct SupersedingWire {
 #[serde(rename_all = "camelCase")]
 struct PendingApprovalWire {
     interaction_id: String,
+    execution_id: String,
     interaction_version: i64,
     tool_call_id: String,
     tool_name: String,
@@ -473,6 +551,20 @@ impl From<RecoveryResult> for RecoveryWire {
 }
 
 #[derive(Serialize)]
+#[serde(untagged)]
+enum FinishFinalizingWire {
+    Finished(RunStateWire),
+    Recovery(RecoveryWire),
+}
+
+#[derive(Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+enum OwnerRecoveryWire {
+    Recovered { results: Vec<RecoveryWire> },
+    Failed { reason: &'static str },
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FinalizingWire {
     run_id: String,
@@ -497,6 +589,26 @@ impl FinalizingWire {
         }
     }
 }
+
+#[derive(Serialize)]
+#[serde(remote = "UnfinishedRun", rename_all = "camelCase")]
+struct UnfinishedRunWire {
+    run_id: String,
+    project_id: String,
+    chat_session_id: String,
+    turn_id: String,
+    status: String,
+    version: i64,
+    interrupt_reason: Option<String>,
+    finalizing_target_status: Option<String>,
+    origin_user_message_id: String,
+    origin_assistant_message_id: Option<String>,
+    activity_at: String,
+}
+
+#[derive(Serialize)]
+#[serde(transparent)]
+struct OwnedRunWire(#[serde(with = "UnfinishedRunWire")] UnfinishedRun);
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -602,11 +714,45 @@ impl Backend {
 
     #[napi]
     pub async fn agent_run_finish_finalizing(&self, payload: Value) -> Result<String> {
-        self.agent_run_operation(payload, |db, owner, input: RunVersionPayload| {
-            let old_owner = row_owner(db, &input.run_id)?;
-            let _lock = owner.lock_foreign_owner(&old_owner)?;
-            db_runs::finish_finalizing(db, &input.run_id, &old_owner, input.version)
-                .map(RunStateWire::from)
+        self.agent_run_operation(payload, |db, owner, input: FinishFinalizingPayload| {
+            // Finishing confirms both messages are saved, so the interrupt reason is unused.
+            let evidence = FinalizingEvidence {
+                run_id: &input.run_id,
+                version: input.version,
+                user_message_complete: true,
+                assistant_message_complete: true,
+            };
+            let result = owner.recover_finalizing(
+                db,
+                &evidence,
+                InterruptReason::RendererLost,
+                input.min_activity_age_secs,
+            )?;
+            Ok(match result.outcome {
+                RecoveryOutcome::Finalized { status } => {
+                    FinishFinalizingWire::Finished(RunStateWire {
+                        run_id: result.run_id,
+                        version: result.version,
+                        status,
+                    })
+                }
+                _ => FinishFinalizingWire::Recovery(result.into()),
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_run_finish_without_messages(&self, payload: Value) -> Result<String> {
+        self.agent_run_operation(payload, |db, owner, input: FinishWithoutMessagesPayload| {
+            db_runs::finish_run_without_messages(
+                db,
+                &input.run_id,
+                &owner.id,
+                input.expected_version,
+                input.target,
+            )
+            .map(RunStateWire::from)
         })
         .await
     }
@@ -626,7 +772,7 @@ impl Backend {
             let old_owner = row_owner(db, &input.run_id)?;
             let gate = match &input.gate {
                 ClaimGatePayload::Allowed {} => ResumeGate::Allowed,
-                ClaimGatePayload::Blocked { detail } => ResumeGate::Blocked(detail),
+                ClaimGatePayload::Blocked { detail } => ResumeGate::Blocked(*detail),
             };
             let answer = input.answer.as_ref().map(|answer| ClaimAnswer {
                 interaction_id: &answer.interaction_id,
@@ -651,9 +797,18 @@ impl Backend {
     }
 
     #[napi]
-    pub async fn agent_run_append_tool_call(&self, payload: Value) -> Result<String> {
-        self.agent_run_operation(payload, |db, owner, input: AppendToolCallPayload| {
-            db_runs::append_tool_call(db, &input.run_id, &owner.id, input.entry)
+    pub async fn agent_run_append_tool_calls(&self, payload: Value) -> Result<String> {
+        self.agent_run_operation(payload, |db, owner, input: AppendToolCallsPayload| {
+            let entries = input.entries.into_iter().map(|entry| entry.0).collect();
+            db_runs::append_tool_calls(db, &input.run_id, &owner.id, entries)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_run_add_audit_execution_id(&self, payload: Value) -> Result<String> {
+        self.agent_run_operation(payload, |db, owner, input: AuditExecutionIdPayload| {
+            db_runs::add_audit_execution_id(db, &input.run_id, &owner.id, &input.execution_id)
         })
         .await
     }
@@ -666,6 +821,7 @@ impl Backend {
                 ToolCallUpdate {
                     run_id: &input.run_id,
                     owner: &owner.id,
+                    execution_id: &input.execution_id,
                     tool_call_id: &input.tool_call_id,
                     main_owned_provenance_id: input.main_owned_provenance_id.as_deref(),
                     capability_state: input.capability_state,
@@ -694,14 +850,26 @@ impl Backend {
     #[napi]
     pub async fn agent_run_mark_not_resumable(&self, payload: Value) -> Result<String> {
         self.agent_run_operation(payload, |db, owner, input: NotResumablePayload| {
-            let run = require_run_status(db, &input.run_id)?;
-            let execution_owner = if run.status == "interrupted" {
-                &run.execution_owner
+            anyhow::ensure!(
+                matches!(
+                    input.expected_status.as_str(),
+                    "running" | "waiting_user" | "waiting_approval" | "finalizing" | "interrupted"
+                ),
+                "AGENT_RUN_VERSION_OR_STATUS_MISMATCH"
+            );
+            let old_owner = if input.expected_status == "interrupted" {
+                Some(row_owner(db, &input.run_id)?)
             } else {
-                &owner.id
+                None
             };
-            db_runs::mark_not_resumable(db, &input.run_id, execution_owner, input.reason)
-                .map(RunStateWire::from)
+            db_runs::mark_not_resumable(
+                db,
+                &input.run_id,
+                old_owner.as_deref().unwrap_or(&owner.id),
+                &input.expected_status,
+                input.reason,
+            )
+            .map(RunStateWire::from)
         })
         .await
     }
@@ -724,6 +892,7 @@ impl Backend {
                     interaction_id: &input.interaction_id,
                     owner: &owner.id,
                     expected_version: input.expected_version,
+                    execution_id: &input.execution_id,
                     tool_call_id: &input.tool_call_id,
                     args_digest: &input.args_digest,
                     request: &input.request,
@@ -761,6 +930,7 @@ impl Backend {
                     interaction_id: &input.interaction_id,
                     owner: &owner.id,
                     expected_version: input.expected_version,
+                    execution_id: &input.execution_id,
                     tool_call_id: &input.tool_call_id,
                     tool_name: &input.tool_name,
                     args_digest: &input.args_digest,
@@ -814,6 +984,7 @@ impl Backend {
                 db_runs::get_pending_approval(db, &input.run_id)?.map(|pending| {
                     PendingApprovalWire {
                         interaction_id: pending.interaction_id,
+                        execution_id: pending.execution_id,
                         interaction_version: pending.version,
                         tool_call_id: pending.tool_call_id,
                         tool_name: pending.tool_name,
@@ -837,14 +1008,22 @@ impl Backend {
             let mut recovered = Vec::new();
             for old_owner in db_runs::list_owners_with_active_runs(db)? {
                 if old_owner != owner.id {
-                    let results = db_runs::recover_owner(
+                    let result = db_runs::recover_owner(
                         db,
                         &owner.path,
                         &old_owner,
                         input.min_activity_age_secs,
                         &evidence,
-                    )?;
-                    recovered.extend(results.into_iter().map(RecoveryWire::from));
+                    );
+                    recovered.push(match result {
+                        Ok(results) => OwnerRecoveryWire::Recovered {
+                            results: results.into_iter().map(RecoveryWire::from).collect(),
+                        },
+                        // Raw recovery errors can carry owner lock paths.
+                        Err(_) => OwnerRecoveryWire::Failed {
+                            reason: "AGENT_RUN_OWNER_RECOVERY_FAILED",
+                        },
+                    });
                 }
             }
             Ok(recovered)
@@ -854,11 +1033,27 @@ impl Backend {
 
     #[napi]
     pub async fn agent_run_recover_finalizing(&self, payload: Value) -> Result<String> {
-        self.agent_run_operation(payload, |db, owner, input: EvidencePayload| {
-            let old_owner = row_owner(db, &input.run_id)?;
-            let _lock = owner.lock_foreign_owner(&old_owner)?;
-            db_runs::recover_finalizing(db, &old_owner, &input.as_evidence())
+        self.agent_run_operation(payload, |db, owner, input: RecoverFinalizingPayload| {
+            let evidence = FinalizingEvidence {
+                run_id: &input.run_id,
+                version: input.version,
+                user_message_complete: input.user_message_complete,
+                assistant_message_complete: input.assistant_message_complete,
+            };
+            owner
+                .recover_finalizing(db, &evidence, input.reason, input.min_activity_age_secs)
                 .map(RecoveryWire::from)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_run_list_owned(&self, payload: Value) -> Result<String> {
+        self.agent_run_operation(payload, |db, owner, _: EmptyPayload| {
+            Ok(db_runs::list_unfinished_runs_for_owner(db, &owner.id)?
+                .into_iter()
+                .map(OwnedRunWire)
+                .collect::<Vec<_>>())
         })
         .await
     }

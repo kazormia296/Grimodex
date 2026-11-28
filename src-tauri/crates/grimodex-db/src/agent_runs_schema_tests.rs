@@ -7,8 +7,9 @@ use crate::agent_runs::{
     self, ActiveStatus, AnalysisReadBasisEntryV1, AnalysisReadBasisRevision, ApprovalDecision,
     ApprovalInvalidation, CapabilityState, ClaimAnswer, ClaimRequest, ExecutionState,
     FinalizingEvidence, FinalizingRun, InterruptReason, LedgerEntry, NotResumableReason,
-    OpenApproval, OpenQuestion, PendingApproval, RecoveryOutcome, RecoveryResult, ResumeGate,
-    RunRoute, RunStart, RunState, RunStatus, TerminalOutcome, ToolCallUpdate,
+    OpenApproval, OpenQuestion, PendingApproval, RecoveryOutcome, RecoveryResult,
+    ResumeBlockReason, ResumeGate, RunRoute, RunStart, RunState, RunStatus, TerminalOutcome,
+    ToolCallUpdate, UnfinishedRun,
 };
 use crate::{test_support::current_schema_memory, Database};
 
@@ -40,6 +41,7 @@ fn start<'a>(run_id: &'a str, session: &'a str, owner: &'a str) -> RunStart<'a> 
         turn_id: "turn",
         route: RunRoute::Legacy,
         origin_user_message_id: "user-message",
+        origin_assistant_message_id: None,
         model_provider_id: "provider",
         model_id: "model",
         endpoint_hash: "endpoint-hash",
@@ -47,19 +49,31 @@ fn start<'a>(run_id: &'a str, session: &'a str, owner: &'a str) -> RunStart<'a> 
     }
 }
 
+const EXECUTION_ID: &str = "execution";
+
 fn ledger_entry(id: &str) -> LedgerEntry {
     LedgerEntry {
         tool_call_id: id.into(),
-        name: "read_scene".into(),
+        name: "write_scene".into(),
         canonical_args: json!({"id":"scene"}),
         args_digest: "digest".into(),
-        execution_id: "execution".into(),
+        execution_id: EXECUTION_ID.into(),
         chat_message_id: "message".into(),
         main_owned_provenance_id: "provenance".into(),
         model: "model".into(),
         capability_state: CapabilityState::NotIssued,
         execution_state: ExecutionState::Pending,
     }
+}
+
+fn record_tools(db: &Database, run_id: &str, owner: &str, ids: &[&str]) {
+    agent_runs::append_tool_calls(
+        db,
+        run_id,
+        owner,
+        ids.iter().map(|id| ledger_entry(id)).collect(),
+    )
+    .expect("record tools before opening interaction");
 }
 
 fn approval<'a>(
@@ -73,6 +87,7 @@ fn approval<'a>(
         run_id,
         owner,
         expected_version,
+        execution_id: EXECUTION_ID,
         tool_call_id: "tool",
         tool_name: "write_scene",
         args_digest: "digest",
@@ -121,6 +136,7 @@ fn terminal_paths_clear_run_and_all_interaction_payloads() {
             "complete",
             "fail",
             "stop",
+            "stop-without-messages",
             "recover-complete",
             "recover-fail",
             "recover-stop",
@@ -132,6 +148,11 @@ fn terminal_paths_clear_run_and_all_interaction_payloads() {
         ("complete", TerminalOutcome::Completed, "completed"),
         ("fail", TerminalOutcome::ProviderError, "failed"),
         ("stop", TerminalOutcome::UserStop, "cancelled"),
+        (
+            "stop-without-messages",
+            TerminalOutcome::UserStop,
+            "cancelled",
+        ),
         ("recover-complete", TerminalOutcome::Completed, "completed"),
         ("recover-fail", TerminalOutcome::ProviderError, "failed"),
         ("recover-stop", TerminalOutcome::UserStop, "cancelled"),
@@ -143,6 +164,7 @@ fn terminal_paths_clear_run_and_all_interaction_payloads() {
         ),
     ] {
         agent_runs::start_run(&db, &start(run_id, run_id, "owner")).expect("start");
+        record_tools(&db, run_id, "owner", &["ask", "tool"]);
         let question_id = format!("{run_id}-question");
         let opened = agent_runs::open_user_question(
             &db,
@@ -151,6 +173,7 @@ fn terminal_paths_clear_run_and_all_interaction_payloads() {
                 run_id,
                 owner: "owner",
                 expected_version: 0,
+                execution_id: EXECUTION_ID,
                 tool_call_id: "ask",
                 args_digest: "digest",
                 request: "Question?",
@@ -199,7 +222,6 @@ fn terminal_paths_clear_run_and_all_interaction_payloads() {
             (opened.version, opened.status.as_str()),
             (5, "waiting_approval")
         );
-        agent_runs::append_tool_call(&db, run_id, "owner", ledger_entry("tool")).expect("ledger");
         agent_runs::write_checkpoint(
             &db,
             run_id,
@@ -209,7 +231,20 @@ fn terminal_paths_clear_run_and_all_interaction_payloads() {
             "digest",
         )
         .expect("checkpoint");
-        let result = if expected_status == "discarded" {
+        let result = if run_id == "stop-without-messages" {
+            let running = agent_runs::decide_approval(
+                &db,
+                run_id,
+                "owner",
+                5,
+                &approval_id,
+                0,
+                ApprovalDecision::Approved,
+            )
+            .expect("resolve pending approval");
+            agent_runs::finish_run_without_messages(&db, run_id, "owner", running.version, target)
+                .expect("finish without messages")
+        } else if expected_status == "discarded" {
             let interrupted = agent_runs::interrupt_run(
                 &db,
                 run_id,
@@ -260,7 +295,7 @@ fn terminal_paths_clear_run_and_all_interaction_payloads() {
                     &db,
                     &workspace,
                     "owner",
-                    None,
+                    0,
                     &[FinalizingEvidence {
                         run_id,
                         version: 6,
@@ -296,7 +331,8 @@ fn terminal_paths_clear_run_and_all_interaction_payloads() {
                 [run_id], |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
             assert_eq!(run_payload, (None, "[]".into()), "{run_id}");
-            for (id, expected_status) in [(&question_id, "resolved"), (&resolved_id, "resolved"), (&approval_id, "cancelled")] {
+            let approval_status = if run_id == "stop-without-messages" { "resolved" } else { "cancelled" };
+            for (id, expected_status) in [(&question_id, "resolved"), (&resolved_id, "resolved"), (&approval_id, approval_status)] {
                 let payload: (String, String, Option<String>, String, i64) = conn.query_row(
                     "SELECT request,resolution,target_basis,status,version FROM agent_run_interactions WHERE interaction_id=?1",
                     [id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
@@ -315,6 +351,8 @@ fn interaction_request_limit_counts_utf8_bytes() {
     for id in ["question", "approval"] {
         agent_runs::start_run(&db, &start(id, id, "owner")).expect("start");
     }
+    record_tools(&db, "question", "owner", &["ask"]);
+    record_tools(&db, "approval", "owner", &["tool"]);
     let limit = "é".repeat(32_768);
     let oversized = format!("{limit}a");
     let question = |request| {
@@ -325,6 +363,7 @@ fn interaction_request_limit_counts_utf8_bytes() {
                 run_id: "question",
                 owner: "owner",
                 expected_version: 0,
+                execution_id: EXECUTION_ID,
                 tool_call_id: "ask",
                 args_digest: "digest",
                 request,
@@ -359,7 +398,8 @@ fn mark_not_resumable_preserves_the_first_reason() {
         NotResumableReason::CheckpointWriteFailed,
         NotResumableReason::LedgerWriteFailed,
     ] {
-        let state = agent_runs::mark_not_resumable(&db, "r", "owner", reason).expect("mark");
+        let state =
+            agent_runs::mark_not_resumable(&db, "r", "owner", "running", reason).expect("mark");
         assert_eq!(state, initial);
     }
     db.with_conn(|conn| {
@@ -374,6 +414,52 @@ fn mark_not_resumable_preserves_the_first_reason() {
         Ok(())
     })
     .expect("read reason");
+}
+
+#[test]
+fn mark_not_resumable_rejects_stale_status_even_after_marking() {
+    let db = current_schema_memory().expect("schema");
+    seed(&db, &["s"]);
+    agent_runs::start_run(&db, &start("r", "s", "owner")).expect("start");
+    let mark = |status| {
+        agent_runs::mark_not_resumable(
+            &db,
+            "r",
+            "owner",
+            status,
+            NotResumableReason::LedgerWriteFailed,
+        )
+    };
+    assert_eq!(
+        mark("interrupted").unwrap_err().to_string(),
+        "AGENT_RUN_VERSION_OR_STATUS_MISMATCH"
+    );
+    assert!(
+        agent_runs::get_run_status(&db, "r")
+            .unwrap()
+            .unwrap()
+            .resumable
+    );
+    mark("running").expect("mark");
+    agent_runs::interrupt_run(
+        &db,
+        "r",
+        "owner",
+        ActiveStatus::Running,
+        0,
+        InterruptReason::AppShutdown,
+    )
+    .expect("interrupt");
+    assert_eq!(
+        mark("running").unwrap_err().to_string(),
+        "AGENT_RUN_VERSION_OR_STATUS_MISMATCH"
+    );
+    assert_eq!(
+        mark("interrupted")
+            .expect("repeat with current status")
+            .version,
+        1
+    );
 }
 
 #[test]
@@ -416,14 +502,20 @@ fn claim_rejects_non_resumable_run() {
         InterruptReason::AppShutdown,
     )
     .expect("interrupt");
-    agent_runs::mark_not_resumable(&db, "r", "owner", NotResumableReason::RouteUnsupported)
-        .expect("mark");
+    agent_runs::mark_not_resumable(
+        &db,
+        "r",
+        "owner",
+        "interrupted",
+        NotResumableReason::RouteUnsupported,
+    )
+    .expect("mark");
     for (old_owner, expected_version, gate, marker) in [
         ("owner", 1, ResumeGate::Allowed, "AGENT_RUN_NOT_RESUMABLE"),
         (
             "owner",
             1,
-            ResumeGate::Blocked("blocked"),
+            ResumeGate::Blocked(ResumeBlockReason::AiPolicy),
             "AGENT_RUN_NOT_RESUMABLE",
         ),
         ("other", 1, ResumeGate::Allowed, "AGENT_RUN_OWNER_MISMATCH"),
@@ -482,6 +574,7 @@ fn owner_mutations_reject_foreign_owner() {
         &db,
         "r",
         "other",
+        "running",
         NotResumableReason::RouteUnsupported,
     ));
     rejects(agent_runs::touch_activity(&db, "r", "other"));
@@ -493,18 +586,19 @@ fn owner_mutations_reject_foreign_owner() {
         &json!({}),
         "digest",
     ));
-    rejects(agent_runs::append_tool_call(
+    rejects(agent_runs::append_tool_calls(
         &db,
         "r",
         "other",
-        ledger_entry("tool"),
+        vec![ledger_entry("tool")],
     ));
-    agent_runs::append_tool_call(&db, "r", "owner", ledger_entry("tool")).expect("append");
+    record_tools(&db, "r", "owner", &["tool", "question"]);
     rejects(agent_runs::update_tool_call(
         &db,
         ToolCallUpdate {
             run_id: "r",
             owner: "other",
+            execution_id: EXECUTION_ID,
             tool_call_id: "tool",
             main_owned_provenance_id: None,
             capability_state: Some(CapabilityState::Issued),
@@ -517,6 +611,7 @@ fn owner_mutations_reject_foreign_owner() {
         run_id: "r",
         owner: "other",
         expected_version: 0,
+        execution_id: EXECUTION_ID,
         tool_call_id: "question",
         args_digest: "digest",
         request: "Question?",
@@ -588,6 +683,8 @@ fn owner_mutations_reject_foreign_owner() {
             user_message_complete: true,
             assistant_message_complete: true,
         },
+        InterruptReason::RendererLost,
+        None,
     ));
     assert_eq!(
         run_state(&db, "r"),
@@ -612,7 +709,10 @@ fn owner_mutations_reject_foreign_owner() {
         1,
         &start("new", "abandoned", "other"),
     ));
-    for gate in [ResumeGate::Allowed, ResumeGate::Blocked("blocked")] {
+    for gate in [
+        ResumeGate::Allowed,
+        ResumeGate::Blocked(ResumeBlockReason::AiPolicy),
+    ] {
         rejects(agent_runs::claim_run(
             &db,
             ClaimRequest {
@@ -633,6 +733,88 @@ fn owner_mutations_reject_foreign_owner() {
 }
 
 #[test]
+fn blocked_resume_records_only_canonical_reason_and_time() {
+    let db = current_schema_memory().expect("schema");
+    seed(&db, &["s"]);
+    agent_runs::start_run(&db, &start("r", "s", "owner")).expect("start");
+    record_tools(&db, "r", "owner", &["tool"]);
+    agent_runs::open_user_question(
+        &db,
+        &OpenQuestion {
+            interaction_id: "q",
+            run_id: "r",
+            owner: "owner",
+            expected_version: 0,
+            execution_id: EXECUTION_ID,
+            tool_call_id: "tool",
+            args_digest: "digest",
+            request: "Question?",
+        },
+    )
+    .expect("open");
+    agent_runs::interrupt_run(
+        &db,
+        "r",
+        "owner",
+        ActiveStatus::WaitingUser,
+        1,
+        InterruptReason::QuestionTimeout,
+    )
+    .expect("interrupt");
+    let mut before = agent_runs::get_run_status(&db, "r").unwrap().unwrap();
+    let interaction_before = interaction_state(&db, "q");
+    let answer = ClaimAnswer {
+        interaction_id: "q",
+        expected_version: 0,
+        resolution: "answer",
+    };
+    for (reason, sql) in [
+        (ResumeBlockReason::LicenseRestricted, "license_restricted"),
+        (ResumeBlockReason::AiPolicy, "ai_policy"),
+        (ResumeBlockReason::ProfileEgress, "profile_egress"),
+        (ResumeBlockReason::RouteUnavailable, "route_unavailable"),
+        (
+            ResumeBlockReason::ProviderUnavailable,
+            "provider_unavailable",
+        ),
+        (ResumeBlockReason::ModelUnavailable, "model_unavailable"),
+        (ResumeBlockReason::EndpointChanged, "endpoint_changed"),
+    ] {
+        assert_eq!(
+            agent_runs::claim_run(
+                &db,
+                ClaimRequest {
+                    run_id: "r",
+                    old_owner: "owner",
+                    new_owner: "new",
+                    expected_version: 2,
+                    request_id: "claim",
+                    gate: ResumeGate::Blocked(reason),
+                    answer: Some(&answer),
+                }
+            )
+            .expect("blocked claim"),
+            None
+        );
+        before.resume_block_detail = Some(sql.into());
+        assert_eq!(
+            agent_runs::get_run_status(&db, "r").unwrap().unwrap(),
+            before
+        );
+        assert_eq!(interaction_state(&db, "q"), interaction_before);
+    }
+    assert!(db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT resume_blocked_at IS NOT NULL FROM agent_runs WHERE run_id='r'",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?)
+        })
+        .expect("read blocked time"));
+}
+
+#[test]
 fn schema_checks_and_partial_uniques() {
     let db = current_schema_memory().expect("schema");
     seed(&db, &["s"]);
@@ -650,6 +832,7 @@ fn schema_checks_and_partial_uniques() {
             resumable=0,not_resumable_reason='future_reason' WHERE run_id='r'", [])?;
         Ok(())
     }).expect("schema checks");
+    record_tools(&db, "r", "owner", &["tool"]);
     agent_runs::open_user_question(
         &db,
         &OpenQuestion {
@@ -657,6 +840,7 @@ fn schema_checks_and_partial_uniques() {
             run_id: "r",
             owner: "owner",
             expected_version: 0,
+            execution_id: EXECUTION_ID,
             tool_call_id: "tool",
             args_digest: "digest",
             request: "Question?",
@@ -778,6 +962,7 @@ fn target_basis_schema_accepts_only_null_or_json_arrays() {
     let db = current_schema_memory().expect("schema");
     seed(&db, &["s"]);
     agent_runs::start_run(&db, &start("r", "s", "owner")).expect("start");
+    record_tools(&db, "r", "owner", &["tool"]);
     agent_runs::open_approval(&db, &approval("a", "r", "owner", 0)).expect("open");
     db.with_conn(|conn| {
         let set_basis = |basis: Option<&str>| {
@@ -803,6 +988,7 @@ fn open_approval_validates_target_basis_entry_and_count_limits() {
     let db = current_schema_memory().expect("schema");
     seed(&db, &["s"]);
     let initial = agent_runs::start_run(&db, &start("r", "s", "owner")).expect("start");
+    record_tools(&db, "r", "owner", &["tool"]);
     let open = |basis: &[AnalysisReadBasisEntryV1]| {
         agent_runs::open_approval(
             &db,
@@ -866,6 +1052,7 @@ fn open_approval_counts_encoded_target_basis_bytes() {
     let db = current_schema_memory().expect("schema");
     seed(&db, &["s"]);
     agent_runs::start_run(&db, &start("r", "s", "owner")).expect("start");
+    record_tools(&db, "r", "owner", &["tool"]);
     let open = |basis: &[AnalysisReadBasisEntryV1]| {
         agent_runs::open_approval(
             &db,
@@ -910,6 +1097,7 @@ fn pending_approval_rejects_invalid_target_basis_json() {
     let db = current_schema_memory().expect("schema");
     seed(&db, &["s"]);
     agent_runs::start_run(&db, &start("r", "s", "owner")).expect("start");
+    record_tools(&db, "r", "owner", &["tool"]);
     agent_runs::open_approval(&db, &approval("a", "r", "owner", 0)).expect("open");
     for invalid in [
         r#"[]"#,
@@ -953,6 +1141,10 @@ fn pending_approval_round_trips_target_basis_before_claim() {
     for id in ["existing", "new", "question"] {
         agent_runs::start_run(&db, &start(id, id, "old")).expect("start");
     }
+    for id in ["existing", "new"] {
+        record_tools(&db, id, "old", &["tool"]);
+    }
+    record_tools(&db, "question", "old", &["ask"]);
     agent_runs::open_user_question(
         &db,
         &OpenQuestion {
@@ -960,6 +1152,7 @@ fn pending_approval_round_trips_target_basis_before_claim() {
             run_id: "question",
             owner: "old",
             expected_version: 0,
+            execution_id: EXECUTION_ID,
             tool_call_id: "ask",
             args_digest: "digest",
             request: "Question?",
@@ -1022,6 +1215,7 @@ fn pending_approval_round_trips_target_basis_before_claim() {
         Some(PendingApproval {
             interaction_id: "existing-approval".into(),
             version: 0,
+            execution_id: EXECUTION_ID.into(),
             tool_call_id: "tool".into(),
             tool_name: "write_scene".into(),
             args_digest: "digest".into(),
@@ -1140,10 +1334,63 @@ fn state_occ_and_terminal_are_single_winner() {
 }
 
 #[test]
+fn finish_without_messages_checks_owner_version_and_outcome() {
+    let db = current_schema_memory().expect("schema");
+    seed(&db, &["r"]);
+    agent_runs::start_run(&db, &start("r", "r", "owner")).expect("start");
+    let finish = |owner, version, target| {
+        agent_runs::finish_run_without_messages(&db, "r", owner, version, target)
+    };
+    for (owner, version, target, marker) in [
+        (
+            "other",
+            0,
+            TerminalOutcome::UserStop,
+            "AGENT_RUN_OWNER_MISMATCH",
+        ),
+        (
+            "owner",
+            1,
+            TerminalOutcome::UserStop,
+            "AGENT_RUN_VERSION_OR_STATUS_MISMATCH",
+        ),
+        (
+            "owner",
+            0,
+            TerminalOutcome::DiscardedByAuthor,
+            "AGENT_RUN_INVALID_TERMINAL_TARGET",
+        ),
+        (
+            "owner",
+            0,
+            TerminalOutcome::SupersededByNewTurn,
+            "AGENT_RUN_INVALID_TERMINAL_TARGET",
+        ),
+    ] {
+        assert_eq!(
+            finish(owner, version, target).unwrap_err().to_string(),
+            marker
+        );
+    }
+    let finished = finish("owner", 0, TerminalOutcome::UserStop).expect("stop");
+    assert_eq!(
+        (finished.status.as_str(), finished.version),
+        ("cancelled", 1)
+    );
+    assert_eq!(
+        finish("owner", 0, TerminalOutcome::UserStop)
+            .unwrap_err()
+            .to_string(),
+        "AGENT_RUN_TERMINAL"
+    );
+}
+
+#[test]
 fn claim_replay_and_two_claims() {
     let db = current_schema_memory().expect("schema");
     seed(&db, &["s"]);
     agent_runs::start_run(&db, &start("r", "s", "old")).expect("start");
+    record_tools(&db, "r", "old", &["tool"]);
     agent_runs::open_user_question(
         &db,
         &OpenQuestion {
@@ -1151,6 +1398,7 @@ fn claim_replay_and_two_claims() {
             run_id: "r",
             owner: "old",
             expected_version: 0,
+            execution_id: EXECUTION_ID,
             tool_call_id: "tool",
             args_digest: "digest",
             request: "Question?",
@@ -1254,6 +1502,7 @@ fn live_answer_occ_rejects_stale_and_duplicate_resolution() {
     let db = current_schema_memory().expect("schema");
     seed(&db, &["s"]);
     agent_runs::start_run(&db, &start("r", "s", "owner")).expect("start");
+    record_tools(&db, "r", "owner", &["tool"]);
     agent_runs::open_user_question(
         &db,
         &OpenQuestion {
@@ -1261,6 +1510,7 @@ fn live_answer_occ_rejects_stale_and_duplicate_resolution() {
             run_id: "r",
             owner: "owner",
             expected_version: 0,
+            execution_id: EXECUTION_ID,
             tool_call_id: "tool",
             args_digest: "digest",
             request: "Question?",
@@ -1287,6 +1537,7 @@ fn superseding_start_discards_only_when_new_run_commits() {
     let db = current_schema_memory().expect("schema");
     seed(&db, &["s", "other"]);
     agent_runs::start_run(&db, &start("old", "s", "owner")).expect("start");
+    record_tools(&db, "old", "owner", &["tool"]);
     agent_runs::open_user_question(
         &db,
         &OpenQuestion {
@@ -1294,6 +1545,7 @@ fn superseding_start_discards_only_when_new_run_commits() {
             run_id: "old",
             owner: "owner",
             expected_version: 0,
+            execution_id: EXECUTION_ID,
             tool_call_id: "tool",
             args_digest: "digest",
             request: "Question?",
@@ -1372,7 +1624,7 @@ fn ledger_and_checkpoint_do_not_change_state_version() {
     let db = current_schema_memory().expect("schema");
     seed(&db, &["s"]);
     agent_runs::start_run(&db, &start("r", "s", "owner")).expect("start");
-    agent_runs::append_tool_call(&db, "r", "owner", ledger_entry("tool")).expect("ledger");
+    agent_runs::append_tool_calls(&db, "r", "owner", vec![ledger_entry("tool")]).expect("ledger");
     agent_runs::write_checkpoint(&db, "r", "owner", 1, &json!({"messages":[]}), "digest")
         .expect("checkpoint");
     assert_eq!(
@@ -1388,12 +1640,12 @@ fn ledger_and_checkpoint_do_not_change_state_version() {
         "AGENT_RUN_OWNER_MISMATCH"
     );
     assert_eq!(
-        agent_runs::append_tool_call(&db, "r", "owner", ledger_entry("tool"))
+        agent_runs::append_tool_calls(&db, "r", "owner", vec![ledger_entry("tool")])
             .unwrap_err()
             .to_string(),
         "AGENT_RUN_DUPLICATE_TOOL_CALL_ID"
     );
-    agent_runs::append_tool_call(&db, "r", "owner", ledger_entry("other"))
+    agent_runs::append_tool_calls(&db, "r", "owner", vec![ledger_entry("other")])
         .expect("second ledger entry");
     db.with_conn(|conn| {
         let (version, step): (i64, i64) = conn.query_row(
@@ -1407,12 +1659,338 @@ fn ledger_and_checkpoint_do_not_change_state_version() {
     .expect("version unchanged");
 }
 
+fn ledger_and_audit_ids(db: &Database, run_id: &str) -> (Vec<LedgerEntry>, Vec<String>) {
+    db.with_conn(|conn| {
+        let (ledger, ids): (String, String) = conn.query_row(
+            "SELECT tool_call_ledger,audit_execution_ids FROM agent_runs WHERE run_id=?1",
+            [run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok((serde_json::from_str(&ledger)?, serde_json::from_str(&ids)?))
+    })
+    .expect("read ledger and audit IDs")
+}
+
+#[test]
+fn tool_call_batches_are_atomic_and_keyed_by_execution_and_call() {
+    let db = current_schema_memory().expect("schema");
+    seed(&db, &["s"]);
+    agent_runs::start_run(&db, &start("r", "s", "owner")).expect("start");
+    let append = |entries| agent_runs::append_tool_calls(&db, "r", "owner", entries);
+    let entry = |execution: &str, id| LedgerEntry {
+        execution_id: execution.into(),
+        ..ledger_entry(id)
+    };
+    append(vec![ledger_entry("hermes-0"), ledger_entry("hermes-1")]).expect("first response");
+    append(vec![entry("next", "hermes-0")]).expect("reuse provider ID");
+    for (entries, marker) in [
+        (vec![], "AGENT_RUN_EMPTY_TOOL_CALL_BATCH"),
+        (
+            vec![entry("rejected", "ok"), entry("", "bad")],
+            "AGENT_RUN_EXECUTION_ID_INVALID",
+        ),
+        (
+            vec![entry("rejected", "ok"), entry("rejected", "")],
+            "AGENT_RUN_TOOL_CALL_ID_INVALID",
+        ),
+        (
+            vec![entry("rejected", "ok"), entry("mixed", "bad")],
+            "AGENT_RUN_TOOL_CALL_BATCH_EXECUTION_MISMATCH",
+        ),
+        (
+            vec![entry("rejected", "dup"), entry("rejected", "dup")],
+            "AGENT_RUN_DUPLICATE_TOOL_CALL_ID",
+        ),
+        (
+            vec![entry("next", "ok"), entry("next", "hermes-0")],
+            "AGENT_RUN_DUPLICATE_TOOL_CALL_ID",
+        ),
+    ] {
+        assert_eq!(append(entries).unwrap_err().to_string(), marker);
+    }
+    let update = |execution_id, tool_call_id| {
+        agent_runs::update_tool_call(
+            &db,
+            ToolCallUpdate {
+                run_id: "r",
+                owner: "owner",
+                execution_id,
+                tool_call_id,
+                main_owned_provenance_id: None,
+                capability_state: None,
+                execution_state: Some(ExecutionState::Committed),
+            },
+        )
+    };
+    for (execution, id, marker) in [
+        ("", "hermes-0", "AGENT_RUN_EXECUTION_ID_INVALID"),
+        ("next", "", "AGENT_RUN_TOOL_CALL_ID_INVALID"),
+        ("next", "hermes-1", "AGENT_RUN_UNKNOWN_TOOL_CALL_ID"),
+    ] {
+        assert_eq!(update(execution, id).unwrap_err().to_string(), marker);
+    }
+    agent_runs::interrupt_run(
+        &db,
+        "r",
+        "owner",
+        ActiveStatus::Running,
+        0,
+        InterruptReason::AppShutdown,
+    )
+    .expect("interrupt");
+    assert_eq!(
+        append(vec![entry("rejected", "late")])
+            .unwrap_err()
+            .to_string(),
+        "AGENT_RUN_VERSION_OR_STATUS_MISMATCH"
+    );
+    update("next", "hermes-0").expect("update interrupted run");
+    agent_runs::write_checkpoint(&db, "r", "owner", 1, &json!({}), "digest")
+        .expect("checkpoint interrupted run");
+
+    let (ledger, ids) = ledger_and_audit_ids(&db, "r");
+    assert_eq!(ids, [EXECUTION_ID, "next"]);
+    let keys: Vec<_> = ledger
+        .iter()
+        .map(|entry| (entry.execution_id.as_str(), entry.tool_call_id.as_str()))
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            (EXECUTION_ID, "hermes-0"),
+            (EXECUTION_ID, "hermes-1"),
+            ("next", "hermes-0")
+        ]
+    );
+    assert!(matches!(ledger[0].execution_state, ExecutionState::Pending));
+    assert!(matches!(ledger[1].execution_state, ExecutionState::Pending));
+    assert!(matches!(
+        ledger[2].execution_state,
+        ExecutionState::Committed
+    ));
+}
+
+#[test]
+fn pending_interactions_bind_to_latest_matching_tool_call() {
+    let db = current_schema_memory().expect("schema");
+    seed(&db, &["question", "approval"]);
+    for (id, waiting) in [
+        ("question", "waiting_user"),
+        ("approval", "waiting_approval"),
+    ] {
+        agent_runs::start_run(&db, &start(id, id, "owner")).expect("start");
+        let append = |execution: &str, ids: &[&str]| {
+            let entries = ids
+                .iter()
+                .map(|tool| LedgerEntry {
+                    execution_id: execution.into(),
+                    ..ledger_entry(tool)
+                })
+                .collect();
+            agent_runs::append_tool_calls(&db, id, "owner", entries)
+        };
+        let open = |execution_id, args_digest, tool_name| {
+            if id == "question" {
+                agent_runs::open_user_question(
+                    &db,
+                    &OpenQuestion {
+                        interaction_id: id,
+                        run_id: id,
+                        owner: "owner",
+                        expected_version: 0,
+                        execution_id,
+                        tool_call_id: "tool",
+                        args_digest,
+                        request: "Question?",
+                    },
+                )
+            } else {
+                agent_runs::open_approval(
+                    &db,
+                    &OpenApproval {
+                        execution_id,
+                        args_digest,
+                        tool_name,
+                        ..approval(id, id, "owner", 0)
+                    },
+                )
+            }
+        };
+        assert_eq!(
+            open("first", "digest", "write_scene")
+                .unwrap_err()
+                .to_string(),
+            "AGENT_RUN_UNKNOWN_TOOL_CALL_ID"
+        );
+        append("first", &["tool"]).expect("first response");
+        append("latest", &["tool", "other"]).expect("latest matching response");
+        assert_eq!(
+            open("first", "digest", "write_scene")
+                .unwrap_err()
+                .to_string(),
+            "AGENT_RUN_TOOL_CALL_EXECUTION_MISMATCH"
+        );
+        assert_eq!(
+            open("latest", "changed-digest", "write_scene")
+                .unwrap_err()
+                .to_string(),
+            "AGENT_RUN_TOOL_CALL_MISMATCH"
+        );
+        if id == "approval" {
+            assert_eq!(
+                open("latest", "digest", "other-tool")
+                    .unwrap_err()
+                    .to_string(),
+                "AGENT_RUN_TOOL_CALL_MISMATCH"
+            );
+        }
+        assert_eq!(run_state(&db, id), ("running".into(), 0, "owner".into()));
+        let opened = open("latest", "digest", "write_scene").expect("open latest match");
+        assert_eq!((opened.status.as_str(), opened.version), (waiting, 1));
+        agent_runs::write_checkpoint(&db, id, "owner", 1, &json!({"text":"body"}), "digest")
+            .expect("checkpoint");
+        assert_eq!(
+            agent_runs::finish_run_without_messages(&db, id, "owner", 1, TerminalOutcome::UserStop)
+                .unwrap_err()
+                .to_string(),
+            "AGENT_RUN_VERSION_OR_STATUS_MISMATCH"
+        );
+        assert_eq!(run_state(&db, id), (waiting.into(), 1, "owner".into()));
+        db.with_conn(|conn| {
+            let payload: (String, String, String, i64) = conn.query_row(
+                "SELECT r.checkpoint,i.request,i.status,i.version FROM agent_runs r
+                  JOIN agent_run_interactions i ON i.run_id=r.run_id WHERE r.run_id=?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            let request = if id == "question" {
+                "Question?"
+            } else {
+                "Approve?"
+            };
+            assert_eq!(
+                payload,
+                (
+                    json!({"text":"body"}).to_string(),
+                    request.into(),
+                    "pending".into(),
+                    0
+                )
+            );
+            Ok(())
+        })
+        .expect("preserve waiting interaction and checkpoint");
+        assert_eq!(
+            append("blocked", &["independent", "tool"])
+                .unwrap_err()
+                .to_string(),
+            "AGENT_RUN_PENDING_INTERACTION_EXISTS"
+        );
+        append("allowed", &["independent"]).expect("other ID while waiting");
+        let (ledger, ids) = ledger_and_audit_ids(&db, id);
+        assert_eq!(ledger.len(), 4);
+        assert_eq!(ids, ["first", "latest", "allowed"]);
+        if id == "approval" {
+            assert_eq!(
+                agent_runs::get_pending_approval(&db, id)
+                    .unwrap()
+                    .unwrap()
+                    .execution_id,
+                "latest"
+            );
+            agent_runs::decide_approval(&db, id, "owner", 1, id, 0, ApprovalDecision::Approved)
+                .expect("resolve approval");
+        } else {
+            agent_runs::answer_live(&db, id, "owner", 1, id, 0, "answer")
+                .expect("resolve question");
+        }
+        append("after", &["tool"]).expect("reuse ID after resolution");
+    }
+}
+
+#[test]
+fn audit_execution_ids_are_unique_bounded_and_nonterminal() {
+    let db = current_schema_memory().expect("schema");
+    seed(&db, &["s"]);
+    agent_runs::start_run(&db, &start("r", "s", "owner")).expect("start");
+    let add = |id| agent_runs::add_audit_execution_id(&db, "r", "owner", id);
+    assert_eq!(
+        add("").unwrap_err().to_string(),
+        "AGENT_RUN_EXECUTION_ID_INVALID"
+    );
+    assert_eq!(
+        agent_runs::add_audit_execution_id(&db, "r", "other", "id")
+            .unwrap_err()
+            .to_string(),
+        "AGENT_RUN_OWNER_MISMATCH"
+    );
+    let ids: Vec<_> = (0..512).map(|i| format!("audit-{i}")).collect();
+    for id in &ids {
+        agent_runs::add_audit_execution_id(&db, "r", "owner", id).expect("add audit ID");
+    }
+    add("audit-0").expect("duplicate succeeds at capacity");
+    assert_eq!(
+        add("overflow").unwrap_err().to_string(),
+        "AGENT_RUN_AUDIT_EXECUTION_IDS_LIMIT"
+    );
+    assert_eq!(
+        agent_runs::append_tool_calls(&db, "r", "owner", vec![ledger_entry("tool")])
+            .unwrap_err()
+            .to_string(),
+        "AGENT_RUN_AUDIT_EXECUTION_IDS_LIMIT"
+    );
+    let (ledger, stored_ids) = ledger_and_audit_ids(&db, "r");
+    assert!(ledger.is_empty());
+    assert_eq!(stored_ids, ids);
+    agent_runs::append_tool_calls(
+        &db,
+        "r",
+        "owner",
+        vec![LedgerEntry {
+            execution_id: "audit-0".into(),
+            ..ledger_entry("tool")
+        }],
+    )
+    .expect("append with an audit ID already present at capacity");
+    assert_eq!(ledger_and_audit_ids(&db, "r").1, ids);
+    assert_eq!(run_state(&db, "r").1, 0);
+    agent_runs::begin_finalizing(
+        &db,
+        "r",
+        "owner",
+        ActiveStatus::Running,
+        0,
+        TerminalOutcome::Completed,
+        "assistant",
+    )
+    .expect("begin finalizing");
+    add("audit-0").expect("existing ID on a finalizing run");
+    assert_eq!(
+        agent_runs::append_tool_calls(&db, "r", "owner", vec![ledger_entry("late")])
+            .unwrap_err()
+            .to_string(),
+        "AGENT_RUN_VERSION_OR_STATUS_MISMATCH"
+    );
+    agent_runs::finish_finalizing(&db, "r", "owner", 1).expect("finish");
+    assert_eq!(
+        add("audit-0").unwrap_err().to_string(),
+        "AGENT_RUN_TERMINAL"
+    );
+    assert_eq!(
+        agent_runs::append_tool_calls(&db, "r", "owner", vec![ledger_entry("late")])
+            .unwrap_err()
+            .to_string(),
+        "AGENT_RUN_TERMINAL"
+    );
+}
+
 #[test]
 fn approval_open_close_and_kind_guards() {
     let db = current_schema_memory().expect("schema");
     seed(&db, &["a", "b", "c", "d", "q"]);
     for (id, session) in [("a", "a"), ("b", "b"), ("c", "c"), ("d", "d")] {
         agent_runs::start_run(&db, &start(id, session, "owner")).expect("start");
+        record_tools(&db, id, "owner", &["tool"]);
         agent_runs::open_approval(&db, &approval(id, id, "owner", 0)).expect("open");
         assert_eq!(
             run_state(&db, id),
@@ -1436,6 +2014,7 @@ fn approval_open_close_and_kind_guards() {
             run_id: "a",
             owner: "owner",
             expected_version: 0,
+            execution_id: EXECUTION_ID,
             tool_call_id: "tool",
             args_digest: "digest",
             request: "Question?",
@@ -1479,6 +2058,7 @@ fn approval_open_close_and_kind_guards() {
         );
     }
     agent_runs::start_run(&db, &start("q", "q", "owner")).expect("question run");
+    record_tools(&db, "q", "owner", &["tool"]);
     agent_runs::open_user_question(
         &db,
         &OpenQuestion {
@@ -1486,6 +2066,7 @@ fn approval_open_close_and_kind_guards() {
             run_id: "q",
             owner: "owner",
             expected_version: 0,
+            execution_id: EXECUTION_ID,
             tool_call_id: "tool",
             args_digest: "digest",
             request: "Question?",
@@ -1527,6 +2108,7 @@ fn approval_interrupt_claim_and_terminal_lifecycle() {
         ("b", InterruptReason::AppShutdown),
     ] {
         agent_runs::start_run(&db, &start(id, id, "old")).expect("start");
+        record_tools(&db, id, "old", &["tool"]);
         agent_runs::open_approval(&db, &approval(id, id, "old", 0)).expect("open");
         agent_runs::interrupt_run(&db, id, "old", ActiveStatus::WaitingApproval, 1, reason)
             .expect("interrupt");
@@ -1602,6 +2184,7 @@ fn approval_interrupt_claim_and_terminal_lifecycle() {
     agent_runs::invalidate_approval(&db, "b", "new", 3, "b", 0, ApprovalInvalidation::Expired)
         .expect("invalidate after claim");
     agent_runs::start_run(&db, &start("q", "q", "old")).expect("question run");
+    record_tools(&db, "q", "old", &["tool"]);
     agent_runs::open_user_question(
         &db,
         &OpenQuestion {
@@ -1609,6 +2192,7 @@ fn approval_interrupt_claim_and_terminal_lifecycle() {
             run_id: "q",
             owner: "old",
             expected_version: 0,
+            execution_id: EXECUTION_ID,
             tool_call_id: "tool",
             args_digest: "digest",
             request: "Question?",
@@ -1663,6 +2247,7 @@ fn approval_interrupt_claim_and_terminal_lifecycle() {
         .expect("answer after claim");
     for id in ["c", "d"] {
         agent_runs::start_run(&db, &start(id, id, "old")).expect("start terminal");
+        record_tools(&db, id, "old", &["tool"]);
         agent_runs::open_approval(&db, &approval(id, id, "old", 0)).expect("open terminal");
         agent_runs::interrupt_run(
             &db,
@@ -1686,9 +2271,10 @@ fn approval_recovery_and_claim_active_conflict_roll_back() {
     let db = current_schema_memory().expect("schema");
     seed(&db, &["a", "b"]);
     agent_runs::start_run(&db, &start("a", "a", "dead")).expect("start a");
+    record_tools(&db, "a", "dead", &["tool"]);
     agent_runs::open_approval(&db, &approval("approval", "a", "dead", 0)).expect("open");
     let recovered =
-        agent_runs::recover_owner(&db, &temp_workspace(), "dead", None, &[]).expect("recover");
+        agent_runs::recover_owner(&db, &temp_workspace(), "dead", 0, &[]).expect("recover");
     assert_eq!(
         recovered,
         [RecoveryResult {
@@ -1781,7 +2367,7 @@ fn tool_call_update_monotonic_and_rejections() {
     agent_runs::start_run(&db, &start("r", "s", "owner")).expect("start");
     let mut entry = ledger_entry("tool");
     entry.main_owned_provenance_id.clear();
-    agent_runs::append_tool_call(&db, "r", "owner", entry).expect("append");
+    agent_runs::append_tool_calls(&db, "r", "owner", vec![entry]).expect("append");
     agent_runs::write_checkpoint(&db, "r", "owner", 7, &json!({}), "digest").expect("checkpoint");
     let update_for_owner = |owner, id, provenance, capability, execution| {
         agent_runs::update_tool_call(
@@ -1789,6 +2375,7 @@ fn tool_call_update_monotonic_and_rejections() {
             ToolCallUpdate {
                 run_id: "r",
                 owner,
+                execution_id: EXECUTION_ID,
                 tool_call_id: id,
                 main_owned_provenance_id: provenance,
                 capability_state: capability,
@@ -1891,6 +2478,7 @@ fn assert_delete_cascades_run_and_interaction(delete: &str) {
     let db = current_schema_memory().expect("schema");
     seed(&db, &["s"]);
     agent_runs::start_run(&db, &start("r", "s", "owner")).expect("start");
+    record_tools(&db, "r", "owner", &["tool"]);
     agent_runs::open_user_question(
         &db,
         &OpenQuestion {
@@ -1898,6 +2486,7 @@ fn assert_delete_cascades_run_and_interaction(delete: &str) {
             run_id: "r",
             owner: "owner",
             expected_version: 0,
+            execution_id: EXECUTION_ID,
             tool_call_id: "tool",
             args_digest: "digest",
             request: "Question?",
@@ -1965,9 +2554,29 @@ fn typed_reads_project_run_metadata_and_filter_owner_and_finalizing_lists() {
         &db,
         "interrupted",
         "other",
+        "interrupted",
         NotResumableReason::RouteUnsupported,
     )
     .expect("mark");
+
+    for (run_id, owner) in runs {
+        let owned =
+            agent_runs::list_unfinished_runs_for_owner(&db, owner).expect("read owner runs");
+        if run_id == "done" {
+            assert!(owned.is_empty());
+        } else {
+            assert_eq!(owned.len(), 1);
+            assert_eq!(owned[0].run_id, run_id);
+            assert_eq!(
+                owned[0].status,
+                if run_id == "finishing" {
+                    "finalizing"
+                } else {
+                    run_id
+                }
+            );
+        }
+    }
 
     assert_eq!(
         agent_runs::list_owners_with_active_runs(&db).expect("list owners"),
@@ -2038,6 +2647,108 @@ fn typed_reads_project_run_metadata_and_filter_owner_and_finalizing_lists() {
 }
 
 #[test]
+fn run_start_and_superseding_start_persist_assistant_message_id() {
+    let db = current_schema_memory().expect("schema");
+    seed(&db, &["s"]);
+    let mut old = start("old", "s", "owner");
+    old.origin_assistant_message_id = Some("");
+    assert_eq!(
+        agent_runs::start_run(&db, &old).unwrap_err().to_string(),
+        "AGENT_RUN_ASSISTANT_MESSAGE_ID_INVALID"
+    );
+    assert!(agent_runs::list_unfinished_runs_for_owner(&db, "owner")
+        .unwrap()
+        .is_empty());
+    old.origin_assistant_message_id = Some("reserved-old");
+    agent_runs::start_run(&db, &old).expect("start");
+    agent_runs::interrupt_run(
+        &db,
+        "old",
+        "owner",
+        ActiveStatus::Running,
+        0,
+        InterruptReason::AppShutdown,
+    )
+    .expect("interrupt");
+    let mut new_run = start("new", "s", "new-owner");
+    new_run.origin_assistant_message_id = Some("");
+    assert_eq!(
+        agent_runs::start_superseding_run(&db, "old", "owner", 1, &new_run)
+            .unwrap_err()
+            .to_string(),
+        "AGENT_RUN_ASSISTANT_MESSAGE_ID_INVALID"
+    );
+    let expected = UnfinishedRun {
+        run_id: "old".into(),
+        project_id: "p".into(),
+        chat_session_id: "s".into(),
+        turn_id: "turn".into(),
+        status: "interrupted".into(),
+        version: 1,
+        interrupt_reason: Some("app_shutdown".into()),
+        finalizing_target_status: None,
+        origin_user_message_id: "user-message".into(),
+        origin_assistant_message_id: Some("reserved-old".into()),
+        activity_at: "2026-11-28 01:02:03".into(),
+    };
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE agent_runs SET activity_at=?1 WHERE run_id='old'",
+            [&expected.activity_at],
+        )?;
+        Ok(())
+    })
+    .expect("set activity");
+    assert_eq!(
+        agent_runs::list_unfinished_runs_for_owner(&db, "owner").unwrap(),
+        [expected]
+    );
+    new_run.origin_assistant_message_id = Some("reserved-new");
+    agent_runs::start_superseding_run(&db, "old", "owner", 1, &new_run).expect("supersede");
+    assert!(agent_runs::list_unfinished_runs_for_owner(&db, "owner")
+        .unwrap()
+        .is_empty());
+    let owned = || agent_runs::list_unfinished_runs_for_owner(&db, "new-owner").unwrap();
+    assert_eq!(
+        owned()[0].origin_assistant_message_id.as_deref(),
+        Some("reserved-new")
+    );
+    let begin = |id| {
+        agent_runs::begin_finalizing(
+            &db,
+            "new",
+            "new-owner",
+            ActiveStatus::Running,
+            0,
+            TerminalOutcome::Completed,
+            id,
+        )
+    };
+    assert_eq!(
+        begin("final-id").unwrap_err().to_string(),
+        "AGENT_RUN_ASSISTANT_MESSAGE_ID_MISMATCH"
+    );
+    assert_eq!(
+        run_state(&db, "new"),
+        ("running".into(), 0, "new-owner".into())
+    );
+    assert_eq!(
+        owned()[0].origin_assistant_message_id.as_deref(),
+        Some("reserved-new")
+    );
+    begin("reserved-new").expect("begin finalizing");
+    let finalizing = owned().pop().expect("finalizing row");
+    assert_eq!(
+        finalizing.origin_assistant_message_id.as_deref(),
+        Some("reserved-new")
+    );
+    assert_eq!(
+        finalizing.finalizing_target_status.as_deref(),
+        Some("completed")
+    );
+}
+
+#[test]
 fn recovery_respects_owner_and_finalizing_evidence() {
     let db = current_schema_memory().expect("schema");
     let workspace = temp_workspace();
@@ -2096,7 +2807,7 @@ fn recovery_respects_owner_and_finalizing_evidence() {
         &db,
         &workspace,
         "dead",
-        None,
+        0,
         &[
             FinalizingEvidence {
                 run_id: "r3",
@@ -2179,7 +2890,7 @@ fn recovery_respects_owner_and_finalizing_evidence() {
         user_message_complete: true,
         assistant_message_complete: true,
     };
-    let retried = agent_runs::recover_owner(&db, &workspace, "dead", None, &[stale_evidence])
+    let retried = agent_runs::recover_owner(&db, &workspace, "dead", 0, &[stale_evidence])
         .expect("retry with stale evidence");
     assert_eq!(
         retried,
@@ -2203,7 +2914,7 @@ fn recovery_respects_owner_and_finalizing_evidence() {
 }
 
 #[test]
-fn owner_recovery_respects_lock_and_optional_activity_age() {
+fn owner_recovery_respects_lock_and_activity_age() {
     let db = current_schema_memory().expect("schema");
     let workspace = temp_workspace();
     let holder = agent_runs::try_lock_owner(&workspace, "owner").expect("live owner's lock");
@@ -2219,11 +2930,9 @@ fn owner_recovery_respects_lock_and_optional_activity_age() {
         Ok(())
     })
     .expect("age old run");
-    assert!(
-        agent_runs::recover_owner(&db, &workspace, "owner", None, &[])
-            .expect("busy owner lock")
-            .is_empty()
-    );
+    assert!(agent_runs::recover_owner(&db, &workspace, "owner", 0, &[])
+        .expect("busy owner lock")
+        .is_empty());
     assert_eq!(run_state(&db, "old"), ("running".into(), 0, "owner".into()));
     assert_eq!(
         run_state(&db, "recent"),
@@ -2232,7 +2941,7 @@ fn owner_recovery_respects_lock_and_optional_activity_age() {
     drop(holder);
 
     assert_eq!(
-        agent_runs::recover_owner(&db, &workspace, "owner", Some(86_400), &[])
+        agent_runs::recover_owner(&db, &workspace, "owner", 86_400, &[])
             .expect("recover only old run"),
         [RecoveryResult {
             run_id: "old".into(),
@@ -2241,8 +2950,8 @@ fn owner_recovery_respects_lock_and_optional_activity_age() {
         }]
     );
     assert_eq!(
-        agent_runs::recover_owner(&db, &workspace, "owner", None, &[])
-            .expect("recover without age threshold"),
+        agent_runs::recover_owner(&db, &workspace, "owner", 0, &[])
+            .expect("recover with zero age threshold"),
         [RecoveryResult {
             run_id: "recent".into(),
             version: 1,
@@ -2250,6 +2959,89 @@ fn owner_recovery_respects_lock_and_optional_activity_age() {
         }]
     );
     assert!(agent_runs::try_lock_owner(&workspace, "owner").is_ok());
+}
+
+#[test]
+fn finalizing_recovery_observes_activity_age_and_uses_supplied_reason() {
+    let db = current_schema_memory().expect("schema");
+    let workspace = temp_workspace();
+    seed(&db, &["s"]);
+    agent_runs::start_run(&db, &start("r", "s", "owner")).expect("start");
+    let age_run = || {
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE agent_runs SET activity_at=datetime('now','-25 hours') WHERE run_id='r'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("age run");
+    };
+    age_run();
+    agent_runs::begin_finalizing(
+        &db,
+        "r",
+        "owner",
+        ActiveStatus::Running,
+        0,
+        TerminalOutcome::Completed,
+        "assistant",
+    )
+    .expect("begin finalizing");
+    let mut evidence = FinalizingEvidence {
+        run_id: "r",
+        version: 1,
+        user_message_complete: true,
+        assistant_message_complete: true,
+    };
+    let age = 86_400;
+    assert!(agent_runs::recover_owner(
+        &db,
+        &workspace,
+        "owner",
+        age,
+        std::slice::from_ref(&evidence)
+    )
+    .expect("owner recovery skips recent finalizing")
+    .is_empty());
+    assert_eq!(
+        agent_runs::recover_finalizing(
+            &db,
+            "owner",
+            &evidence,
+            InterruptReason::ProfileSwitched,
+            Some(age)
+        )
+        .expect("single recovery skips recent finalizing"),
+        RecoveryResult {
+            run_id: "r".into(),
+            version: 1,
+            outcome: RecoveryOutcome::Skipped {
+                reason: "AGENT_RUN_ACTIVITY_TOO_RECENT"
+            },
+        }
+    );
+    assert_eq!(
+        run_state(&db, "r"),
+        ("finalizing".into(), 1, "owner".into())
+    );
+    age_run();
+    evidence.assistant_message_complete = false;
+    let result = agent_runs::recover_finalizing(
+        &db,
+        "owner",
+        &evidence,
+        InterruptReason::ProfileSwitched,
+        Some(age),
+    )
+    .expect("recover old finalizing");
+    assert_eq!(
+        (result.version, result.outcome),
+        (2, RecoveryOutcome::Interrupted)
+    );
+    let state = agent_runs::get_run_status(&db, "r").unwrap().unwrap();
+    assert_eq!(state.status, "interrupted");
+    assert_eq!(state.interrupt_reason.as_deref(), Some("profile_switched"));
 }
 
 #[test]
@@ -2304,15 +3096,28 @@ fn live_finalizing_recovery_checks_version_and_applies_message_evidence() {
             assistant_message_complete: assistant_complete,
         };
         assert_eq!(
-            agent_runs::recover_finalizing(&db, "owner", &evidence)
-                .unwrap_err()
-                .to_string(),
+            agent_runs::recover_finalizing(
+                &db,
+                "owner",
+                &evidence,
+                InterruptReason::RendererLost,
+                None
+            )
+            .unwrap_err()
+            .to_string(),
             "AGENT_RUN_VERSION_OR_STATUS_MISMATCH"
         );
         assert_eq!(run_state(&db, id), ("finalizing".into(), 1, "owner".into()));
         evidence.version = 1;
         assert_eq!(
-            agent_runs::recover_finalizing(&db, "owner", &evidence).expect("recover finalizing"),
+            agent_runs::recover_finalizing(
+                &db,
+                "owner",
+                &evidence,
+                InterruptReason::RendererLost,
+                None
+            )
+            .expect("recover finalizing"),
             RecoveryResult {
                 run_id: id.into(),
                 version: expected_version,
@@ -2348,7 +3153,7 @@ pub(crate) fn seed_snapshot_contents(path: &Path) -> Database {
         canonical_args: json!({"body": SNAPSHOT_BODY_MARKERS[1]}),
         ..ledger_entry("tool")
     };
-    agent_runs::append_tool_call(&db, "r", "owner", ledger).expect("ledger");
+    agent_runs::append_tool_calls(&db, "r", "owner", vec![ledger]).expect("ledger");
     agent_runs::write_checkpoint(
         &db,
         "r",
@@ -2365,6 +3170,7 @@ pub(crate) fn seed_snapshot_contents(path: &Path) -> Database {
             run_id: "r",
             owner: "owner",
             expected_version: 0,
+            execution_id: EXECUTION_ID,
             tool_call_id: "tool",
             args_digest: "digest",
             request: SNAPSHOT_BODY_MARKERS[2],
