@@ -37,6 +37,33 @@ fn import_events_with(
     ids: &[&str],
     configure_envelope: impl FnOnce(&mut Value),
 ) -> anyhow::Result<()> {
+    import_events_with_tail(db, ids, None, configure_envelope)
+}
+
+/// A database with one seeded scene and, when `existing_tail` is set, one
+/// chronicle event already at that ordinal (the import is planned after it).
+fn database_with_tail(existing_tail: Option<&str>) -> anyhow::Result<Database> {
+    let db = current_schema_full_db();
+    seed_scene(&db, "source");
+    if let Some(ordinal) = existing_tail {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO events (id, project_id, title, ordinal)
+                 VALUES ('existing', ?1, 'existing', ?2)",
+                params![PROJECT, ordinal],
+            )?;
+            Ok(())
+        })?;
+    }
+    Ok(db)
+}
+
+fn import_events_with_tail(
+    db: &Database,
+    ids: &[&str],
+    existing_tail: Option<&str>,
+    configure_envelope: impl FnOnce(&mut Value),
+) -> anyhow::Result<()> {
     enable_manual_apply_for_test(db);
     create_run_with_task(db, "existence-run", "existence-task");
     let mut envelope = scene_body_envelope(db, "existence-run", "existence-task", "source");
@@ -50,7 +77,7 @@ fn import_events_with(
             kind: "chronicle.event.create".into(),
             payload_json: json!({
                 "eventId": format!("event-{id}"), "title": id, "kind": "generic",
-                "placement": {"mode":"append-tail","afterOrdinal":null},
+                "placement": {"mode":"append-tail","afterOrdinal":existing_tail},
                 "precision":"unknown","secret":false,
                 "startGranularity":"none","endGranularity":"none"
             }),
@@ -113,7 +140,7 @@ fn import_events_with(
             operations,
             applications,
             entity_bindings: vec![],
-            expected_tail_ordinal: None,
+            expected_tail_ordinal: existing_tail.map(str::to_owned),
             expected_calendar_version: None,
         },
     )?;
@@ -128,6 +155,46 @@ fn import_events_with(
         },
     )?;
     Ok(())
+}
+
+#[test]
+fn import_appends_2000_events_in_order() -> anyhow::Result<()> {
+    let ids: Vec<_> = (0..2_000).map(|i| format!("p-{i:04}")).collect();
+    let ids: Vec<_> = ids.iter().map(String::as_str).collect();
+    let db = database_with_tail(None)?;
+    import_events_with_tail(&db, &ids, None, |_| {})?;
+    db.with_conn(|conn| {
+        // Zero-padded ids preserve the submitted operation order.
+        let mut stmt =
+            conn.prepare("SELECT ordinal FROM events WHERE project_id = ?1 ORDER BY id")?;
+        let ordinals = stmt
+            .query_map([PROJECT], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        assert_eq!(ordinals.len(), ids.len());
+        assert!(ordinals.windows(2).all(|pair| pair[0] < pair[1]));
+        for ordinal in &ordinals {
+            crate::domain_writes::validate_order_key(ordinal)?;
+        }
+        assert_eq!(ordinals[0], "a0");
+        assert_eq!(ordinals[61..63], ["az", "b00"]);
+        assert_eq!(ordinals[1999], "bVF");
+        Ok(())
+    })
+}
+
+#[test]
+fn import_appends_after_ui_tail_b00() -> anyhow::Result<()> {
+    let db = database_with_tail(Some("b00"))?;
+    import_events_with_tail(&db, &["next"], Some("b00"), |_| {})?;
+    db.with_conn(|conn| {
+        let ordinal: String = conn.query_row(
+            "SELECT ordinal FROM events WHERE project_id = ?1 AND id = 'event-next'",
+            [PROJECT],
+            |row| row.get(0),
+        )?;
+        assert_eq!(ordinal, "b01");
+        Ok(())
+    })
 }
 
 #[test]
