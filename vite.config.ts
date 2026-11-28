@@ -52,9 +52,18 @@ function stripWoffFromFontsource() {
 }
 
 // https://vite.dev/config/
-export default defineConfig(async ({ mode }) => {
+export default defineConfig(async ({ command, mode }) => {
   const webEditorOnly = mode === "web-editor";
   const rendererTarget = webEditorOnly ? "web-editor" : "desktop";
+  // desktop の build だけ temporal-polyfill を標準の Temporal の shim にする。Electron の
+  // Chromium は標準を持つので、使われない polyfill の本体を起動時の JS に入れない。
+  // Web Editor は利用者の browser で動き、凍結中の Tauri shell は同じ dist/ を WebView で
+  // 読むので polyfill のまま（Tauri の CLI は beforeBuildCommand に TAURI_ENV_PLATFORM を
+  // 立てる）。条件は src/lib/nativeTemporalShim.test.ts で固定する。
+  const aliasNativeTemporal =
+    command === "build" &&
+    !webEditorOnly &&
+    !process.env.TAURI_ENV_PLATFORM;
   const webEditorUnavailableDialogs = path.resolve(
     __dirname,
     "./src/features/hosted-editor/WebEditorUnavailableDialogs.tsx",
@@ -88,6 +97,17 @@ export default defineConfig(async ({ mode }) => {
     ],
     resolve: {
       alias: [
+        ...(aliasNativeTemporal
+          ? [
+              {
+                find: /^temporal-polyfill$/,
+                replacement: path.resolve(
+                  __dirname,
+                  "./src/lib/nativeTemporalShim.ts",
+                ),
+              },
+            ]
+          : []),
         ...(webEditorOnly
           ? [
               {
