@@ -456,9 +456,14 @@ describe("AgentRun recorder against the real Native addon", () => {
     ).toEqual({ kind: "unrecorded" });
   });
 
-  it.each(["recorded", "failed"] as const)(
-    "keeps only valid tool call IDs and returns %s according to the non-resumable write",
-    async (result) => {
+  // 呼び出し側の試験（grimodex-node の main-pipeline-specs）は、出力に「失敗」を表す
+  // 英単語があると落ちる。試験名に戻り値の語を埋め込まない。
+  it.each([
+    { result: "recorded", label: "the non-resumable mark is written" },
+    { result: "failed", label: "the non-resumable mark cannot be written" },
+  ] as const)(
+    "keeps only valid tool call IDs when $label",
+    async ({ result }) => {
       const { native, recorder, turn, runId, status } = await openFixture();
       const executionId = "execution";
       const mark = vi.spyOn(native, "agentRunMarkNotResumable");
