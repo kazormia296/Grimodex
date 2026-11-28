@@ -668,6 +668,20 @@ N-API の owner と lock を Fable（read-only、effort high）が読んだ。me
 - **確かめた上限**：`audit_execution_ids` の 512 件は、1 回の返答の provider の要求の最大の見積もり（親の呼出し 25 回と質問 8 回、下位の agent は呼出しごとに 13 回までで約 360）に届かない。届くようになった場合は、監査の追加の失敗で台帳の追記を落とさない形にする。
 - **PR 5 の前**：再起動の後は `executionId` との対応が無いので、`runId` から引く口が要る。
 
+### DR-A3-24 記録の持ち主の module の形（4b、2026-11-29）
+
+- 場所は `electron/main/agentRunRecorder.ts` の `createAgentRunRecorder`。`ipc.ts` を import しない。依存は、Native の `agentRun*`、旗（`isEnabled`）、書込み系の digest の関数、Run の ID の発番、任意の保存の読み手（`readTurnPersistence`）と log。旗が閉じている間は Native を呼ばない。
+- version は module が Run ごとに持ち、状態を変える呼出しを Run ごとの列で直列にする。port の呼出しも同じ列を通り、`transact` の中からは同じ Run に限る。
+- `resolveRun` が `recorded` を返すのは、Run が `running`・`waiting_user`・`waiting_approval` のときだけ。取得済みの `transact` も、実行する時点で対応と状態を確かめ直す。
+- `finalizing` の Run を中断するときは、保存の読み手の結果を証拠にする（DR-A3-11）。両方の行がそろっていれば予定の終端に進める。読み手が無いか失敗したら未完とする。
+- 空の ID の呼出しは台帳から除き、Run を再開不可にする（DR-A3-23 の訂正）。追記に失敗した応答は `marked_not_resumable` か `failed` で、呼び手は capability を出さない。
+- workspace の切替の順は `interruptAll` → `quiesce` → `forgetAll`。`quiesce` の後の新しい操作は拒み、進行中の呼出しを待つ。`interruptAll`・`interruptSender` は、中断できなかった Run の ID を返す。
+- **4c で確かめること**：
+  - 呼び手の認可（置き換えの開始、終端、確認待ちの読みを、どの sender に許すか）。
+  - 記録の呼出しの例外を呼び手が捕まえ、会話の保存と生成を止めないこと。
+  - 中断できなかった Run が残るときの owner の lock の扱い。
+  - 保存の読み手（`readTurnPersistence`）の実装。
+
 ## 4. owner／lifecycle の表（GDX-PRECHECK-001）
 
 | 場面                | 持ち主                                            | 受付を閉じる点                                           | 取り消し                                      | 待ちの上限                          | 終わった証拠                          | 再起動の後                     |
