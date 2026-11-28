@@ -32,8 +32,17 @@ type NativeBackendInstance = Parameters<
     >
   >;
 
+// path は部品から組み立てる。scripts/ci-change-scope.test.mjs は相対の import を
+// すべて解決できることを求め、CI のその段には .node がまだ無い。
+const ADDON = path.join(
+  path.resolve(__dirname, "..", ".."),
+  "electron",
+  "native",
+  "grimodex-node",
+  "grimodex-node.node",
+);
 const require = createRequire(import.meta.url);
-const { Backend } = require("../native/grimodex-node/grimodex-node.node") as {
+const { Backend } = require(ADDON) as {
   Backend: new (appData: string) => NativeBackendInstance;
 };
 
