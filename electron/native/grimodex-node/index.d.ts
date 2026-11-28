@@ -26,6 +26,7 @@ export declare class Backend {
   agentRunRecoverFinalizing(payload: any): Promise<string>
   agentRunListFinalizing(payload: any): Promise<string>
   agentRunGetStatus(payload: any): Promise<string>
+  agentRunGetUnfinishedForSession(payload: any): Promise<string>
   /**
    * `app_data_dir` は Electron main の `app.getPath("userData")` を明示注入
    * (§4.2 / §6.8 — Phase 2 は `GrimodexElectronDev` 名で動かし、Tauri の

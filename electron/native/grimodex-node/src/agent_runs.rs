@@ -9,8 +9,8 @@ use grimodex_db::agent_runs::{
     self as db_runs, ActiveStatus, AnalysisReadBasisEntryV1, ApprovalDecision,
     ApprovalInvalidation, CapabilityState, ClaimAnswer, ClaimRequest, ExecutionState,
     FinalizingEvidence, FinalizingRun, InterruptReason, LedgerEntry, NotResumableReason,
-    OpenApproval, OpenQuestion, RecoveryOutcome, RecoveryResult, ResumeGate, RunStart, RunState,
-    RunStatus, TerminalOutcome, ToolCallUpdate,
+    OpenApproval, OpenQuestion, RecoveryOutcome, RecoveryResult, ResumeGate, RunRoute, RunStart,
+    RunState, RunStatus, TerminalOutcome, ToolCallUpdate,
 };
 use grimodex_db::{state::active_workspace_snapshot, Database};
 use napi::Result;
@@ -24,6 +24,15 @@ pub(super) struct WorkspaceOwner {
     path: PathBuf,
     id: String,
     _lock: File,
+}
+
+impl WorkspaceOwner {
+    fn lock_foreign_owner(&self, id: &str) -> anyhow::Result<Option<File>> {
+        if id == self.id {
+            return Ok(None);
+        }
+        db_runs::try_lock_owner(&self.path, id).map(Some)
+    }
 }
 
 impl Backend {
@@ -61,9 +70,20 @@ impl Backend {
 }
 
 fn row_owner(db: &Database, run_id: &str) -> anyhow::Result<String> {
-    Ok(db_runs::get_run_status(db, run_id)?
-        .context("AGENT_RUN_NOT_FOUND")?
-        .execution_owner)
+    Ok(require_run_status(db, run_id)?.execution_owner)
+}
+
+fn require_run_status(db: &Database, run_id: &str) -> anyhow::Result<RunStatus> {
+    db_runs::get_run_status(db, run_id)?.context("AGENT_RUN_NOT_FOUND")
+}
+
+#[derive(Deserialize)]
+#[serde(remote = "RunRoute", rename_all = "snake_case")]
+enum RunRouteWire {
+    Legacy,
+    Mastra,
+    Cli,
+    CodexApp,
 }
 
 #[derive(Deserialize)]
@@ -73,7 +93,8 @@ struct StartPayload {
     project_id: String,
     chat_session_id: String,
     turn_id: String,
-    route: String,
+    #[serde(with = "RunRouteWire")]
+    route: RunRoute,
     origin_user_message_id: String,
     model_provider_id: String,
     model_id: String,
@@ -87,7 +108,7 @@ impl StartPayload {
             project_id: &self.project_id,
             chat_session_id: &self.chat_session_id,
             turn_id: &self.turn_id,
-            route: &self.route,
+            route: self.route,
             origin_user_message_id: &self.origin_user_message_id,
             model_provider_id: &self.model_provider_id,
             model_id: &self.model_id,
@@ -262,6 +283,12 @@ struct NotResumablePayload {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RunIdPayload {
     run_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChatSessionIdPayload {
+    chat_session_id: String,
 }
 
 #[derive(Deserialize)]
@@ -568,7 +595,9 @@ impl Backend {
     #[napi]
     pub async fn agent_run_finish_finalizing(&self, payload: Value) -> Result<String> {
         self.agent_run_operation(payload, |db, owner, input: RunVersionPayload| {
-            db_runs::finish_finalizing(db, &input.run_id, &owner.id, input.version)
+            let old_owner = row_owner(db, &input.run_id)?;
+            let _lock = owner.lock_foreign_owner(&old_owner)?;
+            db_runs::finish_finalizing(db, &input.run_id, &old_owner, input.version)
                 .map(RunStateWire::from)
         })
         .await
@@ -657,7 +686,13 @@ impl Backend {
     #[napi]
     pub async fn agent_run_mark_not_resumable(&self, payload: Value) -> Result<String> {
         self.agent_run_operation(payload, |db, owner, input: NotResumablePayload| {
-            db_runs::mark_not_resumable(db, &input.run_id, &owner.id, input.reason)
+            let run = require_run_status(db, &input.run_id)?;
+            let execution_owner = if run.status == "interrupted" {
+                &run.execution_owner
+            } else {
+                &owner.id
+            };
+            db_runs::mark_not_resumable(db, &input.run_id, execution_owner, input.reason)
                 .map(RunStateWire::from)
         })
         .await
@@ -792,7 +827,7 @@ impl Backend {
                 .map(EvidencePayload::as_evidence)
                 .collect();
             let mut recovered = Vec::new();
-            for old_owner in db_runs::list_nonterminal_owners(db)? {
+            for old_owner in db_runs::list_owners_with_active_runs(db)? {
                 if old_owner != owner.id {
                     let results = db_runs::recover_owner(
                         db,
@@ -812,18 +847,31 @@ impl Backend {
     #[napi]
     pub async fn agent_run_recover_finalizing(&self, payload: Value) -> Result<String> {
         self.agent_run_operation(payload, |db, owner, input: EvidencePayload| {
-            db_runs::recover_finalizing(db, &owner.id, &input.as_evidence()).map(RecoveryWire::from)
+            let old_owner = row_owner(db, &input.run_id)?;
+            let _lock = owner.lock_foreign_owner(&old_owner)?;
+            db_runs::recover_finalizing(db, &old_owner, &input.as_evidence())
+                .map(RecoveryWire::from)
         })
         .await
     }
 
     #[napi]
     pub async fn agent_run_list_finalizing(&self, payload: Value) -> Result<String> {
-        self.agent_run_operation(payload, |db, _, _: EmptyPayload| {
-            Ok(db_runs::list_finalizing(db)?
-                .into_iter()
-                .map(FinalizingWire::from)
-                .collect::<Vec<_>>())
+        self.agent_run_operation(payload, |db, owner, _: EmptyPayload| {
+            let mut finalizing = Vec::new();
+            for run in db_runs::list_finalizing(db)? {
+                let _lock = match owner.lock_foreign_owner(&run.execution_owner) {
+                    Ok(lock) => lock,
+                    // A live owner finishes its own run; leave it out of this list.
+                    Err(error) if error.to_string() == "AGENT_RUN_OWNER_LOCK_BUSY" => continue,
+                    Err(error) => return Err(error),
+                };
+                // Recovery may have changed the row before this lock was acquired.
+                if let Some(run) = db_runs::get_finalizing(db, &run.run_id, &run.execution_owner)? {
+                    finalizing.push(FinalizingWire::from(run));
+                }
+            }
+            Ok(finalizing)
         })
         .await
     }
@@ -832,6 +880,17 @@ impl Backend {
     pub async fn agent_run_get_status(&self, payload: Value) -> Result<String> {
         self.agent_run_operation(payload, |db, _, input: RunIdPayload| {
             Ok(db_runs::get_run_status(db, &input.run_id)?.map(RunStatusWire::from))
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_run_get_unfinished_for_session(&self, payload: Value) -> Result<String> {
+        self.agent_run_operation(payload, |db, _, input: ChatSessionIdPayload| {
+            Ok(
+                db_runs::get_unfinished_run_for_session(db, &input.chat_session_id)?
+                    .map(RunStatusWire::from),
+            )
         })
         .await
     }
