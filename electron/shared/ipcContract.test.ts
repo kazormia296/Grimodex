@@ -13518,7 +13518,7 @@ describe("DA-2 profile activation contract (DR-DA2-9, DR-DA2-16)", () => {
     expect(end).toBeGreaterThan(start);
     const body = source.slice(start, end);
     const MAIN_ONLY =
-      "profileActivation\\w+|mainOpenPrePublicationGate|mainGrant(?:Preview|Issue|Revoke\\w*)|mainNir1LocalGenerationCancelSender";
+      "profileActivation\\w+|mainOpenPrePublicationGate|mainGrant(?:Preview|Issue|Revoke\\w*)|mainNir1LocalGenerationCancelSender|agentRun[A-Z]\\w*";
     // A call through the backend argument in any form.
     expect(
       [
@@ -13559,6 +13559,36 @@ describe("DA-2 profile activation contract (DR-DA2-9, DR-DA2-16)", () => {
         "profile-egress:state",
       ),
     ).toBe(false);
+  });
+});
+
+describe("main-only AgentRun N-API (DR-A3-19)", () => {
+  it("registers the Native declarations only in the backend type", () => {
+    const declarations = readFileSync(
+      new URL("../native/grimodex-node/index.d.ts", import.meta.url),
+      "utf8",
+    );
+    const contract = readFileSync(
+      new URL("./ipcContract.ts", import.meta.url),
+      "utf8",
+    );
+    const backendType =
+      /export interface NapiBackendLike \{([\s\S]*?)^\}/mu.exec(contract)?.[1];
+    expect(backendType).toBeDefined();
+    const nativeNames = [
+      ...declarations.matchAll(/^\s+(agentRun\w+)\(/gmu),
+    ].map((match) => match[1]);
+    expect(nativeNames.length).toBeGreaterThan(0);
+    const registeredNames = [
+      ...backendType!.matchAll(/^\s+(agentRun\w+)\?\(/gmu),
+    ].map((match) => match[1]);
+    expect(registeredNames.sort()).toEqual(nativeNames.sort());
+
+    expect(
+      [...Object.keys(NAPI_COMMANDS), ...SHELL_COMMAND_NAMES].filter((name) =>
+        /^agent(?:_run_|Run[A-Z])/u.test(name),
+      ),
+    ).toEqual([]);
   });
 });
 
