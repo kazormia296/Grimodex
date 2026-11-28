@@ -705,3 +705,7 @@ Your questions have been answered: "担当を割り当てる前の確認です�
 > Your questions have been answered: "AI の利用方針で「本文の提案」をオフにした作品でも、場面のあらすじの「AI で生成」は AI の結果をそのまま保存し、「あらすじからビートを生成」はビートを追加します（今の製品の動きで、先日確定いただいた安全の範囲の外です）。この 2 つも「本文の提案」がオフなら止めますか？"="止める (推奨)". You can now continue with these answers in mind.
 
 - 読み：この 2 経路を bodyWrite の門に入れる（A4 の脅威モデルの残りのうち、この 2 つを塞ぐ側に変える）。ほかの入口（Map の AI 分岐、取り込み、A/B 比較の採用）はこの回答の範囲外で、調べるかは決めていない。実装は M3、判断記録（`docs/plans/a4-ai-policy-fail-closed-decisions.md`）の追記は Mastra。
+
+## 問 22・23 への注（2026-11-28）
+- 問 22・23 の選択肢の説明の「再起動の後も続けられる」は、経路を限っていなかった。Mastra の経路の Run は、MP-9 と再入の実証が済むまで途中再開できない（A3 の判断記録の DR-A3-8、gate-a-write-safety-decisions.md）。Release B の道具は Mastra の経路だけ（問 31）なので、当面は Release B の作業を続きから再開できない。
+- 指摘は M4（side agent の指摘を原文で確かめた）。担当の割り当て（統合者）：再入の実証と、途中の状態から Mastra の loop に入り直す実装と合格条件の起案は Mastra の lane。Release B の設計の前提の一覧の直しと、公開の前に確認待ち以外の途中再開まで要るかを伺う担当は SessionTasks。A3 の担当の一覧の経路の限定は A3 の担当。
