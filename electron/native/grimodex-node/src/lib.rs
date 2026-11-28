@@ -14,6 +14,8 @@
 //! - エラーは `AppError` の Display 文字列をそのまま reason に載せる (§5.2 の
 //!   文字列ワイヤ契約。convert.rs 参照)。
 
+#[cfg(not(test))]
+mod agent_runs;
 mod body_declaration_entry;
 #[cfg(test)]
 mod body_declaration_entry_tests;

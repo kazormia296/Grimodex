@@ -589,6 +589,22 @@ SessionTasks の材料に対応して、次を受入れの条件に入れる。
   - system prompt に注入した Codex が非公開になった場合を判定に含めるかは、PR 4・5 で決める。
 - 返答を残せない場合（途中の状態の書込みの失敗、予約の空の行、完了の保存の途中）の扱いは PR 4・5 で決め、画面で見える差があれば利用者に返す。
 
+### DR-A3-22 段 B のレビューと、PR 4 の前に決めること（2026-11-28）
+
+N-API の owner と lock を Fable（read-only、effort high）が読んだ。merge を止める指摘は無し。
+
+- **直した**：
+  - finalizing の一覧と状態の読みに `ownedByCaller` を足す（自分の保存中の Run を、main が誤って回収しないため）。
+  - owner の Mutex を DB の操作の間は持たない。workspace を切り替えても、古い owner の操作が残る間は古い lock を握ったままにする。
+  - claim の `gate` の余分な field を拒む。
+- **PR 4 の前に決める**：
+  - workspace の切替・復元・終了で、自分の非終端の Run を中断してから lock を手放す順序（DR-A3-5）を、Native の経路で保証するか、main の責任にするか。今は main の呼び手が先に中断する前提。
+  - 他の owner の `finalizing` を閉じる操作にも、活動の古さの下限を通すか（lock が効かない場合）。
+  - claim・破棄・置き換え・承認・回答に、期待する `chatSessionId`・`projectId` の照合を足すか。同じ起動の中の止め切れていない古い実行の書込み（checkpoint と台帳は version の条件が無い）を弾くか。
+  - 回収を owner ごとの結果にするか。古さの下限の省略が「下限なし」になる形をやめるか。
+  - `resume_block_detail`（今は自由文で、上限が無く、終端でも残る）を、理由の語に限るか、上限と終端の消去を足すか。
+  - payload の型の違いの error 文には値が載るので、画面へそのまま返さない。checkpoint の digest は、保存の前の正規化で bytes が変わるので、照合に使わない。
+
 ## 4. owner／lifecycle の表（GDX-PRECHECK-001）
 
 | 場面                | 持ち主                                            | 受付を閉じる点                                           | 取り消し                                      | 待ちの上限                          | 終わった証拠                          | 再起動の後                     |

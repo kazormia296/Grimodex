@@ -2730,6 +2730,10 @@ pub struct AppState {
     /// Bounded-by-watermark ACK tombstones make recovery ACK retry idempotent
     /// after the first call has already retired its process-local receipt.
     pub(crate) narrative_maintenance_recovery_acks: Mutex<NarrativeMaintenanceRecoveryAckLedger>,
+    /// Main-only AgentRun の owner（DR-A3-19）。workspace の切替・復元・終了の前に、main が
+    /// 自分の実行中の Run を `agentRunInterrupt` で中断する。lock を手放すのはその後（PR 4）。
+    #[cfg(not(test))]
+    pub(crate) agent_run_owner: Mutex<Option<Arc<crate::agent_runs::WorkspaceOwner>>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2848,6 +2852,8 @@ impl AppState {
         nir1_graph.set_graph_index_demand_notifier(graph_index_demand_notifier(events.clone()));
         let main_grant = crate::main_grant::MainGrantState::new(&lifecycle_core);
         Ok(Self {
+            #[cfg(not(test))]
+            agent_run_owner: Default::default(),
             ws: WorkspaceState {
                 inner: Mutex::new(None),
                 safe_mode: grimodex_db::recovery::SafeModeState::default(),
