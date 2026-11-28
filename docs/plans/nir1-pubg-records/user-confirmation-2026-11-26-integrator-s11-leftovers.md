@@ -684,3 +684,24 @@ Your questions have been answered: "担当を割り当てる前の確認です�
 > Your questions have been answered: "先ほど確定いただいた A2（書き換えの承認）の説明に抜けがありました。AI の「本文の提案」は A2 の対象外で、設定の「本文の提案の自動適用」（作品ごと、初期は OFF）を ON にした作品では、AI の利用方針で本文の書き込みが許されていれば、承認なしで本文が書き換わります（今の動きと同じで、ADR 008 が認めている設定です）。この扱いでよいですか？"="今のまま (推奨)". You can now continue with these answers in mind.
 
 - 読み：本文の提案の適用と、`ai.autoAcceptBodyProposals`（作品ごと、初期 off、bodyWrite の方針が on のときだけ）による自動適用は、A2 の対象外のまま（今の動き）。判断記録は枝 claude/a2-design の `docs/plans/gate-a2-approval-decisions.md` の第 6 節。
+
+## 問 39（2026-11-28 20:35、Mastra の担当の AskUserQuestion。A4 の範囲の外の AI 生成 2 経路を塞ぐか。回答 20:37）
+- 背景：M3 の A4 の敵対レビューで、本文の提案が off の有効な作品でも、場面のあらすじの AI 生成（`features/tree/SynopsisArea.tsx`）とあらすじからのビート生成（`features/editor/beat/generateBeatsFromSynopsis.ts`）が AI を呼んで書き込むと分かった（A4 の前からの動き。問 37 の「方針を確かめていない入口を新しく塞ぐことは対象外」に当たる）。
+- tool_use toolu_01Sp7eNn9qjAmUgVMLPwR82y。
+
+問いの原文（AI生成の門）：
+
+> AI の利用方針で「本文の提案」をオフにした作品でも、場面のあらすじの「AI で生成」は AI の結果をそのまま保存し、「あらすじからビートを生成」はビートを追加します（今の製品の動きで、先日確定いただいた安全の範囲の外です）。この 2 つも「本文の提案」がオフなら止めますか？
+
+選択肢の原文：
+
+- 「止める (推奨)」：オフの作品では、この 2 つも他のあらすじの AI 生成と同じ扱いで止めます。ビートは場面の文書に保存されるので、同じ「本文の提案」にそろえます。
+- 「今のまま」：オフの作品でも 2 つとも使え、AI の結果が書き込まれます。
+- 「他の入口も調べてから」：まだ追えていない入口（Map の AI 分岐は会話の設定しか見ていない、取り込み、A/B 比較の採用）も調べて、まとめて決めます。
+- （ほかに、自由記述の「Other」が出る）
+
+回答の原文（tool_result の全文）：
+
+> Your questions have been answered: "AI の利用方針で「本文の提案」をオフにした作品でも、場面のあらすじの「AI で生成」は AI の結果をそのまま保存し、「あらすじからビートを生成」はビートを追加します（今の製品の動きで、先日確定いただいた安全の範囲の外です）。この 2 つも「本文の提案」がオフなら止めますか？"="止める (推奨)". You can now continue with these answers in mind.
+
+- 読み：この 2 経路を bodyWrite の門に入れる（A4 の脅威モデルの残りのうち、この 2 つを塞ぐ側に変える）。ほかの入口（Map の AI 分岐、取り込み、A/B 比較の採用）はこの回答の範囲外で、調べるかは決めていない。実装は M3、判断記録（`docs/plans/a4-ai-policy-fail-closed-decisions.md`）の追記は Mastra。
