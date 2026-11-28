@@ -173,7 +173,10 @@ vi.mock("@/features/tree/treeStore", async (importOriginal) => {
     ...actual,
     useTreeStore: Object.assign(
       vi.fn(() => ({ nodes: [] })),
-      { getState: vi.fn(() => ({ nodes: [] })) },
+      {
+        getState: vi.fn(() => ({ nodes: [] })),
+        subscribe: actual.useTreeStore.subscribe,
+      },
     ),
   };
 });
@@ -3901,6 +3904,201 @@ describe("useChatStore", () => {
       expect(chatApi.listSummaries).not.toHaveBeenCalled();
       expect(useChatStore.getState().isStreaming).toBe(false);
     });
+
+    it("releases a Mastra attempt stopped after the scene flush but before engine start", async () => {
+      const sceneWrites = await import("@/features/tree/pendingSceneWrites");
+      const flush = vi.spyOn(sceneWrites, "awaitPendingSceneContentWrite");
+      const getProject = () =>
+        new Promise<never>((_resolve, reject) => {
+          finishRead = () => reject(new Error("project read stopped"));
+        });
+      let finishRead!: () => void;
+      useProjectStore.setState({ currentProjectId: "proj-1" });
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openrouter",
+          model: "openrouter/anthropic/claude-sonnet-4.6",
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        activeSceneId: "scene-1",
+        messages: [],
+        agentMode: true,
+        sessionAgentToolsSnapshot: [{ name: "search_codex" } as never],
+      });
+      try {
+        for (let turn = 1; turn <= 2; turn++) {
+          mockGetProject.mockImplementationOnce(getProject);
+          const sending = useChatStore
+            .getState()
+            .sendMessage("stop while preparing");
+          await vi.waitFor(() =>
+            expect(mockGetProject).toHaveBeenCalledTimes(turn),
+          );
+          expect(flush).toHaveBeenCalledTimes(turn);
+          useChatStore.getState().stopGeneration();
+          finishRead();
+          await sending;
+        }
+        expect(mockSendAgentMessage).not.toHaveBeenCalled();
+      } finally {
+        flush.mockRestore();
+      }
+    });
+
+    it.each([
+      "Stop",
+      "lease",
+      "workspace",
+      "project",
+      "policy",
+      "license",
+    ] as const)(
+      "delivers %s to an accepted Mastra turn after view and model changes",
+      async (cause) => {
+        const transport = await import("@/lib/mastraAgentTurn");
+        const { useLicenseStore } = await import("@/features/license/store");
+        const previousLicense = useLicenseStore.getState();
+        const progress = vi
+          .spyOn(transport, "listenMastraAgentTurnProgress")
+          .mockResolvedValue(() => undefined);
+        const questions = vi
+          .spyOn(transport, "listenMastraAgentTurnQuestion")
+          .mockResolvedValue(() => undefined);
+        const cancel = vi
+          .spyOn(transport, "cancelMastraAgentTurn")
+          .mockResolvedValue({ kind: "ok", found: true });
+        let finish!: () => void;
+        const start = vi
+          .spyOn(transport, "startMastraAgentTurn")
+          .mockImplementation(async ({ turnId }, dispatch) => {
+            if (!dispatch?.()) return { kind: "cancelled-before-dispatch" };
+            progress.mock.calls[0]![1]({
+              turnId,
+              sequence: 1,
+              event: {
+                kind: "send-accepted",
+                sendIndex: 0,
+                cacheDowngradeReason: null,
+                usage: {
+                  contextTokens: 0,
+                  toolTokens: 0,
+                  envelopeTokens: 0,
+                  safetyMarginTokens: 0,
+                  inputTokens: 1,
+                  outputReservedTokens: 0,
+                  reservedTotalTokens: 1,
+                  contextWindow: 10,
+                  remainingTokens: 9,
+                  overflowTokens: 0,
+                },
+              },
+            });
+            await new Promise<void>((resolve) => {
+              finish = resolve;
+            });
+            return {
+              kind: "completed",
+              turnId,
+              executionId: "test-execution",
+              response: {
+                blocks: [{ type: "text", content: "last response" }],
+              },
+              loopResult: null,
+            };
+          });
+        let lease: ReturnType<typeof acquireQuiescenceLease> | undefined;
+        const prepare = useChatStore.getState().refreshContextLayers;
+        const { AGENT_TOOLS } = await import("./agent/toolDefinitions");
+        useProjectStore.setState({ currentProjectId: "proj-1" });
+        useAiSettingsStore.setState({
+          settings: {
+            ...DEFAULT_AI_SETTINGS,
+            provider: "openrouter",
+            model: "openrouter/anthropic/claude-sonnet-4.6",
+          },
+        });
+        useChatStore.setState({
+          sessions: [session1],
+          activeSessionId: session1.id,
+          activeSceneId: "scene-1",
+          messages: [],
+          agentMode: true,
+          ragEnabled: false,
+          sessionAgentToolsSnapshot: AGENT_TOOLS.filter(
+            (tool) => tool.name === "search_codex",
+          ),
+          refreshContextLayers: vi
+            .fn()
+            .mockResolvedValue({ prompt: "test", layers: [], totalTokens: 1 }),
+        });
+        const running = useChatStore
+          .getState()
+          .sendMessage("observe the active turn");
+        try {
+          await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+          useChatStore.setState({
+            activeSessionId: "session-other",
+            activeSceneId: "scene-2",
+          });
+          useAiSettingsStore.setState({ chatModelOverride: "changed-model" });
+          expect(cancel).not.toHaveBeenCalled();
+          if (cause === "Stop") useChatStore.getState().stopGeneration();
+          if (cause === "lease")
+            lease = acquireQuiescenceLease("workspace-open");
+          if (cause === "project")
+            useChatStore.setState({ activeProjectId: "project-other" });
+          if (cause === "workspace")
+            setCurrentImeWorkspaceIdentity({
+              path: "/workspace/other",
+              openRevision: 2,
+            });
+          if (cause === "policy")
+            useProjectStore.setState({
+              projects: [
+                {
+                  id: "proj-1",
+                  aiPolicy: JSON.stringify({
+                    preset: "review-only",
+                    toggles: { chat: false, bodyWrite: false, analysis: true },
+                  }),
+                },
+              ] as never,
+            });
+          if (cause === "license")
+            useLicenseStore.setState({
+              licensingEnabled: true,
+              status: "revoked",
+            });
+          expect(cancel).toHaveBeenCalledExactlyOnceWith({
+            turnId: start.mock.calls[0]![0].turnId,
+          });
+          finish();
+          await running;
+          if (cause === "project" || cause === "workspace") {
+            expect(mockAddMessage).not.toHaveBeenCalled();
+            expect(
+              useChatStore
+                .getState()
+                .messages.map((message) => message.content),
+            ).not.toContain("last response");
+          }
+        } finally {
+          finish?.();
+          await running;
+          lease?.release();
+          useLicenseStore.setState(previousLicense);
+          useChatStore.setState({ refreshContextLayers: prepare });
+          start.mockRestore();
+          cancel.mockRestore();
+          questions.mockRestore();
+          progress.mockRestore();
+        }
+      },
+    );
 
     it("does not admit a turn while Tree navigation holds authority", async () => {
       useChatStore.setState({

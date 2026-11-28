@@ -4,14 +4,13 @@ import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { AiPolicyWriteBlockedError } from "@/features/ai-policy/writeBlockedError";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useCodexStore } from "@/features/codex/codexStore";
-import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { aiAuthorshipAttrs } from "@/features/attribution/aiAuthorship";
 import {
   extractAiSpansFromPmJson,
   syntheticAiSpans,
   type AgentAuthorshipSpanInput,
 } from "./authorshipSpans";
-import { applyUndoJournal } from "./undoJournal";
+import { pushCommittedWriteHistory } from "./committedWriteHistory";
 import type { CodexEntry } from "@/features/codex/api";
 import { getCodexEntryVersion } from "@/features/codex/version";
 import { scheduleCodexIndex } from "@/features/semantic-search/scheduler";
@@ -192,6 +191,63 @@ function applyAiMarkToDoc(
   }
 }
 
+/** Project a completed Native write into the renderer without issuing the write again. */
+export async function projectCodexWrite(
+  tool: "create_codex_entry" | "update_codex_entry",
+  projectId: string,
+  entityId: string,
+  journalId: string,
+  refreshIme: boolean,
+  isCurrent?: () => boolean,
+): Promise<CodexEntry | undefined> {
+  if (isCurrent && !isCurrent()) return;
+  const updated = tool === "update_codex_entry";
+  const registerUndo = () => {
+    pushCommittedWriteHistory(
+      projectId,
+      {
+        kind: "codex",
+        label: i18next.t(
+          updated
+            ? "codex.store.agentHistoryUpdate"
+            : "codex.store.agentHistoryCreate",
+        ),
+        operationId: journalId,
+        entityId,
+      },
+      async (isProjectCurrent) => {
+        await useCodexStore
+          .getState()
+          .loadEntries({ afterWrite: isProjectCurrent });
+        if (isProjectCurrent()) scheduleImeExportRefresh(projectId);
+      },
+    );
+  };
+  // The verified Native journal remains undoable even if this view cannot refresh.
+  if (isCurrent) registerUndo();
+  await useCodexStore
+    .getState()
+    .loadEntries(
+      isCurrent ? { afterWrite: isCurrent, propagateError: true } : undefined,
+    );
+  if (isCurrent && !isCurrent()) return;
+
+  if (updated) {
+    notifySameRendererDocumentWrite(
+      { kind: "codex", id: entityId, phaseId: null },
+      { domain: "codex", opType: "entry.update", entityId },
+    );
+  }
+  scheduleCodexIndex(entityId);
+  if (refreshIme) scheduleImeExportRefresh(projectId);
+
+  const entry = useCodexStore
+    .getState()
+    .entries.find((item) => item.id === entityId);
+  if (!isCurrent && entry) registerUndo();
+  return entry;
+}
+
 export async function agentCreateCodexEntry(
   input: AgentCodexCreateInput,
   chatMessageId?: string | null,
@@ -262,43 +318,18 @@ export async function agentCreateCodexEntry(
       },
     });
 
-    await useCodexStore.getState().loadEntries();
-
-    // 段階3: agent 経路の codex 作成も semantic index へ (api.ts は通らないため
-    // ここで明示フック)。debounce + Rust 側 hash 再検証で冪等。
-    scheduleCodexIndex(result.entityId);
-    scheduleImeExportRefresh(projectId);
-
-    const entry = useCodexStore
-      .getState()
-      .entries.find((e) => e.id === result.entityId);
+    const entry = await projectCodexWrite(
+      "create_codex_entry",
+      projectId,
+      result.entityId,
+      result.undoJournalId,
+      true,
+    );
     if (!entry) {
       throw new Error(
         `Created codex entry ${result.entityId} not found after reload`,
       );
     }
-
-    if (!useGlobalHistoryStore.getState().isReplaying) {
-      const journalId = result.undoJournalId;
-      const entityId = result.entityId;
-      useGlobalHistoryStore.getState().push({
-        kind: "codex",
-        label: i18next.t("codex.store.agentHistoryCreate"),
-        operationId: journalId,
-        entityId,
-        async undo() {
-          await applyUndoJournal(journalId, "undo");
-          await useCodexStore.getState().loadEntries();
-          scheduleImeExportRefresh(projectId);
-        },
-        async redo() {
-          await applyUndoJournal(journalId, "redo");
-          await useCodexStore.getState().loadEntries();
-          scheduleImeExportRefresh(projectId);
-        },
-      });
-    }
-
     return entry;
   };
   if (input.content !== undefined) {
@@ -434,52 +465,18 @@ export async function agentUpdateCodexEntry(
           : null,
       },
     });
-    await useCodexStore.getState().loadEntries();
-    notifySameRendererDocumentWrite(
-      { kind: "codex", id: result.entityId, phaseId: null },
-      {
-        domain: "codex",
-        opType: "entry.update",
-        entityId: result.entityId,
-      },
+    const entry = await projectCodexWrite(
+      "update_codex_entry",
+      projectId,
+      result.entityId,
+      result.undoJournalId,
+      input.name !== undefined || input.aliases !== undefined,
     );
-
-    // 段階3: agent 経路の codex 更新も semantic index へ (api.ts は通らない)。
-    scheduleCodexIndex(result.entityId);
-    if (input.name !== undefined || input.aliases !== undefined) {
-      scheduleImeExportRefresh(projectId);
-    }
-
-    const entry = useCodexStore
-      .getState()
-      .entries.find((e) => e.id === result.entityId);
     if (!entry) {
       throw new Error(
         `Updated codex entry ${result.entityId} not found after reload`,
       );
     }
-
-    if (!useGlobalHistoryStore.getState().isReplaying) {
-      const journalId = result.undoJournalId;
-      const entityId = input.entryId;
-      useGlobalHistoryStore.getState().push({
-        kind: "codex",
-        label: i18next.t("codex.store.agentHistoryUpdate"),
-        operationId: journalId,
-        entityId,
-        async undo() {
-          await applyUndoJournal(journalId, "undo");
-          await useCodexStore.getState().loadEntries();
-          scheduleImeExportRefresh(projectId);
-        },
-        async redo() {
-          await applyUndoJournal(journalId, "redo");
-          await useCodexStore.getState().loadEntries();
-          scheduleImeExportRefresh(projectId);
-        },
-      });
-    }
-
     return entry;
   };
   if (input.content !== undefined) {

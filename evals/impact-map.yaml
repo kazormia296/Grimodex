@@ -370,6 +370,7 @@ rules:
       - scripts/quality/validate-semantic-core-boundary.mjs
       - scripts/quality/validate-semantic-core-boundary.test.mjs
       - electron/main/ipc.ts
+      - electron/main/agentToolInputDigest.ts
       - electron/main/ipc.test.ts
       - src/lib/tauri.ts
       - electron/shared/ipcCallerTimeouts.ts
@@ -436,6 +437,7 @@ rules:
       - electron/shared/ipcCallerTimeouts.test.ts
       - electron/main/ipc.test.ts
       - electron/main/ipc.ts
+      - electron/main/agentToolInputDigest.ts
       - electron/main/profileEgress.test.ts
       - electron/main/profileEgress.ts
       - electron/native/grimodex-node/index.d.ts
@@ -1396,6 +1398,7 @@ rules:
       - electron/main/narrativeFreshness.ts
       - electron/main/narrativeFreshness.test.ts
       - electron/main/ipc.ts
+      - electron/main/agentToolInputDigest.ts
       - electron/main/ipc.test.ts
       - electron/main/relatedScenesSearchAuthority.ts
       - electron/main/relatedScenesSearchAuthority.test.ts

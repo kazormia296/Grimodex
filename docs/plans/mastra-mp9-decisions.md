@@ -8,6 +8,7 @@
 
 ## 2. 確かめた事実
 
+- R-2 の基準値（tool 1 往復）。実 Mastra と一時 DB で、2 回のモデル呼び出しの直前はいずれも保存済みメッセージが 0 件だった。完了時に `saveMessages` が 1 回呼ばれ、user と assistant が 1 行ずつ残った。次のモデル呼び出しには tool の結果本文が届き、完了後の再読込では同じ結果の SHA-256 が返った。段ごとの保存の合格条件は、次のモデル呼び出しに入る前に、確定した tool の呼び出しと結果を DB から読み戻せることとする。[Native 結合試験](../../electron/main/mastraMemory.pipeline.spec.ts)
 - Mastra が履歴を持ち、renderer は新規 user message を渡す案。既存保存との二重化を避ける（`docs/plans/mastra-migration-plan.md:481-484`）。
 - 要約・過去会話・pin は system／context で渡し、cache の volatile tail に置く案（`docs/plans/mastra-migration-plan.md:482`）。
 - MP-7 案の表は全て closed。`mastra_message_parts`、`mastra_thread_metadata`、`mastra_resources`、`mastra_observational_memory`、`mastra_memory_vectors`（`docs/plans/mastra-migration-plan.md:428-431`）。

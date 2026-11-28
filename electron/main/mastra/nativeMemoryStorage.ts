@@ -1,4 +1,4 @@
-import { MemoryStorage } from "@mastra/core/storage";
+import { MemoryStorage, type StorageOrderBy } from "@mastra/core/storage";
 import type { NapiMemoryBackendLike } from "./napiMemoryBackend.js";
 
 function decode<T>(wire: string): T {
@@ -28,6 +28,19 @@ function unsupported(method: string): Error {
 
 function isoDate(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : value;
+}
+
+function nativeOrderBy(orderBy: StorageOrderBy) {
+  switch (orderBy.direction) {
+    case undefined:
+      return orderBy;
+    case "ASC":
+      return { ...orderBy, direction: "asc" };
+    case "DESC":
+      return { ...orderBy, direction: "desc" };
+    default:
+      throw new TypeError("Invalid Mastra memory sort direction");
+  }
 }
 
 const OM_FIELDS = new Set([
@@ -154,11 +167,12 @@ export class NativeMemoryStorage extends MemoryStorage {
   }
 
   async listThreads(args: Parameters<MemoryStorage["listThreads"]>[0]) {
-    const { filter, ...pagination } = args;
+    const { filter, orderBy, ...pagination } = args;
     return decode<Awaited<ReturnType<MemoryStorage["listThreads"]>>>(
       await this.backend.memoryThreadRead({
         operation: "list",
         ...pagination,
+        ...(orderBy === undefined ? {} : { orderBy: nativeOrderBy(orderBy) }),
         ...filter,
       }),
     );
@@ -173,7 +187,7 @@ export class NativeMemoryStorage extends MemoryStorage {
         ...(resourceId === undefined ? {} : { resourceId }),
         ...(page === undefined ? {} : { page }),
         ...(perPage === undefined ? {} : { perPage }),
-        ...(orderBy === undefined ? {} : { orderBy }),
+        ...(orderBy === undefined ? {} : { orderBy: nativeOrderBy(orderBy) }),
         ...(filter?.dateRange === undefined
           ? {}
           : { dateRange: filter.dateRange }),

@@ -81,6 +81,9 @@ vi.mock("./api", () => ({
 vi.mock("./search", () => ({
   searchCodexEntries: vi.fn(),
 }));
+vi.mock("./typeApi", () => ({
+  listCodexTypes: vi.fn(async () => []),
+}));
 
 vi.mock("@/features/timelapse/recorder", () => ({
   recordChangeEvent: vi.fn(),
@@ -226,6 +229,27 @@ describe("codexStore", () => {
       expect(useCodexStore.getState().completionTargets).toEqual(
         allCompletionTargets,
       );
+    });
+
+    it("refreshes the last search or type filter after a committed write and keeps selection", async () => {
+      useCodexStore.setState({ selectedEntry: mockEntry2 });
+      mockSearchCodexEntries.mockResolvedValue([mockEntry]);
+      await useCodexStore.getState().search("アリス");
+      await useCodexStore.getState().loadEntries({ afterWrite: () => true });
+      expect(mockSearchCodexEntries).toHaveBeenCalledTimes(2);
+      expect(useCodexStore.getState().entries).toEqual([mockEntry]);
+      mockListCodexEntries.mockResolvedValue([mockEntry2]);
+      await useCodexStore.getState().setFilterType("location");
+      await useCodexStore.getState().loadEntries({ afterWrite: () => true });
+      expect(mockListCodexEntries).toHaveBeenLastCalledWith(
+        "default-project",
+        "location",
+      );
+      expect(useCodexStore.getState()).toMatchObject({
+        entries: [mockEntry2],
+        searchQuery: "アリス",
+        selectedEntry: mockEntry2,
+      });
     });
 
     it("sets isLoading during load", async () => {

@@ -14,7 +14,7 @@ import type {
 } from "@/../electron/shared/mastraAgentTurnWire";
 import type { ChatMessage } from "@/features/chat/chatTypes";
 import type { ResolvedChatTurnRoute } from "@/features/chat/turn/resolveTurnRoute";
-import type { ChatStoreSet } from "./chatStoreActionPorts";
+import type { ChatStoreSet, SubscribeChatState } from "./chatStoreActionPorts";
 import type { ChatTurnRuntime } from "./chatTurnRuntime";
 import type { ChatUserQuestionRuntime } from "./chatUserQuestionRuntime";
 import { parseMetadataRecord } from "./chatMessageMetadata";
@@ -56,17 +56,20 @@ export async function loadMastraTurnEngineDependencies() {
     mastraTurnResponder,
     aiAuditExecutionRegistry,
     pendingSceneWrites,
+    mastraTurnAuthorityWatcher,
   ] = await Promise.all([
     import("@/lib/mastraAgentTurn"),
     import("./mastraAgentTurnResponder"),
     import("@/features/ai-audit/executionRegistry"),
     import("@/features/tree/pendingSceneWrites"),
+    import("./mastraTurnAuthorityWatcher"),
   ]);
   return {
     ...mastraAgentTurn,
     ...mastraTurnResponder,
     ...aiAuditExecutionRegistry,
     ...pendingSceneWrites,
+    ...mastraTurnAuthorityWatcher,
   };
 }
 
@@ -133,6 +136,11 @@ export interface MastraTurnExecutionContext {
   userQuestionRuntime: ChatUserQuestionRuntime;
   dismissNote: string;
   assertAuthority: () => void;
+  signal: AbortSignal;
+  checkRunningAuthority: () => void;
+  subscribeChat: SubscribeChatState;
+  bindingIsCurrent: () => boolean;
+  routeAuthorityKey: string | null;
   isCurrentTurn: () => boolean;
   isAborted: () => boolean;
   onSendAccepted: () => void;
@@ -277,11 +285,7 @@ let gateClosedObserved = false;
 
 type RuntimeAdmission = Pick<
   ChatTurnRuntime,
-  | "claimMastraTurn"
-  | "hasActiveMastraTurn"
-  | "releaseMastraTurn"
-  | "setStreamCleanup"
-  | "clearStreamCleanupIf"
+  "claimMastraTurn" | "hasActiveMastraTurn" | "releaseMastraTurn"
 >;
 
 export function createMastraTurnAttempt(
@@ -310,7 +314,7 @@ export function createMastraTurnAttempt(
 
   let unregisterQuestion: (() => void) | null = null;
   let unregisterProgress: (() => void) | null = null;
-  let streamCleanup: (() => void) | null = null;
+  let stopWatching: (() => void) | null = null;
   let auditReservation = false;
   let startInvoked = false;
   let released = false;
@@ -320,11 +324,11 @@ export function createMastraTurnAttempt(
   const release = (): void => {
     if (released) return;
     released = true;
+    stopWatching?.();
     unregisterQuestion?.();
     unregisterQuestion = null;
     unregisterProgress?.();
     unregisterProgress = null;
-    if (streamCleanup) runtime.clearStreamCleanupIf(streamCleanup);
     if (auditReservation) {
       if (startInvoked) {
         dependencies.completePendingAiAuditExecution(input.turnId);
@@ -383,6 +387,18 @@ export function createMastraTurnAttempt(
       if (!route)
         throw new Error("Mastra agent turn prerequisites unavailable");
       try {
+        const updateContextUsage = (usage: MastraAgentTurnProgressUsage) => {
+          if (!context.isCurrentTurn() || !context.bindingIsCurrent()) return;
+          context.updateContextUsage(usage);
+          context.set({
+            contextTokenCount: usage.inputTokens,
+            contextWindowUsage: { ...usage, estimated: false },
+            contextWindowSize: usage.contextWindow,
+            contextModel: route.model ?? null,
+            contextProvider: route.provider ?? null,
+            contextRouteAuthorityKey: context.routeAuthorityKey,
+          });
+        };
         const askUserContext = {
           set: context.set,
           runtime: context.userQuestionRuntime,
@@ -402,7 +418,7 @@ export function createMastraTurnAttempt(
             const event = progress.event;
             if (event.kind === "send-accepted") {
               context.onSendAccepted();
-              context.updateContextUsage(event.usage);
+              updateContextUsage(event.usage);
               if (event.cacheDowngradeReason === "budget") {
                 context.set({ cacheInvalidatedReason: "budget" });
               }
@@ -418,7 +434,7 @@ export function createMastraTurnAttempt(
                 },
               });
             } else if (event.kind === "context-overflow") {
-              context.updateContextUsage(event.usage);
+              updateContextUsage(event.usage);
             }
           },
         );
@@ -488,9 +504,16 @@ export function createMastraTurnAttempt(
         dependencies.reservePendingAiAuditExecution(input.turnId);
         auditReservation = true;
         context.transitionAgentRunning();
-        streamCleanup = () => {
+        let dispatched = false;
+        const cancelDispatchedTurn = () => {
+          if (!dispatched) return;
           void dependencies
             .cancelMastraAgentTurn({ turnId: input.turnId })
+            .then((outcome) => {
+              if (outcome.kind !== "ok") {
+                throw new Error(`Mastra cancel returned ${outcome.kind}`);
+              }
+            })
             .catch((error) => {
               runtimeValues.debugLog.warn(
                 "ChatStore",
@@ -499,26 +522,51 @@ export function createMastraTurnAttempt(
               );
             });
         };
-        runtime.setStreamCleanup(streamCleanup);
+        // Stop aborts this turn's controller even after send-accepted. Store
+        // changes use the same signal and are latched until Main settles.
+        context.signal.addEventListener("abort", cancelDispatchedTurn);
+        const unwatch = dependencies.watchMastraTurnAuthority(
+          context.checkRunningAuthority,
+          context.subscribeChat,
+        );
+        stopWatching = () => {
+          context.signal.removeEventListener("abort", cancelDispatchedTurn);
+          unwatch();
+        };
         startInvoked = true;
 
         let outcome: Awaited<
           ReturnType<typeof dependencies.startMastraAgentTurn>
         >;
         try {
-          outcome = await dependencies.startMastraAgentTurn(request);
+          outcome = await dependencies.startMastraAgentTurn(request, () => {
+            // Cancel uses a separate IPC lane. A cancellation that precedes
+            // the start's queue slot must prevent dispatch to Main entirely.
+            context.checkRunningAuthority();
+            if (context.signal.aborted) return false;
+            dispatched = true;
+            return true;
+          });
         } catch (error) {
+          if (!dispatched && context.signal.aborted) {
+            startInvoked = false;
+            context.cancelBeforeTransport();
+            return { kind: "cancelled" };
+          }
           dependencies.completePendingAiAuditExecution(input.turnId);
           auditReservation = false;
           throw error;
+        }
+        if (outcome.kind === "cancelled-before-dispatch") {
+          startInvoked = false;
+          context.cancelBeforeTransport();
+          return { kind: "cancelled" };
         }
         if (outcome.kind === "refused") {
           admitted = false;
           dependencies.abandonPendingAiAuditExecution(input.turnId);
           auditReservation = false;
           if (outcome.reason === "gate-closed") gateClosedObserved = true;
-          runtime.clearStreamCleanupIf(streamCleanup);
-          streamCleanup = null;
           context.onLegacyFallback();
           release();
           return context.cancelBeforeTransport()
@@ -528,7 +576,7 @@ export function createMastraTurnAttempt(
         if (outcome.kind === "context-window-exceeded") {
           dependencies.completePendingAiAuditExecution(input.turnId);
           auditReservation = false;
-          context.updateContextUsage(outcome.usage);
+          updateContextUsage(outcome.usage);
           throw new Error("AI_CONTEXT_WINDOW_EXCEEDED");
         }
         if (outcome.kind === "invalid-response") {
@@ -540,7 +588,16 @@ export function createMastraTurnAttempt(
         dependencies.completePendingAiAuditExecution(input.turnId);
         auditReservation = false;
         const result = toAgentLoopResult(outcome.response, outcome.loopResult);
-        context.onResponseText(result.finalText);
+        if (context.isCurrentTurn() && context.bindingIsCurrent()) {
+          context.onResponseText(result.finalText);
+          context.set((state) => ({
+            messages: state.messages.map((message) =>
+              message.id === context.assistantMessage.id
+                ? { ...message, content: result.finalText }
+                : message,
+            ),
+          }));
+        }
         return { kind: "completed", result };
       } catch (error) {
         if (!startInvoked) {
