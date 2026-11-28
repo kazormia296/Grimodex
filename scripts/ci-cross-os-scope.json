@@ -24,6 +24,7 @@
     "src/features/timelapse/hash-vectors.json",
     "src/features/agent-writes/parity/**",
     "src/features/ai-policy/policyDecisionVector.fixture.json",
+    "src/features/ai-policy/policyDecisionVector.v2.fixture.json",
     "src/features/codex/context/fixtures/reading-order-parity.json",
     "src-tauri/resources/sample_project/**"
   ]
