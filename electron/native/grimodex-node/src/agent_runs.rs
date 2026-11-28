@@ -1,8 +1,8 @@
 //! Main-only AgentRun operations and the Native workspace owner lock.
 
 use std::fs::File;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use grimodex_db::agent_runs::{
@@ -27,6 +27,24 @@ pub(super) struct WorkspaceOwner {
 }
 
 impl WorkspaceOwner {
+    fn acquire(slot: &Mutex<Option<Arc<Self>>>, path: &Path) -> anyhow::Result<Arc<Self>> {
+        let mut current = slot
+            .lock()
+            .map_err(|_| anyhow::anyhow!("AgentRun owner state lock poisoned"))?;
+        if let Some(owner) = current.as_ref().filter(|owner| owner.path == path) {
+            return Ok(Arc::clone(owner));
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        let lock = db_runs::try_lock_owner(path, &id)?;
+        let owner = Arc::new(Self {
+            path: path.to_path_buf(),
+            id,
+            _lock: lock,
+        });
+        *current = Some(Arc::clone(&owner));
+        Ok(owner)
+    }
+
     fn lock_foreign_owner(&self, id: &str) -> anyhow::Result<Option<File>> {
         if id == self.id {
             return Ok(None);
@@ -48,21 +66,8 @@ impl Backend {
             let payload = from_wire("payload", payload)?;
             // Keep the DB and its lock directory bound to the same lifecycle participant.
             let workspace = active_workspace_snapshot(&state.ws)?;
-            let path = workspace.db().path();
-            let mut owner = owner
-                .lock()
-                .map_err(|_| anyhow::anyhow!("AgentRun owner state lock poisoned"))?;
-            if owner.as_ref().is_none_or(|current| current.path != path) {
-                let id = uuid::Uuid::new_v4().to_string();
-                let lock = db_runs::try_lock_owner(path, &id)?;
-                *owner = Some(WorkspaceOwner {
-                    path: path.to_path_buf(),
-                    id,
-                    _lock: lock,
-                });
-            }
-            let owner = owner.as_ref().context("AgentRun owner not initialized")?;
-            let result = operation(workspace.db().db(), owner, payload)?;
+            let owner = WorkspaceOwner::acquire(&owner, workspace.db().path())?;
+            let result = operation(workspace.db().db(), &owner, payload)?;
             Ok(serde_json::to_string(&result).map_err(anyhow::Error::from)?)
         })
         .await
@@ -198,7 +203,7 @@ struct RunVersionPayload {
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum ClaimGatePayload {
-    Allowed,
+    Allowed {},
     Blocked { detail: String },
 }
 
@@ -477,10 +482,11 @@ struct FinalizingWire {
     origin_user_message_id: String,
     origin_assistant_message_id: String,
     version: i64,
+    owned_by_caller: bool,
 }
 
-impl From<FinalizingRun> for FinalizingWire {
-    fn from(run: FinalizingRun) -> Self {
+impl FinalizingWire {
+    fn from_run(run: FinalizingRun, owner_id: &str) -> Self {
         Self {
             run_id: run.run_id,
             target_status: run.target_status,
@@ -488,6 +494,7 @@ impl From<FinalizingRun> for FinalizingWire {
             origin_user_message_id: run.origin_user_message_id,
             origin_assistant_message_id: run.origin_assistant_message_id,
             version: run.version,
+            owned_by_caller: run.execution_owner == owner_id,
         }
     }
 }
@@ -506,10 +513,11 @@ struct RunStatusWire {
     not_resumable_reason: Option<String>,
     resume_block_detail: Option<String>,
     finalizing_target_reason: Option<String>,
+    owned_by_caller: bool,
 }
 
-impl From<RunStatus> for RunStatusWire {
-    fn from(run: RunStatus) -> Self {
+impl RunStatusWire {
+    fn from_run(run: RunStatus, owner_id: &str) -> Self {
         Self {
             run_id: run.run_id,
             project_id: run.project_id,
@@ -522,6 +530,7 @@ impl From<RunStatus> for RunStatusWire {
             not_resumable_reason: run.not_resumable_reason,
             resume_block_detail: run.resume_block_detail,
             finalizing_target_reason: run.finalizing_target_reason,
+            owned_by_caller: run.execution_owner == owner_id,
         }
     }
 }
@@ -617,7 +626,7 @@ impl Backend {
         self.agent_run_operation(payload, |db, owner, input: ClaimPayload| {
             let old_owner = row_owner(db, &input.run_id)?;
             let gate = match &input.gate {
-                ClaimGatePayload::Allowed => ResumeGate::Allowed,
+                ClaimGatePayload::Allowed {} => ResumeGate::Allowed,
                 ClaimGatePayload::Blocked { detail } => ResumeGate::Blocked(detail),
             };
             let answer = input.answer.as_ref().map(|answer| ClaimAnswer {
@@ -855,6 +864,7 @@ impl Backend {
         .await
     }
 
+    /// Returns a JSON array with `ownedByCaller` on each visible finalizing run.
     #[napi]
     pub async fn agent_run_list_finalizing(&self, payload: Value) -> Result<String> {
         self.agent_run_operation(payload, |db, owner, _: EmptyPayload| {
@@ -868,7 +878,7 @@ impl Backend {
                 };
                 // Recovery may have changed the row before this lock was acquired.
                 if let Some(run) = db_runs::get_finalizing(db, &run.run_id, &run.execution_owner)? {
-                    finalizing.push(FinalizingWire::from(run));
+                    finalizing.push(FinalizingWire::from_run(run, &owner.id));
                 }
             }
             Ok(finalizing)
@@ -876,20 +886,23 @@ impl Backend {
         .await
     }
 
+    /// Returns JSON null or a run status with `ownedByCaller`.
     #[napi]
     pub async fn agent_run_get_status(&self, payload: Value) -> Result<String> {
-        self.agent_run_operation(payload, |db, _, input: RunIdPayload| {
-            Ok(db_runs::get_run_status(db, &input.run_id)?.map(RunStatusWire::from))
+        self.agent_run_operation(payload, |db, owner, input: RunIdPayload| {
+            Ok(db_runs::get_run_status(db, &input.run_id)?
+                .map(|run| RunStatusWire::from_run(run, &owner.id)))
         })
         .await
     }
 
+    /// Returns JSON null or the session's unfinished run status with `ownedByCaller`.
     #[napi]
     pub async fn agent_run_get_unfinished_for_session(&self, payload: Value) -> Result<String> {
-        self.agent_run_operation(payload, |db, _, input: ChatSessionIdPayload| {
+        self.agent_run_operation(payload, |db, owner, input: ChatSessionIdPayload| {
             Ok(
                 db_runs::get_unfinished_run_for_session(db, &input.chat_session_id)?
-                    .map(RunStatusWire::from),
+                    .map(|run| RunStatusWire::from_run(run, &owner.id)),
             )
         })
         .await

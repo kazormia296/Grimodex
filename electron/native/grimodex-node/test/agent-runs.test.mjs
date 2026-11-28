@@ -141,8 +141,19 @@ test("AgentRun starts, answers a question, and completes finalization", async (t
       originUserMessageId,
       originAssistantMessageId: assistantMessageId,
       version: finalizing.version,
+      ownedByCaller: true,
     },
   ]);
+  const finalizingStatus = JSON.parse(
+    await backend.agentRunGetStatus({ runId }),
+  );
+  assert.equal(finalizingStatus.ownedByCaller, true);
+  assert.deepEqual(
+    JSON.parse(
+      await backend.agentRunGetUnfinishedForSession({ chatSessionId }),
+    ),
+    finalizingStatus,
+  );
 
   await backend.dbExecute(
     "INSERT INTO chat_messages (id, session_id, role, content) VALUES (?, ?, ?, ?)",
@@ -232,6 +243,13 @@ test("AgentRun interrupts and claims with the Native owner", async (t) => {
     requestId: "claim-1",
     gate: { kind: "allowed" },
   };
+  await assert.rejects(
+    backend.agentRunClaim({
+      ...claimPayload,
+      gate: { kind: "allowed", extra: 1 },
+    }),
+    /unknown field `extra`/,
+  );
   const claimed = JSON.parse(await backend.agentRunClaim(claimPayload));
   assert.deepEqual(claimed, runState(2, "running"));
   assert.deepEqual(
@@ -371,8 +389,18 @@ test("AgentRun refuses a live owner's finalizing run and closes it after owner e
       targetReason: "completed",
       originUserMessageId,
       originAssistantMessageId: assistantMessageId,
+      ownedByCaller: false,
     },
   ]);
+  const status = JSON.parse(await observer.agentRunGetStatus({ runId }));
+  assert.equal(status.ownedByCaller, false);
+  assert.equal(Object.hasOwn(status, "executionOwner"), false);
+  assert.deepEqual(
+    JSON.parse(
+      await observer.agentRunGetUnfinishedForSession({ chatSessionId }),
+    ),
+    status,
+  );
   const completed = await observer.agentRunFinishFinalizing(finalizing);
   assert.deepEqual(JSON.parse(completed), runState(2, "completed"));
 });

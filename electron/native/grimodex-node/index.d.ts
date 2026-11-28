@@ -24,8 +24,11 @@ export declare class Backend {
   agentRunGetPendingApproval(payload: any): Promise<string>
   agentRunRecover(payload: any): Promise<string>
   agentRunRecoverFinalizing(payload: any): Promise<string>
+  /** Returns a JSON array with `ownedByCaller` on each visible finalizing run. */
   agentRunListFinalizing(payload: any): Promise<string>
+  /** Returns JSON null or a run status with `ownedByCaller`. */
   agentRunGetStatus(payload: any): Promise<string>
+  /** Returns JSON null or the session's unfinished run status with `ownedByCaller`. */
   agentRunGetUnfinishedForSession(payload: any): Promise<string>
   /**
    * `app_data_dir` は Electron main の `app.getPath("userData")` を明示注入

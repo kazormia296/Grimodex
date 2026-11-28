@@ -7450,8 +7450,10 @@ fn finalize_automatic_maintenance_permit(
 #[napi]
 pub struct Backend {
     state: Arc<AppState>,
+    // workspace の切替・復元・終了の前に、main が自分の実行中の Run を agentRunInterrupt で中断する。
+    // lock を手放すのはその後。呼び出しは PR 4。
     #[cfg(not(test))]
-    agent_run_owner: Arc<Mutex<Option<agent_runs::WorkspaceOwner>>>,
+    agent_run_owner: Arc<Mutex<Option<Arc<agent_runs::WorkspaceOwner>>>>,
 }
 
 /// Drop guard for a process-local maintenance attempt. Any early return,
