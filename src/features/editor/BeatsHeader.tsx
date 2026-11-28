@@ -13,6 +13,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { UnplacedBeatItem } from "@/features/editor/UnplacedBeatItem";
 import { PlacedBeatList } from "@/features/editor/PlacedBeatList";
 import { generateBeatsFromSynopsis } from "@/features/editor/beat/generateBeatsFromSynopsis";
+import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { useTranslation } from "react-i18next";
 import type { CodexMentionPopupState } from "@/features/codex/CodexMentionExtension";
 
@@ -55,6 +56,8 @@ export function BeatsHeader({
     (s) => s.nodes.find((n) => n.id === sceneId)?.synopsis ?? "",
   );
   const hasSynopsis = synopsis.trim().length > 0;
+  // ビートの生成は本文の提案（bodyWrite）。オフなら入口を隠す（実行側でも止める）。
+  const bodyWriteGate = useAiGate("bodyWrite");
 
   const { setNodeRef: setUnplacedDropRef, isOver: isOverUnplaced } =
     useDroppable({ id: "unplaced-drop-zone" });
@@ -125,7 +128,7 @@ export function BeatsHeader({
             </span>
           )}
         </button>
-        {hasSynopsis && (
+        {hasSynopsis && bodyWriteGate.presentation !== "hidden" && (
           <button
             type="button"
             data-testid="beats-generate-from-synopsis"
