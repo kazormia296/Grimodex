@@ -300,22 +300,26 @@ describe("registerIpcRouter fail-soft logging", () => {
     "identity_correction_rule_create",
     "identity_correction_rule_supersede",
     "identity_correction_rule_retire",
-  ] as const)("binds %s to human-direct and rejects agent origin", (command) => {
-    const bind = (origin: string) =>
-      bindRendererAuthorityForIpc(command, {
-        payload: {
-          origin,
-          authorityRoute: "interactive-agent-command",
-        },
-      });
+  ] as const)(
+    "binds %s to human-direct and rejects agent origin",
+    (command) => {
+      const bind = (origin: string) =>
+        bindRendererAuthorityForIpc(command, {
+          payload: {
+            origin,
+            authorityRoute: "interactive-agent-command",
+          },
+        });
 
-    expect(
-      (bind("human").payload as { authorityRoute?: string }).authorityRoute,
-    ).toBe("human-direct");
-    expect(
-      (bind("ai-apply").payload as { authorityRoute?: string }).authorityRoute,
-    ).toBe("");
-  });
+      expect(
+        (bind("human").payload as { authorityRoute?: string }).authorityRoute,
+      ).toBe("human-direct");
+      expect(
+        (bind("ai-apply").payload as { authorityRoute?: string })
+          .authorityRoute,
+      ).toBe("");
+    },
+  );
 
   it("binds strict renderer authority from the main-owned command policy", () => {
     const bound = bindRendererAuthorityForIpc("tree_node_create", {
@@ -965,6 +969,99 @@ describe("registerIpcRouter fail-soft logging", () => {
       714,
     ).payload;
     expect(bound).toMatchObject({ authorityRoute: "" });
+  });
+
+  it.each([[], ["p1", "forged"], "invalid", 1, null])(
+    "drops non-object propose_scene_body payload %j",
+    (payload) => {
+      const bound = bindRendererAuthorityForIpc(
+        "agent_propose_scene_body",
+        { payload },
+        714,
+      );
+      expect(bound).not.toHaveProperty("payload");
+    },
+  );
+
+  it("drops non-object payloads for authority commands and rejects them in dispatch", async () => {
+    const agentProposeSceneBody = vi.fn(async () => JSON.stringify({}));
+    registerIpcRouter({ agentProposeSceneBody } as unknown as NapiBackendLike);
+    for (const payload of [
+      [],
+      Object.assign([], { agentAuthorityCapability: "forged" }),
+      "invalid",
+      1,
+      null,
+    ]) {
+      const envelope = await invokeHandler()(
+        { sender: { id: 714 } },
+        "agent_propose_scene_body",
+        { payload },
+      );
+      expect(envelope.ok).toBe(false);
+    }
+    expect(agentProposeSceneBody).not.toHaveBeenCalled();
+  });
+
+  it("drops non-object payloads across authority commands and preserves valid command shapes", () => {
+    const authorityCommands = [
+      "agent_codex_create",
+      "agent_codex_update",
+      "agent_foreshadow_create",
+      "agent_foreshadow_update",
+      "agent_snippet_create",
+      "agent_event_create",
+      "agent_event_update",
+      "agent_event_delete",
+      "agent_scene_event_link",
+      "agent_scene_event_unlink",
+      "agent_event_set_participants",
+      "agent_event_relation_add",
+      "agent_event_relation_remove",
+      "ai_tree_plan_apply",
+      "agent_propose_scene_body",
+      "agent_codex_mutate",
+      "agent_chronicle_bulk_mutate",
+      "agent_scene_event_link_batch",
+      "agent_apply_undo_journal",
+    ];
+    for (const command of authorityCommands) {
+      expect(
+        bindRendererAuthorityForIpc(command, { payload: [] }),
+        command,
+      ).not.toHaveProperty("payload");
+    }
+    for (const command of ["foreshadow_update", "foreshadow_update_setup"]) {
+      expect(
+        bindRendererAuthorityForIpc(command, { patch: [] }),
+        command,
+      ).not.toHaveProperty("patch");
+    }
+
+    const foreshadow = { origin: "human", id: "f1" };
+    expect(
+      bindRendererAuthorityForIpc("foreshadow_update", {
+        id: "f1",
+        patch: foreshadow,
+      }).patch,
+    ).toMatchObject({ authorityRoute: "human-direct" });
+    expect(
+      bindRendererAuthorityForIpc("foreshadow_setup_create_ai", {
+        origin: "ai-apply",
+        projectId: "p1",
+      }),
+    ).toMatchObject({ authorityRoute: "interactive-agent-command" });
+    expect(
+      bindRendererAuthorityForIpc("open_workspace", { path: "/tmp" }),
+    ).toEqual({
+      path: "/tmp",
+    });
+    const accepted = { proseStageId: "stage-1" };
+    expect(
+      bindRendererAuthorityForIpc("agent_accept_prose_stage", {
+        payload: accepted,
+      }).payload,
+    ).toBe(accepted);
   });
 
   it("rejects missing and replayed delete_event capabilities", async () => {
