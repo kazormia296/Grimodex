@@ -154,7 +154,14 @@ export function TimelinePanel({ isActive = true }: SlotPanelProps = {}) {
         void updateStoryTime(nodeId, null);
         return;
       }
-      const newKey = generateKeyBetween(prevKey, nextKey);
+      let newKey: string;
+      try {
+        newKey = generateKeyBetween(prevKey, nextKey);
+      } catch (error) {
+        // 隣の印が同じ、または読めない形だと、間の印を作れない。何も保存しない。
+        console.warn("[timeline] story-time drop ignored", error);
+        return;
+      }
       void updateStoryTime(nodeId, newKey);
     },
     [updateStoryTime],

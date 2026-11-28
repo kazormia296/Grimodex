@@ -102,15 +102,20 @@ const dimTransition = `opacity ${CSS_DURATIONS.normal} ${CSS_EASINGS.easeOut}`;
 
 /** 軸から何px離れたらY軸ロックを解除するか */
 const AXIS_LOCK_THRESHOLD = 28;
-/** マーカーをこの px 以上動かしたら「クリック」でなく「ドラッグ」とみなす */
+/** マーカー・場面の点をこの px を超えて動かしたら「クリック」でなく「ドラッグ」とみなす */
 const MARKER_DRAG_THRESHOLD = 4;
 
 interface DragState {
   nodeId: string;
   startX: number;
+  /** 押した位置（画面座標）。クリックとドラッグの判定はスクロールを含めない。 */
+  startClientX: number;
+  startClientY: number;
   currentX: number;
   currentY: number;
   originIndex: number;
+  /** しきい値を一度でも超えたか。false のまま離した操作はクリックで、落とし込まない。 */
+  moved: boolean;
 }
 
 /** プロットマーカーのドラッグ（移動 / 分岐・合流作成）。scene の DragState とは別系統。 */
@@ -955,9 +960,12 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       const next = {
         nodeId,
         startX: svgX,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
         currentX: svgX,
         currentY: svgY,
         originIndex,
+        moved: false,
       };
       dragRef.current = next;
       sceneDragSvgOriginRef.current = {
@@ -1099,12 +1107,10 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         if (layer) layer.style.visibility = "hidden";
       }
 
-      function onMove(e: MouseEvent) {
-        const current = dragRef.current;
-        if (!current) return;
-        // The SVG cannot move during a scene drag, so reuse the origin captured
-        // at mousedown. Reading its bounding box after changing SVG geometry
-        // would synchronously flush style/layout on every pointer sample.
+      // The SVG cannot move during a scene drag, so reuse the origin captured
+      // at mousedown. Reading its bounding box after changing SVG geometry
+      // would synchronously flush style/layout on every pointer sample.
+      function trackPointer(current: DragState, e: MouseEvent): DragState {
         const origin = sceneDragSvgOriginRef.current;
         const scrollLeft = containerRef.current?.scrollLeft ?? 0;
         const scrollTop = containerRef.current?.scrollTop ?? 0;
@@ -1116,11 +1122,22 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
           e.clientY -
           (origin?.top ?? 0) +
           (scrollTop - (origin?.scrollTop ?? 0));
-        dragRef.current = {
+        return {
           ...current,
           currentX: svgX,
           currentY: svgY,
+          moved:
+            current.moved ||
+            Math.abs(e.clientX - current.startClientX) >
+              MARKER_DRAG_THRESHOLD ||
+            Math.abs(e.clientY - current.startClientY) > MARKER_DRAG_THRESHOLD,
         };
+      }
+
+      function onMove(e: MouseEvent) {
+        const current = dragRef.current;
+        if (!current) return;
+        dragRef.current = trackPointer(current, e);
         sceneDragPreviewDirtyRef.current = true;
         schedulePointerPreview();
       }
@@ -1128,7 +1145,10 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       function onUp(e: MouseEvent) {
         if (e.button !== 0) return; // 左ボタン release のみ確定（中/右 release は無視）
         cancelPointerFrame();
-        const current = dragRef.current;
+        // 原点を消す前に、離した位置も判定に入れる（mousemove が来ないことがある）。
+        const current = dragRef.current
+          ? trackPointer(dragRef.current, e)
+          : null;
         dragRef.current = null;
         sceneDragSvgOriginRef.current = null;
         sceneDragPresentationOriginRef.current = null;
@@ -1136,7 +1156,10 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         sceneDragPreviewDirtyRef.current = false;
         dragActiveRef.current = false;
         hideSceneDragLayer();
-        if (current) commitDropRef.current(current, e.clientX, e.clientY);
+        // 押して離しただけ（開く・選ぶ操作）では作中時間を書き換えない。
+        if (current?.moved) {
+          commitDropRef.current(current, e.clientX, e.clientY);
+        }
       }
 
       function onBlur() {
