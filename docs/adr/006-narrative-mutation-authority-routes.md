@@ -81,7 +81,7 @@ command, but it always requires:
 - stable request identity;
 - chat message, tool call, and trace provenance;
 - a Typed Writer and OCC;
-- Field Authority admission;
+- Field Authority admission, with the conditional `author-field-override` for event updates and deletes described in the AWA/1 amendment below;
 - Undo Journal lineage;
 - canonical Change Event and Change Feed emission.
 
@@ -207,8 +207,10 @@ X は、出来事を消す各操作の transaction の中で、既にある提�
 
 ### 3. 承認つきの override と MCP の免除（AWA/1。AWA/1-1 は確認 141、AWA/1-2 は確認 142）
 
+2026-11-23 の確認 141（`nir1-agent-event-write-approval-proposal/1#agent-event-write-approval`）・確認 142（`nir1-agent-event-write-approval-proposal/1#mcp-author-event-write`）。
+
 本文の Interactive Agent Command の必須の control「Field Authority admission」（と、`policies/narrative/mutation-authority-routes.json` の `requiredControls` の `field-authority`）に、次を足す。
 
-- **承認つきの override（AWA/1-1）。** `interactive-agent-command` の `conditionalControls`（今は空）に、条件つきの control を足す。名前は `author-field-override` とする（技術判断）。`field-authority` とは別にする。同じ名前を、同じ route の `requiredControls` と `conditionalControls` の両方に置くと、`validate-semantic-core-boundary.mjs` が「controls cannot be both required and conditional」の error にするためである。`EXPECTED_CONDITIONAL_CONTROLS`、schema、fixtures、`validate-semantic-core-boundary.test.mjs` も揃える（policy の JSON と検査は、実装の PR で変える。この追補では書き換えない）。
-- **MCP の免除（AWA/1-2）。** MCP の免除は、人の持ち主の拒みを外すので、「Interactive Agent Command は Field Authority admission を常に要する」という必須の control を、そのままでは満たさない。実装の前に、次のどちらかを選び、本 ADR の文と routes JSON を、それに合わせて改める（技術判断。どちらも改めの対象で、この追補では選ばない）。(i) MCP を `interactive-agent-command` の例外にする。(ii) 承認つきと MCP の免除の両方を受ける、別の条件つき control を置く（名前は、上と同じ理由で `field-authority` と別）。
+- `field-authority` は全呼出しで必須とする。作者の欄に触れる出来事の更新・削除（削除に伴って因果で結ばれた出来事の作者の欄に触れる場合を含む）には、§2.7 の案 (ii) として条件つきの `author-field-override` を加える。アプリ内では main が個別に承認した `ApprovalRequest` を一回限りの capability に交換する。
+- MCP では同じ control の別の根拠として、書込可の固定作品接続について起動時にサーバーが作った `McpNoApproval { project_id }` を使う。Native は作品の一致を検証し、作者所有による拒否だけを免除する。開示場面も対象に含む。ロック、他の writer、全作品接続は免除しない。接続の固定は MCP のコードが判断し、payload の `surface` からは免除を得られない。
 - 変えないもの：必須の controls の列と、経路の固定（renderer の `origin` を見ない）。不変条件 8・11（unknown の caller・route は fail closed）。

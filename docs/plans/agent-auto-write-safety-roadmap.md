@@ -38,7 +38,9 @@ Roadmap authorityではない。
 Status語彙は[agent-collaboration-roadmap](agent-collaboration-roadmap.md)の
 Status legendに従う。
 
-## Current snapshot（2026-08-19検証済み）
+## Current snapshot（2026-08-19 検証、2026-11-27 設計追補）
+
+AWA/1 は文書段階。2026-11-23 の確認 141（`nir1-agent-event-write-approval-proposal/1#agent-event-write-approval`）・確認 142（`nir1-agent-event-write-approval-proposal/1#mcp-author-event-write`）。Gate A に先行するのは、作者の欄に触れる年表の更新・削除の個別承認だけである。A5〜A7 で交換時の policy を再検査する。作者の欄に触れない AI の更新・削除と他の変更系 16 本は A1・A2／Exit criteria 1・2 の対象として残る。固定作品 MCP の例外は ADR 006 の追補に従う。以下は 8 月の実装スナップショット。
 
 | Area | State | Current fact |
 | --- | --- | --- |

@@ -268,13 +268,16 @@ idempotency、race test、startup reconciliationを必要とする。
 
 ## 追補（2026-11-23）：MCP による作者の出来事の削除と、承認の要求の保持（AWA/1）
 
+2026-11-23 の確認 141（`nir1-agent-event-write-approval-proposal/1#agent-event-write-approval`）・確認 142（`nir1-agent-event-write-approval-proposal/1#mcp-author-event-write`）。
+
 本 ADR の本文は書き換えない。AWA/1 が確認されたので、本文の文との関係を、ここに記す。規則の正本は AWA/1 である。この追補は、本文のどの文がどう読み替わるかを示すだけで、規則を足さない。
 
 - 起案：AWA/1（[nir1-agent-event-write-approval-proposal-1-draft.md](../plans/nir1-agent-event-write-approval-proposal-1-draft.md)。draftRef `nir1-agent-event-write-approval-proposal/1`、下書きの SHA-256 `1dd0fdf64700393b0b8d6a9e5c7034f14edddf7be9dcf6dc87a4f8b31a650d0e`）。
 - 確認の記録：`claude/nir1-contracts` の commit `2778cf5abbbc25114b40c9ce8e1233543515ddc8` の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-22-chronicle-scene-review-apply.md`。AWA/1-1（`#agent-event-write-approval`）は確認 141、AWA/1-2（`#mcp-author-event-write`）は確認 142。それぞれ、その行だけに掛かる。
 
 1. **「destructive、external、publish、credential、広範なstructure effectは常に明示的な人間承認を必要とする。」** この節は、Task の review を対象にし、MCP に触れない。MCP の削除は、ユーザーの選択により、承認なしである（設定で許した、1 つの作品に固定した接続だけ。AWA/1-2。確認 70・74・77・142）。MCP の削除は、SRD/1 の X（出来事が無くなったら承認を外す規則）が入ってから開ける。間に合わなければ、閉じたまま公開する。Task の review の文は、変えない。
-2. **保留中の承認の保持（AgentRunInteraction の節）。** 「request payload、対象Session、status、OCC versionを永続化する」に対し、AWA/1 の承認の要求は、main のメモリだけに置く（再起動で消える）。型・指紋・交換の API は、後で永続にできる形にする。renderer を失った後の Evidence の保持は、満たさない。ADR 008 が許すメモリ置きの範囲である（ADR 008 の同日の追補を参照）。
+2. **保留中の承認の保持（§5 AgentRunInteraction）。** 「request payload、対象Session、status、OCC versionを永続化する」に対し、AWA/1 の承認の要求は、main のメモリだけに置く（再起動で消える）。型・指紋・交換の API は、後で永続にできる形にする。renderer を失った後の Evidence の保持は、満たさない。ADR 008 が許すメモリ置きの範囲である（ADR 008 の同日の追補を参照）。
+   - **2026-11-27 の改訂（問 22〜23。記録は contracts `2bb2083ee` の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-26-integrator-s11-leftovers.md`）。** ユーザーが、Gate A で承認が要る書き換え系の tool の承認待ちを DB に記録し（問 22「記録する」）、AWA/1 の作者の出来事の更新・削除の承認にも同じ記録を及ぼす（問 23「及ぼす」）と決めた。この項目の「メモリだけに置く」は、この範囲で改める。承認待ちは A3 の `agent_run_interactions`（`kind=approval`、Run は `waiting_approval`）に記録し、再起動の後も承認待ちのカードを起点の会話に出し直して続けられる。保存した承認はそのまま認可に使わず、続けるとき（一回限りの capability に交換する時点）に main が確かめ直す。記録の中身は対象の要約と作者の判断で、Run の終端で承認・却下・期限切れの記録の中身を消す（行は Run の行と一緒に残る）。承認待ちの期限が切れたときは、承認待ちのまま残して Run を中断し、後から「続ける」で承認できる（DR-AWA-2）。承認してから使えなくなるまでの 60 秒と、承認の数の上限（確認 133 (3)）は変えない。型・指紋・交換の API は、この記録に合わせる。**その後の確定との関係（2026-11-29 の注）：** 記録には、提案した時点の対象の版（種類・ID・版か内容の照合値。本文なし）も保存する（問 29）。Mastra の経路の Run は当面、再起動の後に出し直せない（問 22・23 への注、[A2 の判断記録](../plans/gate-a2-approval-decisions.md)）。AWA/1 の起案と A2 の判断記録は、Stop・作品の切り替えの扱いと、承認待ちの期限（5 分と 30 分）が違う。どちらに寄せるかは未決で、この追補はどちらも決めない（DR-AWA-3）。
 
 ## 追補（2026-11-26）：SessionTasks の評価の時期（DR-ST-6）
 

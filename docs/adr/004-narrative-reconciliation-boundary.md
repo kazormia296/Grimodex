@@ -98,7 +98,7 @@ validator に置く。未分類の Gate／Validator／Matcher は Writer に入�
 - **明示的に提出され、同一 authority scope／timeline／worldline に属し、`hard` と
   宣言された** Temporal constraint の形式的不整合
 - Locked／user-authored **Domain projection または field** の、明示的 human-authorized
-  override なしの AI／Reconciler 上書き禁止
+  override なしの AI／Reconciler 上書き禁止。作者の年表項目には下記追補 §5 を適用する。アプリ内では個別承認を要し、書込可の固定作品 MCP には更新・削除（開示場面を含む）の所有者例外がある。ロックは維持する。
 - version CAS、全 Operation の atomic success／rollback
 
 Authority は caller が任意に付与する metadata ではない。**Decision／Runtime Policy／
@@ -198,7 +198,7 @@ chunking、ranking、matcher、prompt 構成、Execution DAG は交換可能 Str
 5. **Reconciler-originated な semantic add／revise／retract／merge／split は必ず新しい Proposal または Proposal Revision を生成する**
 6. **適用済み Proposal Revision／Application は不変であり、semantic retraction は新しい補償 Proposal／Application として行う。Undo を semantic truth correction として使用しない**
 7. **Core は明示された構造・参照・形式 Constraint だけを検証する。Apply を拒否できる意味的 Constraint は、同一 scope／timeline／worldline 内で明示的に `hard` とされたものに限る**
-8. **Locked／user-authored Domain projection または field は、明示的な human-authorized override なしに Reconciler-originated plan から変更できない。Authority は caller metadata ではなく Decision／Runtime Policy／actor context から検証する**
+8. **Locked／user-authored Domain projection または field は、明示的な human-authorized override なしに Reconciler-originated plan から変更できない。Interactive Agent Command の作者項目には追補 §5 の個別承認と固定作品 MCP の所有者例外を適用する。Authority は caller metadata ではなく Decision／Runtime Policy／actor context から検証する**
 9. **Reconciler は宣言的な Proposal Draft を返し、SQL、DB Operation、Prepared Plan、Domain Writer command を返さない**
 10. **Domain mutation は検証済み Decision、Prepared Plan、OCC（含む source-basis／read-set precondition）、Typed Writer を経由する**
 11. **Source／Evidence の失効または削除は Projection を stale にできるが、Domain mutation や cascade delete を発生させない**
@@ -335,6 +335,8 @@ Dependency propagation.
 NIR0-CERT の「the typed C2B Human writer is the only V2 review route」との間に、緊張が 1 つある。承認し直し（RA）は、人の review の入口を、もう 1 つ足す（型付きで、3 つの id だけを受け、内容は本体が組み立てる）。BAO/1 が既に足した入口と、同じ種類である。RA は、撤回の入口ではなく、承認し直す入口である。
 
 ### 5. AI・MCP が作者の出来事を更新・削除する（AWA/1。AWA/1-1 は確認 141、AWA/1-2 は確認 142）
+
+2026-11-23 の確認 141（`nir1-agent-event-write-approval-proposal/1#agent-event-write-approval`）・確認 142（`nir1-agent-event-write-approval-proposal/1#mcp-author-event-write`）。
 
 本文の「Locked／user-authored **Domain projection または field** の、明示的 human-authorized override なしの AI／Reconciler 上書き禁止」（境界の節）と、Iron Law 8 の前半に、次を足す。Iron Law 8 の対象は、Reconciler 由来の plan のままで、その文は変えない。「Lock enforcement」の gate も、変えない。
 

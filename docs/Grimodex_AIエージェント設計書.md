@@ -315,7 +315,7 @@ Snippetを検索する。
 
 ### 書き込み系（AiPolicy ゲート付き）（2026-06-18 追記）
 
-以下の 7 ツールは **読み取り専用ではなく、プロジェクトデータを変更する**。当初は全ツール read-only だったが、AI が自律的に Codex・伏線・Snippet・ツリー構造・本文プロポーザルを書けるよう拡張された。実装は `src/features/agent-writes/`、Tauri backend は `src-tauri/src/commands/agent_writes.rs`。
+以下のツールは **読み取り専用ではなく、プロジェクトデータを変更する**。当初は全ツール read-only だったが、AI が自律的に Codex・伏線・Snippet・ツリー構造・本文プロポーザルを書けるよう拡張された。実装は `src/features/agent-writes/`、Tauri backend は `src-tauri/src/commands/agent_writes.rs`。
 
 各ツールは実行前に `blockIfPolicyOff(feature)`（`src/features/ai-policy/policyGuard.ts`）で対応する **AiPolicy トグル**（`AiFeature`: `knowledgeWrite` / `structureWrite` / `bodyWrite`）を確認し、OFF なら例外を投げて何も変更しない（fail-closed）。dispatch 上も `READ_ONLY_EXECUTORS` と `MUTATING_EXECUTORS` を分離し（`toolExecutors.ts`、両者 `Object.freeze`）、`run_research` サブエージェントには `READ_ONLY_EXECUTORS` しか渡さない。
 
@@ -325,6 +325,8 @@ Snippetを検索する。
 | `update_codex_entry` | `knowledgeWrite` | 既存エントリの提供フィールドのみ更新（楽観ロック `baseVersion`）。 |
 | `create_foreshadow` | `knowledgeWrite` | 伏線（plant）を新規作成。`title` 必須、`intent`/`notes`/`loadBearing`(critical/supporting/optional)/`secret` 任意。`secret` は **既定 true**（秘匿 plant は `list_open_foreshadows` と AI コンテキストから除外）。 |
 | `update_foreshadow` | `knowledgeWrite` | 伏線の更新。`payoffConfirmed`/`abandoned` のマークも可。 |
+| `update_event` | `knowledgeWrite` | AWA/1 実装後、実際に変わる作者所有の欄（開示場面を含む）には個別承認を求める。 |
+| `delete_event` | `knowledgeWrite` | AWA/1 の削除有効化後、削除対象と因果で結ばれた出来事の作者所有の欄を判定する。作者の欄に触れる削除は有効化までは拒否する。 |
 | `create_snippet` | `knowledgeWrite` | Snippet を新規作成。`title` 必須、`content`/`sceneId` 任意。 |
 | `apply_ai_tree_plan` | `structureWrite`（synopsis 付き op がある場合は `bodyWrite` も） | ツリーの scaffold/reorganize プラン（create/move/rename、最大 200 ops）を適用。新規ノードは `tmp:` プレフィックスの temp ID を使う。 |
 | `propose_scene_body` | `bodyWrite` | シーン本文プロポーザル。**即時適用せずステージングし、ユーザーがエディタで accept/reject するまで反映しない**（`proseStagingStore`）。`mode` は `append`（末尾）/ `insert`（開いているシーンのキャレット位置）。file-backed シーンは対象外。 |
@@ -472,9 +474,10 @@ Snippetを検索する。
 
 ### 読み取りツールと書き込みツールの分離（2026-06-18 追記）
 
-ツールは **読み取り専用ツール**（検索・一覧・取得系。`READ_ONLY_EXECUTORS`）と **書き込みツール**（`MUTATING_EXECUTORS`: `create_codex_entry` / `update_codex_entry` / `create_foreshadow` / `update_foreshadow` / `create_snippet` / `apply_ai_tree_plan` / `propose_scene_body`）に分かれる。当初の「全ツール read-only」設計から、AiPolicy ゲート付きの書き込みツールへ拡張された（前述「書き込み系」参照）。
+ツールは **読み取り専用ツール**（検索・一覧・取得系。`READ_ONLY_EXECUTORS`）と **書き込みツール**（`MUTATING_EXECUTORS`: `update_event` / `delete_event` / `create_codex_entry` / `update_codex_entry` / `create_foreshadow` / `update_foreshadow` / `create_snippet` / `apply_ai_tree_plan` / `propose_scene_body`）に分かれる。当初の「全ツール read-only」設計から、AiPolicy ゲート付きの書き込みツールへ拡張された（前述「書き込み系」参照）。
 
 - 書き込みツールは実行前に `blockIfPolicyOff(feature)` で対応 policy（`knowledgeWrite` / `structureWrite` / `bodyWrite`）を確認し、OFF なら何も変更せず例外を tool_result 化して返す（fail-closed）。
+- AWA/1 では、出来事の更新・削除は Native の判定にも従う。`allow` は個別承認不要、`denied` は実行不可。`needs-approval` では main が承認を保持し、policy・版・指紋・承認した欄を照合して一回限りの capability に交換する。固定作品 MCP の免除はアプリ内から使えない。2026-11-23 の確認 141（`nir1-agent-event-write-approval-proposal/1#agent-event-write-approval`）・確認 142（`nir1-agent-event-write-approval-proposal/1#mcp-author-event-write`）。
 - 本文への書き込みは `propose_scene_body` のみで、**即時適用ではなくステージング**（ユーザーが accept するまで反映しない）。
 - `run_research` サブエージェントには読み取りツールしか宣言せず、`executeReadOnlyTool` で dispatch するため、子は書き込み・質問・再帰を構造的に行えない。
 - `agentLoop.ts` の `declaredToolNames` ゲートにより、そのターンで宣言されていないツールは（`EXECUTORS` に存在しても）実行されない（security review F-2）。
