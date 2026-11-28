@@ -4,6 +4,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { visualizer } from "rollup-plugin-visualizer";
 import path from "path";
+import { shouldAliasNativeTemporal } from "./src/lib/nativeTemporalBuild";
 
 // @ts-expect-error process is a nodejs global
 const analyze = process.env.ANALYZE === "1";
@@ -52,7 +53,7 @@ function stripWoffFromFontsource() {
 }
 
 // https://vite.dev/config/
-export default defineConfig(async ({ mode }) => {
+export default defineConfig(async ({ command, mode }) => {
   const webEditorOnly = mode === "web-editor";
   const rendererTarget = webEditorOnly ? "web-editor" : "desktop";
   const webEditorUnavailableDialogs = path.resolve(
@@ -88,6 +89,23 @@ export default defineConfig(async ({ mode }) => {
     ],
     resolve: {
       alias: [
+        // Electron の Chromium は標準の Temporal を持つので、使われない polyfill の本体を
+        // 起動時の JS に入れない。Web Editor と Tauri shell は polyfill のまま。
+        ...(shouldAliasNativeTemporal({
+          command,
+          mode,
+          tauriPlatform: process.env.TAURI_ENV_PLATFORM,
+        })
+          ? [
+              {
+                find: /^temporal-polyfill$/,
+                replacement: path.resolve(
+                  __dirname,
+                  "./src/lib/nativeTemporalShim.ts",
+                ),
+              },
+            ]
+          : []),
         ...(webEditorOnly
           ? [
               {
