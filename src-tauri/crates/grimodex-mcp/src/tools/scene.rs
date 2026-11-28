@@ -335,7 +335,9 @@ mod tests {
             [],
         )
         .unwrap();
-        let policy = grimodex_core::policy::load_policy(&conn, "p1").unwrap();
+        let policy = grimodex_core::policy::load_policy(&conn, "p1")
+            .unwrap()
+            .toggles;
         GrimodexServer::new(
             conn,
             "p1".to_string(),
@@ -351,7 +353,9 @@ mod tests {
         // 行単位の規則：archived の folder の下の live の場面 s4 は読める（a-s2 は archived で出ない）。
         let conn = make_simple_db();
         crate::db::tests::archived_reads::seed_archive_tree(&conn);
-        let policy = grimodex_core::policy::load_policy(&conn, "p1").unwrap();
+        let policy = grimodex_core::policy::load_policy(&conn, "p1")
+            .unwrap()
+            .toggles;
         let server = GrimodexServer::new(
             conn,
             "p1".to_string(),

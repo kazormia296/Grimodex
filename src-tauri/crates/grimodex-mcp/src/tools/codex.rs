@@ -492,6 +492,8 @@ mod tests {
     use crate::db::tests::make_simple_db;
     use crate::server::GrimodexServer;
 
+    const FULL_POLICY: &str = r#"{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true,"knowledgeWrite":true}}"#;
+
     /// The shape contract is asserted on the grimodex-core path (which this
     /// tool calls directly); here we gate the tool-layer policy key against
     /// the same parity fixture.
@@ -524,11 +526,13 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO projects (id, title) VALUES ('p1', 'Novel')",
-            [],
+            "INSERT INTO projects (id, title, ai_policy) VALUES ('p1', 'Novel', ?1)",
+            [FULL_POLICY],
         )
         .unwrap();
-        let policy = grimodex_core::policy::load_policy(&conn, "p1").unwrap();
+        let policy = grimodex_core::policy::load_policy(&conn, "p1")
+            .unwrap()
+            .toggles;
         GrimodexServer::new(
             conn,
             "p1".to_string(),
@@ -747,7 +751,9 @@ mod tests {
             rusqlite::params![policy_json],
         )
         .unwrap();
-        let policy = grimodex_core::policy::load_policy(&conn, "p1").unwrap();
+        let policy = grimodex_core::policy::load_policy(&conn, "p1")
+            .unwrap()
+            .toggles;
         let server = GrimodexServer::new(
             conn,
             "p1".to_string(),

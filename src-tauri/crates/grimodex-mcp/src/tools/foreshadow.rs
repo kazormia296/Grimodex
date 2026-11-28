@@ -447,16 +447,17 @@ mod tests {
         assert!(validate_load_bearing(Some("")).is_err());
     }
 
-    /// Writable server over the shared fixture. NULL ai_policy → fail-open
-    /// full toggles (knowledge_write on), licensing feature off in tests.
+    /// Writable server over the shared fixture with an explicit full policy.
     fn make_writable_server() -> GrimodexServer {
         let conn = make_simple_db();
         conn.execute(
-            "INSERT INTO projects (id, title) VALUES ('p1', 'Novel')",
-            [],
+            "INSERT INTO projects (id, title, ai_policy) VALUES ('p1', 'Novel', ?1)",
+            [r#"{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true,"knowledgeWrite":true}}"#],
         )
         .unwrap();
-        let policy = grimodex_core::policy::load_policy(&conn, "p1").unwrap();
+        let policy = grimodex_core::policy::load_policy(&conn, "p1")
+            .unwrap()
+            .toggles;
         GrimodexServer::new(
             conn,
             "p1".to_string(),

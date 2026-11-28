@@ -35,6 +35,19 @@ pub struct Cli {
     pub verbose: bool,
 }
 
+fn startup_policy_snapshot(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+) -> anyhow::Result<grimodex_core::policy::AiPolicyToggles> {
+    match grimodex_core::policy::load_policy(conn, project_id) {
+        Ok(policy) => Ok(policy.toggles),
+        Err(grimodex_core::policy::PolicyLoadError::ProjectNotFound) => {
+            Ok(grimodex_core::policy::ParsedAiPolicy::invalid().toggles)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// Run the stdio MCP server to completion.
 ///
 /// Async entry point. The caller (either the standalone `[[bin]]` shim or the
@@ -119,7 +132,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         None => db::get_first_project_id(&conn)?,
     };
 
-    let policy = grimodex_core::policy::load_policy(&conn, &project_id)?;
+    let policy = startup_policy_snapshot(&conn, &project_id)?;
     let session_id = uuid::Uuid::new_v4().to_string();
 
     tracing::info!(
@@ -421,5 +434,35 @@ mod schema_compatibility_tests {
         drop(other);
         drop(conn);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod policy_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn startup_snapshot_survives_invalid_value_and_missing_row() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY, ai_policy TEXT);
+             INSERT INTO projects VALUES ('invalid', '');
+             INSERT INTO projects VALUES ('missing', NULL);",
+        )
+        .unwrap();
+        let safe = grimodex_core::policy::ParsedAiPolicy::invalid().toggles;
+
+        assert_eq!(startup_policy_snapshot(&conn, "invalid").unwrap(), safe);
+        assert_eq!(startup_policy_snapshot(&conn, "absent").unwrap(), safe);
+        assert_eq!(
+            startup_policy_snapshot(&conn, "missing").unwrap(),
+            grimodex_core::policy::ParsedAiPolicy::missing().toggles
+        );
+    }
+
+    #[test]
+    fn startup_snapshot_keeps_database_errors_fatal() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        assert!(startup_policy_snapshot(&conn, "p1").is_err());
     }
 }

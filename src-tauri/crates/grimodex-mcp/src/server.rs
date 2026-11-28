@@ -76,6 +76,11 @@ pub(crate) fn internal_err(e: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error("internal error".to_string(), None)
 }
 
+pub(crate) const INVALID_POLICY_WRITE_DENIAL: &str =
+    "AI policy is invalid; write tools are disabled";
+pub(crate) const PROJECT_UNAVAILABLE_WRITE_DENIAL: &str =
+    "Project is unavailable; write tools are disabled";
+
 pub struct GrimodexServer {
     pub conn: grimodex_db::Database,
     /// The project all tools currently scope to. Mutable so `--all-projects`
@@ -163,7 +168,20 @@ impl GrimodexServer {
     /// `select_project` in all-projects mode (not the startup project).
     pub fn reload_policy(&self) -> Result<grimodex_core::policy::AiPolicyToggles, ErrorData> {
         let conn = self.conn.lock().map_err(internal_err)?;
-        grimodex_core::policy::load_policy(&conn, &self.project_id()).map_err(internal_err)
+        let policy = match grimodex_core::policy::load_policy(&conn, &self.project_id()) {
+            Ok(policy) => policy,
+            Err(grimodex_core::policy::PolicyLoadError::ProjectNotFound) => {
+                return Err(ErrorData::invalid_params(
+                    PROJECT_UNAVAILABLE_WRITE_DENIAL,
+                    None,
+                ));
+            }
+            Err(error) => return Err(internal_err(error)),
+        };
+        if policy.state == grimodex_core::policy::AiPolicyState::Invalid {
+            return Err(ErrorData::invalid_params(INVALID_POLICY_WRITE_DENIAL, None));
+        }
+        Ok(policy.toggles)
     }
 
     /// ライセンスゲート (ライセンス認証設計書 §6)。write 系ツールは制限状態

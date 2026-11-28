@@ -1274,13 +1274,13 @@ mod tests {
     use rusqlite::params;
 
     /// Writable (or readonly) server over the shared fixture with projects
-    /// p1 (active) and p2 (the XPROJ "other" project). NULL ai_policy →
-    /// fail-open full toggles (knowledge_write on); licensing off in tests.
+    /// p1 (active) and p2 (the XPROJ "other" project) use an explicit full
+    /// policy; licensing is off in tests.
     fn make_server(readonly: bool) -> GrimodexServer {
         let conn = make_simple_db();
         conn.execute(
-            "INSERT INTO projects (id, title) VALUES ('p1', 'Novel')",
-            [],
+            "INSERT INTO projects (id, title, ai_policy) VALUES ('p1', 'Novel', ?1)",
+            [r#"{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true,"knowledgeWrite":true}}"#],
         )
         .unwrap();
         conn.execute(
@@ -1288,7 +1288,9 @@ mod tests {
             [],
         )
         .unwrap();
-        let policy = grimodex_core::policy::load_policy(&conn, "p1").unwrap();
+        let policy = grimodex_core::policy::load_policy(&conn, "p1")
+            .unwrap()
+            .toggles;
         GrimodexServer::new(
             conn,
             "p1".to_string(),
@@ -1651,7 +1653,7 @@ mod tests {
             false,
             false,
             "session".into(),
-            grimodex_core::policy::parse_policy_json(policy).unwrap(),
+            grimodex_core::policy::parse_policy_json(policy).toggles,
         );
         server.conn.migrate().unwrap();
         server.conn.with_conn(|conn| {
