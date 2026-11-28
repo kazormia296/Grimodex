@@ -623,7 +623,7 @@ N-API の owner と lock を Fable（read-only、effort high）が読んだ。me
 - **鍵と version の持ち主**：
   - Run は（sender、`operationId`）で引く。assistant の message の ID は、開始のときに main が受け、`origin_assistant_message_id` に書く（再起動の後も保存先が分かる。列は足さない）。
   - 台帳の鍵は（`executionId`、`toolCallId`）。同じ応答の中の重複と空の ID は記録できない扱いにする。
-  - 確認待ち（承認と質問）と台帳の対応（Mastra の担当の指摘）：開くときに `executionId` も受け、Native が「台帳にその対があり、その `toolCallId` の最後の行である」ことを確かめる。確認待ちがある間は、同じ `toolCallId` の追記を拒む。読みは、その行の `executionId` を返す。列は足さない。返事待ちの間もほかを進める形（DR-A3-18）を入れる版で、`agent_run_interactions` に列を足す。
+  - 確認待ち（承認と質問）と台帳の対応（Mastra の担当の指摘）：開くときに `executionId` も受け、Native が「台帳にその対があり、その `toolCallId` の最後の行である」ことを確かめる。確認待ちがある間は、同じ `toolCallId` の追記を拒む。承認の読みは、その行の `executionId` を返す。質問の読み戻しは、画面の PR（PR 5）で足す。開くときは、台帳の行の引数の照合値（承認は tool の名前も）との一致も求める。台帳の `argsDigest` は、Gate A が使う digest の関数で作る。列は足さない。返事待ちの間もほかを進める形（DR-A3-18）を入れる版で、`agent_run_interactions` に列を足す。
   - Run の version は記録の持ち主が持ち、Run ごとに直列にする。Interaction の version は Gate A が持つ。
   - Gate A へは `resolveRun({senderId, projectId, executionId})` が `recorded`（`runId`、`transact`）／`not_recording`／`unrecorded` を返す。対応は台帳の追記で作る。Gate A は `recorded` のときだけ交換を開く。
   - `transact` は `op` の戻り（`AgentRunState` を含む型）をそのまま返す。`op` は Native の呼出し 1 回にする。承認を待たず、再入しない。失敗したら version を進めない。終端と workspace の切替の後は拒む。N-API は呼んだ時点の workspace を使うので、切替で対応を捨てる。
@@ -644,7 +644,8 @@ N-API の owner と lock を Fable（read-only、effort high）が読んだ。me
   - 開始に assistant の message の ID を足す。
   - 自分の owner の終わっていない Run の一覧。
   - `finalizing` を閉じる操作に、中断の理由の引数を足す（今は `renderer_lost` に固定）。ほかの owner の分には活動の古さの下限を通す。回収は owner ごとの結果を返し、下限を必須にする。
-  - 保存する行が無い終端（送信の前の Stop）のために、`running` から終端へ直接進む操作。
+  - 保存する行が無い終端（送信の前の Stop）のために、`running` から終端へ直接進む操作（`running` だけ）。
+  - 開始で記録した assistant の message の ID は、終端の準備で別の ID に変えられない。状態の遷移でも活動の時刻を更新する（lock が効かない場所で、生きた owner の回を回収しないため）。
   - `resume_block_detail` は理由の語に限る。`mark_not_resumable` に、期待する status の条件。
   - `audit_execution_ids` に 1 件を足す操作（version は上げない。件数の上限を置く）。
   - 期待する `chatSessionId`・`projectId` の照合は Native に足さない。main が束縛と行で照合する（DR-A3-5）。止め切れていない古い実行は、対応に無い `executionId` として拒む。
