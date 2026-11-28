@@ -149,8 +149,15 @@ export class FakeAgentRunApprovalPort implements AgentRunApprovalPort {
 
   stopRun(runId: string): AgentRunState {
     const run = this.#requireRun(runId);
+    if (run.status === "waiting_approval") {
+      run.status = "finalizing";
+      run.version += 1;
+    } else if (run.status !== "running") {
+      fail("AGENT_RUN_VERSION_OR_STATUS_MISMATCH");
+    }
     run.status = "cancelled";
     run.version += 1;
+    run.ledger = [];
     for (const interaction of this.#interactions.values()) {
       if (interaction.runId === runId) {
         if (interaction.status === "pending") {
@@ -162,6 +169,15 @@ export class FakeAgentRunApprovalPort implements AgentRunApprovalPort {
         interaction.targetBasis = null;
       }
     }
+    return this.readRun(runId);
+  }
+
+  beginFinalizingRun(runId: string): AgentRunState {
+    const run = this.#requireRun(runId);
+    if (!["running", "waiting_approval"].includes(run.status))
+      fail("AGENT_RUN_VERSION_OR_STATUS_MISMATCH");
+    run.status = "finalizing";
+    run.version += 1;
     return this.readRun(runId);
   }
 

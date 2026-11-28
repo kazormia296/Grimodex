@@ -134,6 +134,25 @@ export function describeAgentRunApprovalPortContract(
       });
     });
 
+    it("rejects an approval whose tool call has no ledger row", async () => {
+      const h = makeHarness();
+      h.createRunningRun("unknown-tool-call");
+      await expectCode(
+        h.port.openApproval({
+          runId: "unknown-tool-call",
+          expectedVersion: 0,
+          interactionId: "interaction-unknown-tool-call",
+          executionId: "e",
+          toolCallId: "missing",
+          toolName: "update_entry",
+          argsDigest: "digest",
+          request: "Apply?",
+          targetBasis: null,
+        }),
+        "AGENT_RUN_UNKNOWN_TOOL_CALL_ID",
+      );
+    });
+
     it("requires the expected run and interaction versions and statuses", async () => {
       const h = makeHarness();
       h.createRunningRun("cas");
@@ -253,12 +272,22 @@ export function describeAgentRunApprovalPortContract(
 
       h.createRunningRun("stop");
       await open(h, "stop");
-      expect(h.stopRun("stop").status).toBe("cancelled");
+      expect(h.stopRun("stop")).toEqual({
+        runId: "stop",
+        version: 3,
+        status: "cancelled",
+      });
       expect(h.readInteraction("interaction-stop")).toMatchObject({
         status: "cancelled",
         request: "",
       });
       expect(await h.port.getPendingApproval("stop")).toBeNull();
+      expect(
+        h.readToolCall("stop", {
+          executionId: "e",
+          toolCallId: "tool-call-1",
+        }),
+      ).toBeNull();
     });
 
     it("matches ledger rejection rules without incrementing run version", async () => {
@@ -361,7 +390,9 @@ export function describeAgentRunApprovalPortContract(
         argsDigest: "d",
       });
       await expectCode(
-        h.port.appendToolCalls("batch", [first]),
+        h.port.appendToolCalls("batch", [
+          { ...first, executionId: "different-execution" },
+        ]),
         "AGENT_RUN_PENDING_INTERACTION_EXISTS",
       );
       h.createRunningRun("execution-scoped-keys");
@@ -369,6 +400,38 @@ export function describeAgentRunApprovalPortContract(
       await h.port.appendToolCalls("execution-scoped-keys", [
         { ...first, executionId: "e2" },
       ]);
+    });
+
+    it("rejects ledger appends after interruption but permits updates", async () => {
+      const h = makeHarness();
+      h.createRunningRun("interrupted-ledger");
+      const entry = ledgerEntry({
+        executionId: "e",
+        toolCallId: "call",
+        toolName: "tool",
+        argsDigest: "d",
+      });
+      await h.port.appendToolCalls("interrupted-ledger", [entry]);
+      await open(h, "interrupted-ledger", {
+        toolCallId: "call",
+        toolName: "tool",
+        argsDigest: "d",
+      });
+      await h.interrupt("interrupted-ledger", 1);
+      await expectCode(
+        h.port.appendToolCalls("interrupted-ledger", [
+          { ...entry, toolCallId: "later-call" },
+        ]),
+        "AGENT_RUN_VERSION_OR_STATUS_MISMATCH",
+      );
+      await h.port.updateToolCall(
+        "interrupted-ledger",
+        { executionId: "e", toolCallId: "call" },
+        { executionState: "failed" },
+      );
+      expect(h.readToolCall("interrupted-ledger", entry)).toMatchObject({
+        executionState: "failed",
+      });
     });
 
     it("opens only the latest matching tool call row and exposes its execution ID", async () => {
