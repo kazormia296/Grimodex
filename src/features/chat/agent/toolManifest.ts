@@ -50,8 +50,7 @@ export function validateAgentToolManifest(
     }
     if (
       (tool.effect === "read") !== (tool.capability === "read") ||
-      (tool.effect === "destructive") !==
-        (tool.capability === "destructive")
+      (tool.effect === "destructive") !== (tool.capability === "destructive")
     ) {
       throw new Error(`effect and capability disagree for ${tool.name}`);
     }
