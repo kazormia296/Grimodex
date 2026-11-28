@@ -1075,6 +1075,7 @@ pub async fn stamp_scene_event(
             surface: Some("mcp".to_string()),
             scene_id,
             event_id,
+            expected: None,
         },
         true,
     )
@@ -1112,6 +1113,7 @@ pub async fn unstamp_scene_event(
             surface: Some("mcp".to_string()),
             scene_id,
             event_id,
+            expected: None,
         },
         false,
     )
@@ -1215,6 +1217,7 @@ pub async fn add_event_relation(
             surface: Some("mcp".to_string()),
             cause_event_id: cause,
             effect_event_id: effect,
+            expected: None,
         },
         true,
     )
@@ -1259,6 +1262,7 @@ pub async fn remove_event_relation(
             surface: Some("mcp".to_string()),
             cause_event_id: cause,
             effect_event_id: effect,
+            expected: None,
         },
         false,
     )
