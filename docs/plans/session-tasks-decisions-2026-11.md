@@ -90,8 +90,8 @@
 利用者の回答（統合者の構造化質問、2026-11-27。記録は `claude/nir1-contracts` の commit `e5d93dca8` の問 8〜10）：
 
 - 問 8「SessionTasks の試験」は「Release B の機能まるごと」（書き換えの承認、連続実行、再起動をまたぐ確認待ち、続行の引き継ぎまで）。DR-ST-6 の前提 4 つ（Write-Safety の Gate A、Release A の A3、MP-6、MP-9）は全部要る。
-- 問 9 Write-Safety の Gate A（A1・A2）は Release B の前提として確定した（「前提にする、担当は Mastra (Recommended)」）。担当は Mastra 移行の lane で、MP-6 の後に続けて持つ。authority の変更なので、設計ができたら利用者に伺う。
-- 問 10 Release A の A3（R1・F0-lite を含む）は「新しい lane で実装まで」。保存の範囲の拡大と DR-MP5-11 の変更は、その lane が起案の段で利用者に伺う（委任の外）。
+- 問 9 Write-Safety の Gate A（A1・A2）は Release B の前提として確定した（「前提にする、担当は Mastra (Recommended)」）。担当は Mastra 移行の lane で、MP-6 の後に続けて持つ。authority の変更なので、設計ができたら利用者に伺う。（2026-11-28 追記：設計は確認済み。§9）
+- 問 10 Release A の A3（R1・F0-lite を含む）は「新しい lane で実装まで」。保存の範囲の拡大と DR-MP5-11 の変更は、その lane が起案の段で利用者に伺う（委任の外）。（2026-11-28 追記：確認済み。§9）
 
 ### DR-ST-9 作者が書く目的と条件の欄は作らない
 
@@ -165,6 +165,7 @@ Mastra 組込みの task／plan の tool、Goals、AgentController は使わな�
 - **承認の仕組み（DR-ST-4）**：利用者は Gate A の問 3 で「作者の出来事の承認（AWA/1）と同じ仕組み」を選んだ。Mastra の組込みの承認を MP-6 の候補にする案は採らず、そのための W12 の改訂も要らない。main は、承認の要求を作る時点で入力の digest と base version を固定し、承認の後に確かめ直してから一回限りの Capability に交換する（DR-GA-3）。Task Grant が入るまで、`mutate`／`task-scope` は毎回個別の承認になる（同 第 1 節）。
 - **確認待ちの保存（DR-ST-6・DR-ST-7）**：保存の範囲の拡大と、再起動の後の扱いの変更は、A3 の lane が利用者の確認を得た（A3 の判断記録 第 7 節）。
   - 中断した Run は、作者が「続ける」を押すか確認待ちの質問に答えたときに、保存した途中の状態から同じ Run として再開する。起動時に自動では続けない。再開には門と、今の状態に照らした結果の選り分けがあり、再開できない Run もある（DR-A3-6）。
+  - Mastra の経路の Run は、MP-9 と再入の実証が済むまで途中再開できない（`resumable` を偽で記録する。DR-A3-8）。Release B の確認待ちを Mastra の経路で再起動をまたいで続けるには、これが済む必要がある。
   - 承認待ちも記録し、再起動の後は承認のカードを出し直す。保存した承認は認可に使わない（DR-A3-14）。
   - 脅威モデルの W12 と DR-MP5-11 の「再起動の後に復元しない」の改訂は Mastra の担当の PR で行う予定で、上の時点の master では改訂前。
   - Mastra の workflows store を永続化しないことは変わらない。A3 が保存するのは、製品が持つ別の途中の状態（DR-A3-4）。
