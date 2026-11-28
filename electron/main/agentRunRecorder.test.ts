@@ -271,6 +271,7 @@ describe("AgentRun recorder", () => {
     const op = vi.fn();
     await expect(transact(op)).rejects.toThrow(refused);
     expect(op).not.toHaveBeenCalled();
+    expect(await recorder.interruptForSwitch("workspace_switched")).toEqual([]);
     for (const method of Object.values(backend))
       expect(method).not.toHaveBeenCalled();
   });
@@ -421,18 +422,45 @@ describe("AgentRun recorder", () => {
     expect(recorder.resolveRun(resolveInput)).toEqual({ kind: "unrecorded" });
   });
 
-  it("returns failed when the non-resumable mark fails after a filtered append", async () => {
-    const { backend, recorder } = fixture();
-    await recorder.start(turn);
-    backend.agentRunMarkNotResumable.mockRejectedValueOnce(new Error());
-    expect(
-      await recorder.recordResponse({
+  it.each(["first response", "reused execution ID"])(
+    "hides the ledger binding when the non-resumable mark fails on %s",
+    async (scenario) => {
+      const { backend, recorder, recordedRun } = fixture();
+      const previous =
+        scenario === "reused execution ID" ? await recordedRun() : undefined;
+      if (!previous) await recorder.start(turn);
+      const markEntered = defer();
+      const markRelease = defer();
+      backend.agentRunMarkNotResumable.mockImplementationOnce(async () => {
+        markEntered.release();
+        await markRelease.promise;
+        throw new Error("AGENT_RUN_VERSION_OR_STATUS_MISMATCH");
+      });
+      const recording = recorder.recordResponse({
         ...response,
-        toolUses: [{ ...response.toolUses[0], id: "" }, response.toolUses[0]],
-      }),
-    ).toBe("failed");
-    expect(backend.agentRunAppendToolCalls).toHaveBeenCalledOnce();
-  });
+        toolUses: ["", "new-call"].map((id) => ({
+          ...response.toolUses[0],
+          id,
+        })),
+      });
+      await markEntered.promise;
+      const duringMark = recorder.resolveRun(resolveInput);
+      markRelease.release();
+      expect(await recording).toBe("failed");
+      expect(backend.agentRunAppendToolCalls).toHaveBeenCalledTimes(
+        previous ? 2 : 1,
+      );
+      expect(duringMark).toEqual({ kind: "unrecorded" });
+      expect(recorder.resolveRun(resolveInput)).toEqual({ kind: "unrecorded" });
+      if (previous) {
+        const op = vi.fn();
+        await expect(previous.transact(op)).rejects.toThrow(
+          "AGENT_RUN_NOT_FOUND",
+        );
+        expect(op).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   it("refreshes status after ledger failure, reports fallback failure and logs only IDs and markers", async () => {
     const { backend, recorder, rows, warn } = fixture();
@@ -451,6 +479,7 @@ describe("AgentRun recorder", () => {
     expect(await recorder.recordResponse(response)).toBe(
       "marked_not_resumable",
     );
+    expect(recorder.resolveRun(resolveInput)).toEqual({ kind: "unrecorded" });
     expect(backend.agentRunGetStatus).toHaveBeenCalledExactlyOnceWith({
       runId: "run-1",
     });
@@ -551,6 +580,61 @@ describe("AgentRun recorder", () => {
     ).rejects.toThrow("AGENT_RUN_NOT_FOUND");
     expect(backend.agentRunOpenApproval).not.toHaveBeenCalled();
     expect(backend.agentRunGetPendingApproval).not.toHaveBeenCalled();
+  });
+
+  it.each(["immediate", "after resolution"])(
+    "rejects a second port call %s without reaching Native",
+    async (timing) => {
+      const { backend, recorder, recordedRun } = fixture();
+      const { runId, transact } = await recordedRun();
+      const followUp = vi.fn(() => recorder.getPendingApproval(runId));
+      const refusals: unknown[] = [];
+
+      const opened = await transact((expectedVersion) => {
+        const result = recorder.openApproval({ ...approval, expectedVersion });
+        const second =
+          timing === "immediate" ? followUp() : result.then(followUp);
+        void second.catch((error: unknown) => refusals.push(error));
+        return result;
+      });
+      expect(opened.status).toBe("waiting_approval");
+      expect(followUp).toHaveBeenCalledOnce();
+      expect(backend.agentRunGetPendingApproval).not.toHaveBeenCalled();
+      expect(refusals).toEqual([new Error("AGENT_RUN_REENTRANT_TRANSACTION")]);
+    },
+  );
+
+  it("rejects a first port call added to the op promise after a direct Native call", async () => {
+    const { backend, recorder, recordedRun } = fixture();
+    const { runId, transact } = await recordedRun();
+    const refused = vi.fn();
+    await transact((expectedVersion) => {
+      const result = backend
+        .agentRunOpenApproval({ ...approval, expectedVersion })
+        .then((json) => JSON.parse(json) as AgentRunState);
+      void result.then(() => recorder.getPendingApproval(runId)).catch(refused);
+      return result;
+    });
+    expect(refused).toHaveBeenCalledExactlyOnceWith(
+      new Error("AGENT_RUN_REENTRANT_TRANSACTION"),
+    );
+    expect(backend.agentRunGetPendingApproval).not.toHaveBeenCalled();
+  });
+
+  it("allows the first port call while an asynchronous transaction is pending", async () => {
+    const { backend, recorder, recordedRun } = fixture();
+    const { transact } = await recordedRun();
+    const ready = defer();
+    const opening = transact(async (expectedVersion) => {
+      await ready.promise;
+      return recorder.openApproval({ ...approval, expectedVersion });
+    });
+    ready.release();
+    expect(await opening).toMatchObject({
+      status: "waiting_approval",
+      version: 1,
+    });
+    expect(backend.agentRunOpenApproval).toHaveBeenCalledOnce();
   });
 
   it("queues finalization behind a standalone openApproval", async () => {
@@ -836,8 +920,47 @@ describe("AgentRun recorder", () => {
     expect(op).not.toHaveBeenCalled();
   });
 
-  it("quiesces a pending Native start and queued port calls before forgetting", async () => {
-    const { backend, recorder, recordedRun } = fixture();
+  it.each(["split", "single"])(
+    "handles a start during interruption with the %s switch sequence",
+    async (sequence) => {
+      const { backend, recorder, recordedRun, rows } = fixture();
+      await recordedRun();
+      const entered = defer();
+      const release = defer();
+      const nativeInterrupt =
+        backend.agentRunInterrupt.getMockImplementation()!;
+      backend.agentRunInterrupt.mockImplementationOnce(async (payload) => {
+        entered.release();
+        await release.promise;
+        return nativeInterrupt(payload);
+      });
+      const split = sequence === "split";
+      const interrupting = split
+        ? recorder.interruptAll("workspace_switched")
+        : recorder.interruptForSwitch("workspace_switched");
+      await entered.promise;
+      const late = await recorder.start({
+        ...turn,
+        operationId: "late",
+        chatSessionId: "late",
+      });
+      release.release();
+      expect(await interrupting).toEqual([]);
+      if (split) await recorder.quiesce();
+      recorder.forgetAll();
+      expect(rows.get("run-1")?.status).toBe("interrupted");
+      if (split) {
+        expect(late).toEqual({ kind: "recorded", runId: "run-2" });
+        expect(rows.get("run-2")?.status).toBe("running");
+      } else {
+        expect(late).toEqual({ kind: "unrecorded" });
+        expect(rows.has("run-2")).toBe(false);
+      }
+    },
+  );
+
+  it("closes admission, drains pending calls and interrupts all Runs before forgetting", async () => {
+    const { backend, recorder, recordedRun, rows } = fixture();
     const { runId, transact } = await recordedRun();
     const startEntered = defer();
     const startRelease = defer();
@@ -860,9 +983,17 @@ describe("AgentRun recorder", () => {
     await Promise.all([startEntered.promise, updateEntered.promise]);
     const reading = recorder.getPendingApproval(runId);
     const settled = vi.fn();
-    const draining = recorder.quiesce().then(settled);
+    const draining = recorder
+      .interruptForSwitch("workspace_switched")
+      .then(settled);
     const refused = "AGENT_RUN_QUIESCING";
-    expect(await recorder.start(turn)).toEqual({ kind: "unrecorded" });
+    expect(
+      await recorder.start({
+        ...turn,
+        operationId: "late",
+        chatSessionId: "late",
+      }),
+    ).toEqual({ kind: "unrecorded" });
     expect(await recorder.recordResponse(response)).toBe("failed");
     expect(recorder.resolveRun(resolveInput)).toEqual({ kind: "unrecorded" });
     await expect(recorder.appendToolCalls(runId, [])).rejects.toThrow(refused);
@@ -872,14 +1003,20 @@ describe("AgentRun recorder", () => {
     expect(op).not.toHaveBeenCalled();
     expect(settled).not.toHaveBeenCalled();
     expect(backend.agentRunGetPendingApproval).not.toHaveBeenCalled();
+    expect(backend.agentRunInterrupt).not.toHaveBeenCalled();
     startRelease.release();
     expect(await starting).toEqual({ kind: "recorded", runId: "run-2" });
     expect(settled).not.toHaveBeenCalled();
+    expect(backend.agentRunInterrupt).not.toHaveBeenCalled();
     updateRelease.release();
     await updating;
     expect(await reading).toBeNull();
     await draining;
-    expect(settled).toHaveBeenCalledOnce();
+    expect(settled).toHaveBeenCalledExactlyOnceWith([]);
+    expect([...rows.values()].map(({ status }) => status)).toEqual([
+      "interrupted",
+      "interrupted",
+    ]);
     recorder.forgetAll();
     expect(recorder.resolveRun(resolveInput)).toEqual({ kind: "unrecorded" });
     await expect(transact(op)).rejects.toThrow("AGENT_RUN_WORKSPACE_CHANGED");
@@ -887,6 +1024,25 @@ describe("AgentRun recorder", () => {
       kind: "recorded",
       runId: "run-3",
     });
+  });
+
+  it("reports Runs that could not be interrupted for the switch", async () => {
+    const { backend, recorder, recordedRun, rows } = fixture();
+    await recordedRun();
+    await recorder.start({
+      ...turn,
+      operationId: "other",
+      chatSessionId: "other",
+    });
+    backend.agentRunInterrupt.mockRejectedValueOnce(
+      new Error("AGENT_RUN_OWNER_MISMATCH"),
+    );
+    const switching = recorder.interruptForSwitch("workspace_switched");
+    expect(recorder.interruptForSwitch("workspace_switched")).toBe(switching);
+    expect(await switching).toEqual(["run-1"]);
+    expect(rows.get("run-2")?.status).toBe("interrupted");
+    expect(await recorder.interruptForSwitch("workspace_switched")).toEqual([]);
+    expect(rows.get("run-1")?.status).toBe("interrupted");
   });
 
   it("rejects pending and later transactions using a handle from the old workspace", async () => {

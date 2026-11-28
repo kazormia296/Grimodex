@@ -447,44 +447,75 @@ describe("AgentRun recorder against the real Native addon", () => {
     ).toEqual({ kind: "unrecorded" });
   });
 
-  it("records only valid tool call IDs and marks a partially recorded Run as non-resumable", async () => {
-    const { native, recorder, turn, runId, status } = await openFixture();
-    const executionId = "execution";
-    expect(
-      await recorder.recordResponse({
-        ...turn,
-        executionId,
-        chatMessageId: turn.assistantMessageId,
-        model: turn.modelId,
-        toolUses: ["", " \t", " padded", "padded ", "tool-call"].map((id) => ({
-          id,
-          name: "update_fixture",
-          input: { title: "Revised" },
-        })),
-      }),
-    ).toBe("recorded");
-    expect(await readLedger(native, runId)).toEqual([
-      expect.objectContaining({ toolCallId: "tool-call", executionId }),
-    ]);
-    expect(recorder.resolveRun({ ...turn, executionId })).toMatchObject({
-      kind: "recorded",
-      runId,
-    });
-    expect(await status()).toMatchObject({
-      resumable: false,
-      notResumableReason: "ledger_write_failed",
-    });
-  });
+  it.each(["recorded", "failed"] as const)(
+    "keeps only valid tool call IDs and returns %s according to the non-resumable write",
+    async (result) => {
+      const { native, recorder, turn, runId, status } = await openFixture();
+      const executionId = "execution";
+      const mark = vi.spyOn(native, "agentRunMarkNotResumable");
+      if (result === "failed") {
+        mark.mockRejectedValueOnce(
+          new Error("AGENT_RUN_VERSION_OR_STATUS_MISMATCH"),
+        );
+      }
+      try {
+        expect(
+          await recorder.recordResponse({
+            ...turn,
+            executionId,
+            chatMessageId: turn.assistantMessageId,
+            model: turn.modelId,
+            toolUses: ["", " \t", " padded", "padded ", "tool-call"].map(
+              (id) => ({
+                id,
+                name: "update_fixture",
+                input: { title: "Revised" },
+              }),
+            ),
+          }),
+        ).toBe(result);
+        expect(mark).toHaveBeenCalledOnce();
+      } finally {
+        mark.mockRestore();
+      }
+      expect(await readLedger(native, runId)).toEqual([
+        expect.objectContaining({ toolCallId: "tool-call", executionId }),
+      ]);
+      const resolution = recorder.resolveRun({ ...turn, executionId });
+      if (result === "failed") {
+        expect(resolution).toEqual({ kind: "unrecorded" });
+        expect(await status()).toMatchObject({
+          status: "running",
+          resumable: true,
+        });
+      } else {
+        expect(resolution).toMatchObject({ kind: "recorded", runId });
+        expect(await status()).toMatchObject({
+          resumable: false,
+          notResumableReason: "ledger_write_failed",
+        });
+      }
+    },
+  );
 
-  it("recovers finalizing as interrupted when the messages are incomplete", async () => {
-    const { recorder, turn, status } = await openFixture();
+  it("interrupts active and incomplete finalizing Runs before a workspace switch", async () => {
+    const { native, recorder, turn, status, startAnotherRun } =
+      await openFixture();
+    const active = await startAnotherRun("switch");
     await recorder.beginFinalizing(turn, "completed", turn.assistantMessageId);
-    await recorder.interruptSender(turn.senderId, "renderer_lost");
+    expect(await recorder.interruptForSwitch("workspace_switched")).toEqual([]);
     expect(await status()).toMatchObject({
       status: "interrupted",
-      interruptReason: "renderer_lost",
+      interruptReason: "workspace_switched",
       version: 2,
       resumable: true,
+    });
+    expect(
+      JSON.parse(await native.agentRunGetStatus({ runId: active.runId })),
+    ).toMatchObject({
+      status: "interrupted",
+      interruptReason: "workspace_switched",
+      version: 1,
     });
   });
 

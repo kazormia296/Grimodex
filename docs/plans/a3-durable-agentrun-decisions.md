@@ -675,7 +675,8 @@ N-API の owner と lock を Fable（read-only、effort high）が読んだ。me
 - `resolveRun` が `recorded` を返すのは、Run が `running`・`waiting_user`・`waiting_approval` のときだけ。取得済みの `transact` も、実行する時点で対応と状態を確かめ直す。
 - `finalizing` の Run を中断するときは、保存の読み手の結果を証拠にする（DR-A3-11）。両方の行がそろっていれば予定の終端に進める。読み手が無いか失敗したら未完とする。
 - 空の ID の呼出しは台帳から除き、Run を再開不可にする（DR-A3-23 の訂正）。追記に失敗した応答は `marked_not_resumable` か `failed` で、呼び手は capability を出さない。
-- workspace の切替の順は `interruptAll` → `quiesce` → `forgetAll`。`quiesce` の後の新しい操作は拒み、進行中の呼出しを待つ。`interruptAll`・`interruptSender` は、中断できなかった Run の ID を返す。
+- workspace の切替は `interruptForSwitch` → `forgetAll`。`interruptForSwitch` は新しい受付を閉じ、進行中の呼出しを待ってから非終端の Run を中断する（「中断してから閉じる」順だと、間に始まった Run が残るため）。`interruptAll`・`interruptSender` は同じ workspace の中で使う。どれも中断できなかった Run の ID を返す。
+- `transact` の中で列を通らない port の呼出しは 1 回だけ（2 回目と、`op` の後の処理からの呼出しは拒む）。`executionId` の対応は、その応答の書込みがすべて成功してから `resolveRun` で引ける。
 - **4c で確かめること**：
   - 呼び手の認可（置き換えの開始、終端、確認待ちの読みを、どの sender に許すか）。
   - 記録の呼出しの例外を呼び手が捕まえ、会話の保存と生成を止めないこと。

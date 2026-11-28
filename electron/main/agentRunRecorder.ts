@@ -116,6 +116,12 @@ interface ExecutionBinding {
   recorded: boolean;
 }
 
+interface Transaction {
+  run: TrackedRun;
+  active: boolean;
+  portCall?: Promise<unknown>;
+}
+
 class ExecutionCollisionError extends Error {
   constructor() {
     super("AGENT_RUN_TOOL_CALL_EXECUTION_MISMATCH");
@@ -130,6 +136,7 @@ function createWorkspace() {
     tails: new Map<string, Promise<void>>(),
     pending: new Set<Promise<unknown>>(),
     quiescing: false,
+    switching: undefined as Promise<string[]> | undefined,
   };
 }
 
@@ -155,6 +162,8 @@ interface AgentRunRecorder extends AgentRunApprovalPort, AgentRunResolver {
   ): Promise<AgentRunState | undefined>;
   interruptAll(reason: InterruptReason): Promise<string[]>;
   interruptSender(senderId: number, reason: InterruptReason): Promise<string[]>;
+  interruptForSwitch(reason: InterruptReason): Promise<string[]>;
+  /** Drains admitted calls. Use interruptForSwitch before switching workspaces. */
   quiesce(): Promise<void>;
   forgetAll(): void;
 }
@@ -194,10 +203,7 @@ export function createAgentRunRecorder({
   logger,
 }: RecorderDeps): AgentRunRecorder {
   let workspace = createWorkspace();
-  const transactions = new AsyncLocalStorage<{
-    run: TrackedRun;
-    active: boolean;
-  }>();
+  const transactions = new AsyncLocalStorage<Transaction>();
 
   function assertAvailable(scope: Workspace) {
     if (scope !== workspace) throw new Error("AGENT_RUN_WORKSPACE_CHANGED");
@@ -349,13 +355,32 @@ export function createAgentRunRecorder({
     );
   }
 
-  function portRun(scope: Workspace, runId: string) {
-    const run = scope.runs.get(runId);
-    const inTransaction = transactions.getStore();
-    if (inTransaction?.active && inTransaction.run !== run) {
+  function queuePort<T>(
+    scope: Workspace,
+    target: TrackedRun | string,
+    op: () => Promise<T>,
+  ): Promise<T> {
+    const transaction = transactions.getStore();
+    if (!transaction) return enqueue(scope, target, op);
+    const run = typeof target === "string" ? scope.runs.get(target) : target;
+    if (transaction.run !== run) {
       throw new Error("AGENT_RUN_NOT_FOUND");
     }
-    return { run, inTransaction: inTransaction?.active === true };
+    if (!transaction.active || transaction.portCall) {
+      throw new Error("AGENT_RUN_REENTRANT_TRANSACTION");
+    }
+    const pending = track(
+      scope,
+      Promise.resolve().then(() => {
+        // A reaction already attached to the op's promise can run before our await resumes.
+        if (!transaction.active) {
+          throw new Error("AGENT_RUN_REENTRANT_TRANSACTION");
+        }
+        return op();
+      }),
+    );
+    transaction.portCall = pending;
+    return pending;
   }
 
   async function fromPort<T>(
@@ -365,12 +390,9 @@ export function createAgentRunRecorder({
   ): Promise<T> {
     const scope = workspace;
     assertAdmission(scope);
-    const { run, inTransaction } = portRun(scope, runId);
+    const run = scope.runs.get(runId);
     if (!run) throw new Error("AGENT_RUN_NOT_FOUND");
-    // Gate A already holds this Run's queue inside transact.
-    return inTransaction
-      ? track(scope, op(scope, run))
-      : enqueue(scope, prepareRun ? run : runId, () => op(scope, run));
+    return queuePort(scope, prepareRun ? run : runId, () => op(scope, run));
   }
 
   async function startRun(
@@ -449,6 +471,7 @@ export function createAgentRunRecorder({
     scope: Workspace,
     run: TrackedRun,
     entries: readonly AgentRunLedgerEntry[],
+    publish = true,
   ) {
     const executionId = entries[0]?.executionId;
     const existing =
@@ -485,8 +508,9 @@ export function createAgentRunRecorder({
       ) {
         throw new ExecutionCollisionError();
       }
-      binding.recorded = true;
-    } finally {
+      if (publish) binding.recorded = true;
+      return binding;
+    } catch (error) {
       if (
         executionId !== undefined &&
         !binding.recorded &&
@@ -494,6 +518,7 @@ export function createAgentRunRecorder({
       ) {
         scope.executions.delete(executionId);
       }
+      throw error;
     }
   }
 
@@ -570,10 +595,11 @@ export function createAgentRunRecorder({
     });
   }
 
-  async function interruptKnown(reason: InterruptReason, senderId?: number) {
-    const scope = workspace;
-    if (!scope.quiescing && !isEnabled()) return [];
-    assertAdmission(scope);
+  async function interruptKnown(
+    scope: Workspace,
+    reason: InterruptReason,
+    senderId?: number,
+  ) {
     const results = await track(
       scope,
       Promise.all(
@@ -598,6 +624,20 @@ export function createAgentRunRecorder({
       ),
     );
     return results.filter((runId) => runId !== undefined);
+  }
+
+  async function interruptAdmitted(reason: InterruptReason, senderId?: number) {
+    const scope = workspace;
+    if (!scope.quiescing && !isEnabled()) return [];
+    assertAdmission(scope);
+    return interruptKnown(scope, reason, senderId);
+  }
+
+  async function quiesce(scope: Workspace) {
+    scope.quiescing = true;
+    while (scope.pending.size > 0) {
+      await Promise.allSettled(scope.pending);
+    }
   }
 
   return {
@@ -652,7 +692,12 @@ export function createAgentRunRecorder({
               ({ id }) =>
                 typeof id === "string" && id !== "" && id === id.trim(),
             );
+            const previous = scope.executions.get(executionId);
+            if (previous?.run === run && previous.recorded) {
+              scope.executions.set(executionId, { run, recorded: false });
+            }
             let result: ResponseResult = "recorded";
+            let binding: ExecutionBinding | undefined;
             try {
               if (validToolUses.length === 0) {
                 await prepare(scope, run);
@@ -674,7 +719,7 @@ export function createAgentRunRecorder({
                     executionState: "pending",
                   }),
                 );
-                await append(scope, run, entries);
+                binding = await append(scope, run, entries, false);
               }
             } catch (error) {
               result =
@@ -693,6 +738,11 @@ export function createAgentRunRecorder({
                 expectedStatus: run.state.status,
                 reason: "ledger_write_failed",
               });
+            }
+            if (binding) {
+              if (scope.executions.get(executionId) !== binding)
+                return "failed";
+              binding.recorded = true;
             }
             return result;
           },
@@ -761,19 +811,29 @@ export function createAgentRunRecorder({
     },
 
     interruptAll(reason) {
-      return interruptKnown(reason);
+      return interruptAdmitted(reason);
     },
 
     interruptSender(senderId, reason) {
-      return interruptKnown(reason, senderId);
+      return interruptAdmitted(reason, senderId);
     },
 
-    async quiesce() {
+    interruptForSwitch(reason) {
       const scope = workspace;
-      scope.quiescing = true;
-      while (scope.pending.size > 0) {
-        await Promise.allSettled(scope.pending);
-      }
+      scope.switching ??= quiesce(scope)
+        .then(() => {
+          if (scope !== workspace)
+            throw new Error("AGENT_RUN_WORKSPACE_CHANGED");
+          return isEnabled() ? interruptKnown(scope, reason) : [];
+        })
+        .finally(() => {
+          scope.switching = undefined;
+        });
+      return scope.switching;
+    },
+
+    quiesce() {
+      return quiesce(workspace);
     },
 
     forgetAll() {
@@ -828,26 +888,19 @@ export function createAgentRunRecorder({
       const scope = workspace;
       if (!scope.quiescing && !isEnabled()) return null;
       assertAdmission(scope);
-      const { inTransaction } = portRun(scope, runId);
       const read = () =>
         native<
           | (Omit<PendingApproval, "version"> & { interactionVersion: number })
           | null
         >(scope, "agentRunGetPendingApproval", { runId }, runId);
-      const pending = await (inTransaction
-        ? track(scope, read())
-        : enqueue(scope, runId, read));
+      const pending = await queuePort(scope, runId, read);
       if (!pending) return null;
       const { interactionVersion, ...rest } = pending;
       return { ...rest, version: interactionVersion };
     },
 
-    appendToolCalls(runId, entries) {
-      return fromPort(
-        runId,
-        (scope, run) => append(scope, run, entries),
-        false,
-      );
+    async appendToolCalls(runId, entries) {
+      await fromPort(runId, (scope, run) => append(scope, run, entries), false);
     },
 
     updateToolCall(
@@ -893,7 +946,7 @@ export function createAgentRunRecorder({
         runId: run.state.runId,
         async transact(op) {
           assertAdmission(scope);
-          if (transactions.getStore()?.active) {
+          if (transactions.getStore()) {
             throw new Error("AGENT_RUN_REENTRANT_TRANSACTION");
           }
           return enqueue(scope, run, () => {
@@ -901,17 +954,19 @@ export function createAgentRunRecorder({
               throw new Error("AGENT_RUN_NOT_FOUND");
             }
             return mutate(run, async () => {
-              const transaction = { run, active: true };
+              const transaction: Transaction = { run, active: true };
+              let state;
               try {
-                const state = await transactions.run(transaction, () =>
+                state = await transactions.run(transaction, () =>
                   op(run.state.version),
                 );
-                if (scope !== workspace)
-                  throw new Error("AGENT_RUN_WORKSPACE_CHANGED");
-                return save(run, state);
               } finally {
                 transaction.active = false;
+                await transaction.portCall?.catch(() => undefined);
               }
+              if (scope !== workspace)
+                throw new Error("AGENT_RUN_WORKSPACE_CHANGED");
+              return save(run, state);
             });
           });
         },
