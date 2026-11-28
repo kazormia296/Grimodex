@@ -40,6 +40,8 @@ impl ParsedAiPolicy {
         }
     }
 
+    /// 値が読めない形（空・不正な JSON・未知の preset・必須の欄の欠落）。
+    /// 書き込みの 3 軸は不可、会話と分析は可（判断記録の DR-A4-1）。
     pub fn invalid() -> Self {
         Self {
             state: AiPolicyState::Invalid,
@@ -60,6 +62,18 @@ pub enum PolicyLoadError {
     ProjectNotFound,
     #[error(transparent)]
     Database(#[from] rusqlite::Error),
+}
+
+/// JavaScript の `Boolean(value)` と同じ真偽。必須の 3 欄がそろう `invalid` の会話と
+/// 分析は、画面側の今の読み方の値のままにする（DR-A4-1。読めた `false` を可にしない）。
+fn js_truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::Number(number) => number.as_f64() != Some(0.0),
+        Value::String(text) => !text.is_empty(),
+        Value::Array(_) | Value::Object(_) => true,
+    }
 }
 
 fn preset_table(preset: &str) -> Option<AiPolicyToggles> {
@@ -128,17 +142,29 @@ pub fn parse_policy_json(raw: &str) -> ParsedAiPolicy {
         return ParsedAiPolicy::invalid();
     };
     let (Some(chat), Some(body_write), Some(analysis)) = (
-        toggles.get("chat").and_then(Value::as_bool),
-        toggles.get("bodyWrite").and_then(Value::as_bool),
-        toggles.get("analysis").and_then(Value::as_bool),
+        toggles.get("chat"),
+        toggles.get("bodyWrite"),
+        toggles.get("analysis"),
     ) else {
         return ParsedAiPolicy::invalid();
+    };
+    // ここから先で `invalid` になる値は、必須の 3 欄がそろう形。
+    let invalid_toggle_values = || {
+        let mut policy = ParsedAiPolicy::invalid();
+        policy.toggles.chat = js_truthy(chat);
+        policy.toggles.analysis = js_truthy(analysis);
+        policy
+    };
+    let (Some(chat), Some(body_write), Some(analysis)) =
+        (chat.as_bool(), body_write.as_bool(), analysis.as_bool())
+    else {
+        return invalid_toggle_values();
     };
     let (Some(structure_write), Some(knowledge_write)) = (
         optional_toggle(toggles, "structureWrite", derived.structure_write),
         optional_toggle(toggles, "knowledgeWrite", derived.knowledge_write),
     ) else {
-        return ParsedAiPolicy::invalid();
+        return invalid_toggle_values();
     };
 
     ParsedAiPolicy {

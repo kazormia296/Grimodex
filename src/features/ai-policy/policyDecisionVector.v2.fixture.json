@@ -210,7 +210,7 @@
     "expected": {
       "chat": true,
       "bodyWrite": false,
-      "analysis": true,
+      "analysis": false,
       "structureWrite": false,
       "knowledgeWrite": false
     }
@@ -342,6 +342,78 @@
     "expected": {
       "chat": true,
       "bodyWrite": true,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "invalid-keeps-chat-off-when-optional-axis-null",
+    "state": "invalid",
+    "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":null}}",
+    "expected": {
+      "chat": false,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "invalid-keeps-analysis-off-when-required-wrong-type",
+    "state": "invalid",
+    "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":\"true\",\"analysis\":false}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": false,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "invalid-required-values-read-as-false",
+    "state": "invalid",
+    "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":0,\"bodyWrite\":true,\"analysis\":\"\"}}",
+    "expected": {
+      "chat": false,
+      "bodyWrite": false,
+      "analysis": false,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "invalid-required-values-read-as-true",
+    "state": "invalid",
+    "raw": "{\"preset\":\"off\",\"toggles\":{\"chat\":\"false\",\"bodyWrite\":false,\"analysis\":[]}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "invalid-missing-required-key-ignores-false",
+    "state": "invalid",
+    "raw": "{\"preset\":\"off\",\"toggles\":{\"chat\":false,\"analysis\":false}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
+      "analysis": true,
+      "structureWrite": false,
+      "knowledgeWrite": false
+    }
+  },
+  {
+    "label": "invalid-unknown-preset-ignores-false",
+    "state": "invalid",
+    "raw": "{\"preset\":\"bogus\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":false}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": false,
       "analysis": true,
       "structureWrite": false,
       "knowledgeWrite": false
