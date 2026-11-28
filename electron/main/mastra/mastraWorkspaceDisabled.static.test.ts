@@ -12,8 +12,8 @@
  *   許可リスト（MASTRA_IMPORT_ALLOWLIST の完全一致）に載っていて、`electron/main/mastra/` の下の file にある。renderer（`src/`）は 0。
  *   許可リスト外（`workspace`・`skills`・`coding-agent`・`tool-loop-agent` ほか）は落ちる。
  * - 全ての製品 code：`__registerMastra`・`__setWorkspace`・`addWorkspace`・`new Workspace(`・`new Mastra(` と、3 つ目の bundle の参照（MP-3c まで）が無い。
- * - `@mastra` を import する file：`workspace`・`skills`・`skillPaths`・`memory`・`mcp` 系・`browser` の欄を、設定の object に渡さない
- *   （shorthand・引用符つき・computed・代入・`defineProperty`・new の引数の spread を拾う。memory は MP-7 以降が意図して改訂する）。
+ * - `@mastra` を import する file：`workspace`・`skills`・`skillPaths`・`mcp` 系・`browser` の欄を、設定の object に渡さない
+ *   （shorthand・引用符つき・computed・代入・`defineProperty`・new の引数の spread を拾う）。`memory` は MP-9a の `createAgent` に限り許す。
  * - 陰性対照：合成した違反の source を、同じ検査が検出する。
  */
 import fs from "node:fs";
@@ -45,6 +45,7 @@ const MASTRA_IMPORT_ALLOWLIST: readonly string[] = Object.freeze([
   "@mastra/core/storage",
   "@mastra/core/tools",
   "@mastra/core/vector",
+  "@mastra/memory",
 ]);
 
 /** 許可リストに載せてはならない subpath（許可リストが誤って広がったときの 2 重の止め）。 */
@@ -242,6 +243,28 @@ function fileViolations(file: string, text: string): string[] {
   // `@mastra` を import する file：設定に workspace などの欄を渡さない。
   const keyViolation = (label: string, name: string) =>
     found.push(`${file}: Mastra の設定に ${name} を渡している（${label}）`);
+  const isForbiddenKey = (name: string, node: ts.Node): boolean => {
+    if (!FORBIDDEN_KEYS.has(name)) return false;
+    if (
+      name !== "memory" ||
+      file !== path.join("electron", "main", "mastra", "agentRuntime.ts")
+    ) {
+      return true;
+    }
+    for (
+      let parent: ts.Node | undefined = node.parent;
+      parent;
+      parent = parent.parent
+    ) {
+      if (
+        ts.isFunctionDeclaration(parent) &&
+        parent.name?.text === "createAgent"
+      ) {
+        return false;
+      }
+    }
+    return true;
+  };
   const visitKeys = (node: ts.Node) => {
     if (ts.isPropertyAssignment(node) || ts.isMethodDeclaration(node)) {
       const nameNode = node.name;
@@ -249,18 +272,18 @@ function fileViolations(file: string, text: string): string[] {
         const computed = nameOf(nameNode.expression);
         if (computed === undefined) {
           found.push(`${file}: 動的な computed key がある`);
-        } else if (FORBIDDEN_KEYS.has(computed)) {
+        } else if (isForbiddenKey(computed, nameNode)) {
           keyViolation("computed", computed);
         }
       } else {
         const name = nameOf(nameNode);
-        if (name !== undefined && FORBIDDEN_KEYS.has(name)) {
+        if (name !== undefined && isForbiddenKey(name, nameNode)) {
           keyViolation("key", name);
         }
       }
     } else if (
       ts.isShorthandPropertyAssignment(node) &&
-      FORBIDDEN_KEYS.has(node.name.text)
+      isForbiddenKey(node.name.text, node)
     ) {
       keyViolation("shorthand", node.name.text);
     } else if (
@@ -282,7 +305,7 @@ function fileViolations(file: string, text: string): string[] {
         if (name === undefined)
           found.push(`${file}: 動的な key への代入がある`);
       }
-      if (name !== undefined && FORBIDDEN_KEYS.has(name)) {
+      if (name !== undefined && isForbiddenKey(name, left)) {
         keyViolation("代入", name);
       }
     } else if (ts.isCallExpression(node)) {
@@ -293,7 +316,7 @@ function fileViolations(file: string, text: string): string[] {
         )
       ) {
         const name = nameOf(node.arguments[1]);
-        if (name !== undefined && FORBIDDEN_KEYS.has(name)) {
+        if (name !== undefined && isForbiddenKey(name, node)) {
           keyViolation(callee, name);
         }
       }
@@ -401,6 +424,7 @@ describe(
         "@mastra/core/storage",
         "@mastra/core/tools",
         "@mastra/core/vector",
+        "@mastra/memory",
       ]);
       for (const specifier of MASTRA_IMPORT_ALLOWLIST) {
         expect(FORBIDDEN_SUBPATH.test(specifier), specifier).toBe(false);

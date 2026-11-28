@@ -1,0 +1,306 @@
+{
+  "name": "uncertain deaths affect status only after birth and before their date",
+  "input": {
+    "sceneId": "s1",
+    "nodes": [
+      {
+        "id": "s1",
+        "parentId": null,
+        "nodeType": "scene",
+        "sortOrder": "a0",
+        "chronicleStartTime": 500,
+        "chronicleStartMinute": null,
+        "chronicleStartGranularity": "day",
+        "chroniclePrecision": "exact"
+      }
+    ],
+    "events": [
+      {
+        "id": "anchor",
+        "title": "Current scene",
+        "ordinal": "a9",
+        "primaryCodexId": "past",
+        "locationCodexId": null,
+        "startTime": 500,
+        "startGranularity": "day",
+        "kind": "generic",
+        "precision": "exact"
+      },
+      {
+        "id": "birth-past",
+        "title": "Past born",
+        "ordinal": "a0",
+        "primaryCodexId": "past",
+        "startTime": 0,
+        "startGranularity": "day",
+        "kind": "birth",
+        "precision": "exact"
+      },
+      {
+        "id": "death-past",
+        "title": "Uncertain past death",
+        "ordinal": "a1",
+        "primaryCodexId": "past",
+        "startTime": 400,
+        "startGranularity": "day",
+        "kind": "death",
+        "precision": "unknown"
+      },
+      {
+        "id": "birth-future",
+        "title": "Future death born",
+        "ordinal": "a0",
+        "primaryCodexId": "future",
+        "startTime": 0,
+        "startGranularity": "day",
+        "kind": "birth",
+        "precision": "exact"
+      },
+      {
+        "id": "death-future",
+        "title": "Uncertain future death",
+        "ordinal": "a8",
+        "primaryCodexId": "future",
+        "startTime": 600,
+        "startGranularity": "day",
+        "kind": "death",
+        "precision": "unknown"
+      },
+      {
+        "id": "birth-certain",
+        "title": "Certain death born",
+        "ordinal": "a0",
+        "primaryCodexId": "certain",
+        "startTime": 0,
+        "startGranularity": "day",
+        "kind": "birth",
+        "precision": "exact"
+      },
+      {
+        "id": "death-uncertain-before-certain",
+        "title": "Earlier uncertain death",
+        "ordinal": "a1",
+        "primaryCodexId": "certain",
+        "startTime": 400,
+        "startGranularity": "day",
+        "kind": "death",
+        "precision": "unknown"
+      },
+      {
+        "id": "death-certain-after-anchor",
+        "title": "Later certain death",
+        "ordinal": "a8",
+        "primaryCodexId": "certain",
+        "startTime": 600,
+        "startGranularity": "day",
+        "kind": "death",
+        "precision": "exact"
+      },
+      {
+        "id": "birth-undated",
+        "title": "Undated death born",
+        "ordinal": "a0",
+        "primaryCodexId": "undated",
+        "startTime": 0,
+        "startGranularity": "day",
+        "kind": "birth",
+        "precision": "exact"
+      },
+      {
+        "id": "death-undated",
+        "title": "Undated uncertain death",
+        "ordinal": "a8",
+        "primaryCodexId": "undated",
+        "startTime": null,
+        "startGranularity": "none",
+        "kind": "death",
+        "precision": "unknown"
+      },
+      {
+        "id": "birth-none",
+        "title": "No granularity death born",
+        "ordinal": "a0",
+        "primaryCodexId": "none",
+        "startTime": 0,
+        "startGranularity": "day",
+        "kind": "birth",
+        "precision": "exact"
+      },
+      {
+        "id": "death-none",
+        "title": "Date with no granularity death",
+        "ordinal": "a8",
+        "primaryCodexId": "none",
+        "startTime": 600,
+        "startGranularity": "none",
+        "kind": "death",
+        "precision": "exact"
+      },
+      {
+        "id": "birth-clear",
+        "title": "No uncertain death born",
+        "ordinal": "a0",
+        "primaryCodexId": "clear",
+        "startTime": 0,
+        "startGranularity": "day",
+        "kind": "birth",
+        "precision": "exact"
+      },
+      {
+        "id": "birth-unborn",
+        "title": "Unborn character birth",
+        "ordinal": "a8",
+        "primaryCodexId": "unborn",
+        "startTime": 600,
+        "startGranularity": "day",
+        "kind": "birth",
+        "precision": "exact"
+      }
+    ],
+    "participants": [
+      {
+        "eventId": "anchor",
+        "codexEntryId": "future",
+        "role": null
+      },
+      {
+        "eventId": "anchor",
+        "codexEntryId": "certain",
+        "role": null
+      },
+      {
+        "eventId": "anchor",
+        "codexEntryId": "undated",
+        "role": null
+      },
+      {
+        "eventId": "anchor",
+        "codexEntryId": "none",
+        "role": null
+      },
+      {
+        "eventId": "anchor",
+        "codexEntryId": "clear",
+        "role": null
+      },
+      {
+        "eventId": "anchor",
+        "codexEntryId": "unborn",
+        "role": null
+      }
+    ],
+    "relations": [],
+    "sceneEvents": [
+      {
+        "sceneId": "s1",
+        "eventId": "anchor"
+      }
+    ],
+    "calendar": {
+      "daysPerYear": 360,
+      "seasonBoundaries": []
+    },
+    "codexNames": {
+      "past": "Past",
+      "future": "Future",
+      "certain": "Certain",
+      "undated": "Undated",
+      "none": "No granularity",
+      "clear": "Clear",
+      "unborn": "Unborn"
+    }
+  },
+  "expected": {
+    "time": {
+      "source": "scene",
+      "startTime": 500,
+      "season": null,
+      "precision": "exact",
+      "formattedDate": "1年第141日"
+    },
+    "characters": [
+      {
+        "codexId": "past",
+        "name": "Past",
+        "status": "unknown",
+        "age": 1,
+        "location": null
+      },
+      {
+        "codexId": "certain",
+        "name": "Certain",
+        "status": "alive",
+        "age": 1,
+        "location": null
+      },
+      {
+        "codexId": "undated",
+        "name": "Undated",
+        "status": "unknown",
+        "age": 1,
+        "location": null
+      },
+      {
+        "codexId": "none",
+        "name": "No granularity",
+        "status": "unknown",
+        "age": 1,
+        "location": null
+      },
+      {
+        "codexId": "future",
+        "name": "Future",
+        "status": "alive",
+        "age": 1,
+        "location": null
+      },
+      {
+        "codexId": "clear",
+        "name": "Clear",
+        "status": "alive",
+        "age": 1,
+        "location": null
+      },
+      {
+        "codexId": "unborn",
+        "name": "Unborn",
+        "status": "unborn",
+        "age": null,
+        "location": null
+      }
+    ],
+    "recentEvents": [
+      {
+        "eventId": "anchor",
+        "title": "Current scene",
+        "note": null,
+        "relTime": "同日",
+        "precision": "exact"
+      }
+    ],
+    "unresolvedCausal": [],
+    "offpage": [
+      {
+        "eventId": "death-uncertain-before-certain",
+        "title": "Earlier uncertain death",
+        "note": null,
+        "relTime": "約100日前",
+        "precision": "unknown"
+      },
+      {
+        "eventId": "death-past",
+        "title": "Uncertain past death",
+        "note": null,
+        "relTime": "約100日前",
+        "precision": "unknown"
+      },
+      {
+        "eventId": "birth-undated",
+        "title": "Undated death born",
+        "note": null,
+        "relTime": "約1年前",
+        "precision": "exact"
+      }
+    ]
+  }
+}

@@ -151,104 +151,7 @@ pub(crate) fn generate_append_ordinals(
     after: Option<&str>,
     count: usize,
 ) -> anyhow::Result<Vec<String>> {
-    let mut keys = Vec::with_capacity(count);
-    let mut prev = after.map(str::to_string);
-    for _ in 0..count {
-        let next = generate_key_between(prev.as_deref(), None)?;
-        keys.push(next.clone());
-        prev = Some(next);
-    }
-    Ok(keys)
-}
-
-const DIGITS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-
-fn digit_index(ch: u8) -> anyhow::Result<usize> {
-    DIGITS
-        .iter()
-        .position(|d| *d == ch)
-        .ok_or_else(|| anyhow::anyhow!("invalid fractional-index digit"))
-}
-
-fn get_integer_part(key: &str) -> anyhow::Result<&str> {
-    let bytes = key.as_bytes();
-    anyhow::ensure!(!bytes.is_empty(), "empty fractional key");
-    let head = bytes[0];
-    let int_len = if head.is_ascii_lowercase() {
-        (head - b'a' + 2) as usize
-    } else if head.is_ascii_uppercase() {
-        (b'Z' - head + 2) as usize
-    } else {
-        anyhow::bail!("invalid fractional key integer head");
-    };
-    anyhow::ensure!(key.len() >= int_len, "fractional key too short");
-    Ok(&key[..int_len])
-}
-
-fn validate_order_key(key: &str) -> anyhow::Result<()> {
-    let integer = get_integer_part(key)?;
-    anyhow::ensure!(
-        !integer.ends_with('0') || integer == "a0" || integer == "A0" || key.len() > integer.len(),
-        "invalid trailing zero in fractional key"
-    );
-    for b in key.bytes() {
-        digit_index(b)?;
-    }
-    Ok(())
-}
-
-fn increment_integer(integer: &str) -> anyhow::Result<String> {
-    let bytes = integer.as_bytes();
-    anyhow::ensure!(!bytes.is_empty(), "empty integer part");
-    let head = bytes[0];
-    if head == b'z' || head == b'Z' {
-        // Grow integer length by one (same as JS fractional-indexing).
-        if head == b'z' {
-            return Ok(format!("z{}", "0".repeat(integer.len())));
-        }
-        return Ok(format!("Z{}", "0".repeat(integer.len())));
-    }
-    let mut chars: Vec<u8> = integer.as_bytes().to_vec();
-    for i in (1..chars.len()).rev() {
-        let idx = digit_index(chars[i])?;
-        if idx + 1 < DIGITS.len() {
-            chars[i] = DIGITS[idx + 1];
-            return Ok(String::from_utf8(chars)?);
-        }
-        chars[i] = DIGITS[0];
-    }
-    let head_idx = digit_index(chars[0])?;
-    anyhow::ensure!(head_idx + 1 < DIGITS.len(), "integer overflow");
-    chars[0] = DIGITS[head_idx + 1];
-    // When head moves from 'a'..'y', integer length stays; from growing path handled above.
-    Ok(String::from_utf8(chars)?)
-}
-
-fn generate_key_between(a: Option<&str>, b: Option<&str>) -> anyhow::Result<String> {
-    match (a, b) {
-        (None, None) => Ok("a0".to_string()),
-        (Some(a), None) => {
-            validate_order_key(a)?;
-            let integer = get_integer_part(a)?;
-            if a == integer {
-                Ok(increment_integer(integer)?)
-            } else {
-                // Midpoint toward +∞: append a mid digit after `a`.
-                Ok(format!("{a}{}", DIGITS[DIGITS.len() / 2] as char))
-            }
-        }
-        (None, Some(b)) => {
-            validate_order_key(b)?;
-            // Only needed for completeness; append-tail path does not use this.
-            anyhow::bail!("generate_key_between(null, Some) is not used by append-tail commits")
-        }
-        (Some(a), Some(b)) => {
-            anyhow::ensure!(a < b, "fractional bounds out of order");
-            validate_order_key(a)?;
-            validate_order_key(b)?;
-            anyhow::bail!("generate_key_between(Some, Some) is not used by append-tail commits")
-        }
-    }
+    crate::domain_writes::generate_n_keys_between(after, None, count)
 }
 
 pub(crate) struct ChronicleEventCreateContext<'a> {
@@ -357,5 +260,44 @@ mod unit_tests {
             generate_append_ordinals(Some("a0"), 2).unwrap(),
             vec!["a1".to_string(), "a2".to_string()]
         );
+    }
+
+    fn assert_js_append_vectors(
+        append: impl Fn(Option<&str>, usize) -> anyhow::Result<Vec<String>>,
+    ) -> anyhow::Result<()> {
+        let keys = append(None, 130)?;
+        assert_eq!(keys.len(), 130);
+        assert_eq!(keys[..3], ["a0", "a1", "a2"]);
+        assert_eq!(keys[60..66], ["ay", "az", "b00", "b01", "b02", "b03"]);
+        assert_eq!(keys[128..], ["b14", "b15"]);
+        for (tail, next) in [
+            ("az", "b00"),
+            ("b00", "b01"),
+            ("b0z", "b10"),
+            ("bzz", "c000"),
+        ] {
+            assert_eq!(append(Some(tail), 1)?, [next]);
+        }
+        assert_eq!(append(Some("a5"), 3)?, ["a6", "a7", "a8"]);
+        for invalid in ["zz", "b0", "b000", "aé"] {
+            assert!(append(Some(invalid), 1).is_err(), "{invalid}");
+        }
+        let keys = append(None, 2_000)?;
+        assert_eq!(keys.len(), 2_000);
+        assert_eq!(keys[61..63], ["az", "b00"]);
+        assert_eq!(keys[1999], "bVF");
+        Ok(())
+    }
+
+    #[test]
+    fn shared_keys_match_js_append_vectors() -> anyhow::Result<()> {
+        assert_js_append_vectors(|after, count| {
+            crate::domain_writes::generate_n_keys_between(after, None, count)
+        })
+    }
+
+    #[test]
+    fn append_ordinals_match_js_append_vectors() -> anyhow::Result<()> {
+        assert_js_append_vectors(generate_append_ordinals)
     }
 }

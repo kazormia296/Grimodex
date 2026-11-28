@@ -216,7 +216,7 @@ describe("deriveChronicleSnapshot — character state", () => {
   });
 });
 
-it("C5: unknown births and deaths do not set age or status", () => {
+it("C5: unknown births stay unknown; uncertain deaths make status unknown", () => {
   const birth = mkEvent({
     id: "birth",
     kind: "birth",
@@ -239,7 +239,7 @@ it("C5: unknown births and deaths do not set age or status", () => {
         events,
       }),
     ).characters[0];
-  expect(state([birth, death])).toMatchObject({ status: "alive", age: 1 });
+  expect(state([birth, death])).toMatchObject({ status: "unknown", age: 1 });
   expect(state([{ ...birth, precision: "unknown" }, death])).toMatchObject({
     status: "unknown",
     age: null,
