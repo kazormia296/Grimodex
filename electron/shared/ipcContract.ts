@@ -575,9 +575,11 @@ export interface NapiBackendLike {
   agentRunInterrupt?(payload: unknown): Promise<string>;
   agentRunBeginFinalizing?(payload: unknown): Promise<string>;
   agentRunFinishFinalizing?(payload: unknown): Promise<string>;
+  agentRunFinishWithoutMessages?(payload: unknown): Promise<string>;
   agentRunDiscard?(payload: unknown): Promise<string>;
   agentRunClaim?(payload: unknown): Promise<string>;
-  agentRunAppendToolCall?(payload: unknown): Promise<string>;
+  agentRunAppendToolCalls?(payload: unknown): Promise<string>;
+  agentRunAddAuditExecutionId?(payload: unknown): Promise<string>;
   agentRunUpdateToolCall?(payload: unknown): Promise<string>;
   agentRunWriteCheckpoint?(payload: unknown): Promise<string>;
   agentRunMarkNotResumable?(payload: unknown): Promise<string>;
@@ -590,6 +592,7 @@ export interface NapiBackendLike {
   agentRunGetPendingApproval?(payload: unknown): Promise<string>;
   agentRunRecover?(payload: unknown): Promise<string>;
   agentRunRecoverFinalizing?(payload: unknown): Promise<string>;
+  agentRunListOwned?(payload: unknown): Promise<string>;
   agentRunListFinalizing?(payload: unknown): Promise<string>;
   agentRunGetStatus?(payload: unknown): Promise<string>;
   agentRunGetUnfinishedForSession?(payload: unknown): Promise<string>;

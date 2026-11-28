@@ -9,9 +9,11 @@ export declare class Backend {
   agentRunInterrupt(payload: any): Promise<string>
   agentRunBeginFinalizing(payload: any): Promise<string>
   agentRunFinishFinalizing(payload: any): Promise<string>
+  agentRunFinishWithoutMessages(payload: any): Promise<string>
   agentRunDiscard(payload: any): Promise<string>
   agentRunClaim(payload: any): Promise<string>
-  agentRunAppendToolCall(payload: any): Promise<string>
+  agentRunAppendToolCalls(payload: any): Promise<string>
+  agentRunAddAuditExecutionId(payload: any): Promise<string>
   agentRunUpdateToolCall(payload: any): Promise<string>
   agentRunWriteCheckpoint(payload: any): Promise<string>
   agentRunMarkNotResumable(payload: any): Promise<string>
@@ -24,6 +26,7 @@ export declare class Backend {
   agentRunGetPendingApproval(payload: any): Promise<string>
   agentRunRecover(payload: any): Promise<string>
   agentRunRecoverFinalizing(payload: any): Promise<string>
+  agentRunListOwned(payload: any): Promise<string>
   /** Returns a JSON array with `ownedByCaller` on each visible finalizing run. */
   agentRunListFinalizing(payload: any): Promise<string>
   /** Returns JSON null or a run status with `ownedByCaller`. */

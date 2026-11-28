@@ -29,12 +29,20 @@ export interface AgentRunLedgerEntry {
 
 export interface PendingApproval {
   readonly interactionId: string;
+  /** 台帳の行の executionId（Native が台帳から引く）。 */
+  readonly executionId: string;
   /** Native の読み戻しでは interactionVersion。 */
   readonly version: number;
   readonly toolCallId: string;
   readonly toolName: string;
   readonly argsDigest: string;
   readonly targetBasis: readonly AnalysisReadBasisEntryV1[] | null;
+}
+
+/** 台帳の鍵。provider の toolCallId は応答をまたぐと重なる（Hermes の連番、ID なし）。 */
+export interface AgentRunToolCallKey {
+  readonly executionId: string;
+  readonly toolCallId: string;
 }
 
 interface RunCas {
@@ -53,6 +61,8 @@ export interface AgentRunApprovalPort {
   openApproval(
     input: RunCas & {
       readonly interactionId: string;
+      /** (executionId, toolCallId) は台帳にある最後の toolCallId の行であること。 */
+      readonly executionId: string;
       readonly toolCallId: string;
       readonly toolName: string;
       readonly argsDigest: string;
@@ -74,16 +84,52 @@ export interface AgentRunApprovalPort {
   interruptForApprovalTimeout(input: RunCas): Promise<AgentRunState>;
   /** claim の前でも読める。 */
   getPendingApproval(runId: string): Promise<PendingApproval | null>;
-  /** main が応答を受けた時点で書く。toolCallId の重複は拒む。 */
-  appendToolCall(runId: string, entry: AgentRunLedgerEntry): Promise<void>;
+  /**
+   * 応答 1 つ分を 1 つの tx で書く。呼ぶのは記録の経路の持ち主だけ（A2 は呼ばない）。
+   * 鍵（executionId, toolCallId）の重複と、空の toolCallId は全体を拒む。
+   */
+  appendToolCalls(
+    runId: string,
+    entries: readonly AgentRunLedgerEntry[],
+  ): Promise<void>;
   /** provenance と実行結果は 1 度だけ書ける。capability は前へ進む。 */
   updateToolCall(
     runId: string,
-    toolCallId: string,
+    call: AgentRunToolCallKey,
     update: {
       readonly mainOwnedProvenanceId?: string;
       readonly capabilityState?: AgentRunCapabilityState;
       readonly executionState?: Exclude<AgentRunExecutionState, "pending">;
     },
   ): Promise<void>;
+}
+
+/**
+ * Gate A が capability の record（executionId）から Run を引く口。
+ * executionId と Run の対応は、台帳を追記するときに記録の持ち主が作る。
+ */
+export type AgentRunResolution =
+  | {
+      readonly kind: "recorded";
+      readonly runId: string;
+      /**
+       * 今の version を op に渡し、返った version を持つ。Run ごとに直列。
+       * op は Native の呼出し 1 回にし、中で承認を待たない。再入しない。
+       * op が失敗したら version を進めない。終端や workspace の切替の後は拒む。
+       */
+      transact<T extends AgentRunState>(
+        op: (version: number) => Promise<T>,
+      ): Promise<T>;
+    }
+  /** 旗が閉じている、または記録しない経路。 */
+  | { readonly kind: "not_recording" }
+  /** 記録するはずの応答に記録が無い（失敗、束縛の不一致を含む）。 */
+  | { readonly kind: "unrecorded" };
+
+export interface AgentRunResolver {
+  resolveRun(input: {
+    readonly senderId: number;
+    readonly projectId: string;
+    readonly executionId: string;
+  }): AgentRunResolution;
 }

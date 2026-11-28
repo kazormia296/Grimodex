@@ -13578,7 +13578,15 @@ describe("main-only AgentRun N-API (DR-A3-19)", () => {
     const nativeNames = [
       ...declarations.matchAll(/^\s+(agentRun\w+)\(/gmu),
     ].map((match) => match[1]);
-    expect(nativeNames.length).toBeGreaterThan(0);
+    expect(nativeNames).toEqual(
+      expect.arrayContaining([
+        "agentRunAppendToolCalls",
+        "agentRunAddAuditExecutionId",
+        "agentRunFinishWithoutMessages",
+        "agentRunListOwned",
+      ]),
+    );
+    expect(nativeNames).not.toContain("agentRunAppendToolCall");
     const registeredNames = [
       ...backendType!.matchAll(/^\s+(agentRun\w+)\?\(/gmu),
     ].map((match) => match[1]);

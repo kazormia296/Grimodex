@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 const { Backend } = createRequire(import.meta.url)("../grimodex-node.node");
@@ -24,10 +31,23 @@ const interaction = {
   runId,
   interactionId: "interaction-1",
   expectedVersion: 0,
+  executionId: "execution-1",
   toolCallId: "tool-call-1",
   argsDigest: "fixture-args-hash",
 };
 const runState = (version, status) => ({ runId, version, status });
+const ledgerEntry = {
+  executionId: interaction.executionId,
+  toolCallId: interaction.toolCallId,
+  name: "ask_user",
+  canonicalArgs: {},
+  argsDigest: interaction.argsDigest,
+  chatMessageId: "assistant-message-1",
+  mainOwnedProvenanceId: "",
+  model: startPayload.modelId,
+  capabilityState: "not_issued",
+  executionState: "pending",
+};
 
 function tempRoot() {
   return mkdtempSync(join(tmpdir(), "grimodex-node-agent-runs-"));
@@ -60,7 +80,13 @@ async function openWorkspace(t, root = tempRoot()) {
   return backend;
 }
 
-async function withOwnerProcess(root, method, payload, check) {
+async function withOwnerProcess(
+  root,
+  method,
+  payload,
+  check,
+  run = startPayload,
+) {
   // The owner file stays open for the Backend's lifetime. Process exit releases it deterministically.
   const child = spawn(
     process.execPath,
@@ -73,7 +99,7 @@ async function withOwnerProcess(root, method, payload, check) {
     const { Backend } = createRequire(${JSON.stringify(import.meta.url)})("../grimodex-node.node");
     const backend = new Backend(${JSON.stringify(join(root, "owner-app-data"))});
     await backend.openWorkspace(${JSON.stringify(join(root, "workspace"))});
-    await backend.agentRunStart(${JSON.stringify(startPayload)});
+    await backend.agentRunStart(${JSON.stringify(run)});
     const run = await backend[${JSON.stringify(method)}](${JSON.stringify(payload)});
     process.send(JSON.parse(run));
   `,
@@ -96,12 +122,18 @@ test("AgentRun starts, answers a question, and completes finalization", async (t
   const started = JSON.parse(await backend.agentRunStart(startPayload));
   assert.deepEqual(started, runState(0, "running"));
 
+  const questionPayload = {
+    ...interaction,
+    expectedVersion: started.version,
+    request: "Which scene should the outline cover?",
+  };
+  await assert.rejects(
+    backend.agentRunOpenQuestion(questionPayload),
+    /AGENT_RUN_UNKNOWN_TOOL_CALL_ID/,
+  );
+  await backend.agentRunAppendToolCalls({ runId, entries: [ledgerEntry] });
   const question = JSON.parse(
-    await backend.agentRunOpenQuestion({
-      ...interaction,
-      expectedVersion: started.version,
-      request: "Which scene should the outline cover?",
-    }),
+    await backend.agentRunOpenQuestion(questionPayload),
   );
   assert.deepEqual(question, {
     ...runState(1, "waiting_user"),
@@ -174,19 +206,34 @@ test("AgentRun starts, answers a question, and completes finalization", async (t
   assert.equal(Object.hasOwn(status, "executionOwner"), false);
 });
 
-test("AgentRun opens and decides approval using the returned interactionVersion", async (t) => {
+test("AgentRun binds pending approval to the latest ledger entry and returns its versions", async (t) => {
   const backend = await openWorkspace(t);
   await backend.agentRunStart(startPayload);
   const targetBasis = [
     { sourceKind: "codex", sourceId: "entry-1", version: "rev-1" },
   ];
   const toolName = "codex_update";
+  const newerExecutionId = "execution-2";
+  for (const executionId of [interaction.executionId, newerExecutionId]) {
+    await backend.agentRunAppendToolCalls({
+      runId,
+      entries: [{ ...ledgerEntry, name: toolName, executionId }],
+    });
+  }
+  const approvalPayload = {
+    ...interaction,
+    toolName,
+    request: "Update this Codex entry?",
+    targetBasis,
+  };
+  await assert.rejects(
+    backend.agentRunOpenApproval(approvalPayload),
+    /AGENT_RUN_TOOL_CALL_EXECUTION_MISMATCH/,
+  );
   const approval = JSON.parse(
     await backend.agentRunOpenApproval({
-      ...interaction,
-      toolName,
-      request: "Update this Codex entry?",
-      targetBasis,
+      ...approvalPayload,
+      executionId: newerExecutionId,
     }),
   );
   assert.deepEqual(approval, {
@@ -198,11 +245,19 @@ test("AgentRun opens and decides approval using the returned interactionVersion"
     {
       interactionId: interaction.interactionId,
       interactionVersion: approval.interactionVersion,
+      executionId: newerExecutionId,
       toolCallId: interaction.toolCallId,
       toolName,
       argsDigest: interaction.argsDigest,
       targetBasis,
     },
+  );
+  await assert.rejects(
+    backend.agentRunAppendToolCalls({
+      runId,
+      entries: [{ ...ledgerEntry, executionId: "execution-3" }],
+    }),
+    /AGENT_RUN_PENDING_INTERACTION_EXISTS/,
   );
   const decided = JSON.parse(
     await backend.agentRunDecideApproval({
@@ -223,8 +278,17 @@ test("AgentRun opens and decides approval using the returned interactionVersion"
 test("AgentRun interrupts and claims with the Native owner", async (t) => {
   const backend = await openWorkspace(t);
   await backend.agentRunStart(startPayload);
+  await assert.rejects(
+    backend.agentRunRecover({ finalizingEvidence: [] }),
+    /missing field `minActivityAgeSecs`/,
+  );
   assert.deepEqual(
-    JSON.parse(await backend.agentRunRecover({ finalizingEvidence: [] })),
+    JSON.parse(
+      await backend.agentRunRecover({
+        minActivityAgeSecs: 0,
+        finalizingEvidence: [],
+      }),
+    ),
     [],
   );
   const interrupted = JSON.parse(
@@ -236,6 +300,10 @@ test("AgentRun interrupts and claims with the Native owner", async (t) => {
     }),
   );
   assert.deepEqual(interrupted, runState(1, "interrupted"));
+  await assert.rejects(
+    backend.agentRunAppendToolCalls({ runId, entries: [ledgerEntry] }),
+    /AGENT_RUN_VERSION_OR_STATUS_MISMATCH/,
+  );
 
   const claimPayload = {
     runId,
@@ -306,9 +374,20 @@ test("AgentRun records a blocked gate and marks an interrupted run under its old
     interrupt,
     async (ready) => {
       assert.deepEqual(ready, runState(1, "interrupted"));
-      const mark = { runId, reason: "route_unsupported" };
+      const mark = {
+        runId,
+        expectedStatus: "interrupted",
+        reason: "route_unsupported",
+      };
       const claim = { runId, expectedVersion: 1, requestId: "foreign-claim" };
-      const detail = "Current route cannot resume this run";
+      await assert.rejects(
+        observer.agentRunClaim({
+          ...claim,
+          gate: { kind: "blocked", detail: "free text" },
+        }),
+        /unknown variant `free text`/,
+      );
+      const detail = "route_unavailable";
       const blocked = await observer.agentRunClaim({
         ...claim,
         gate: { kind: "blocked", detail },
@@ -318,6 +397,13 @@ test("AgentRun records a blocked gate and marks an interrupted run under its old
         JSON.parse(await observer.agentRunGetStatus({ runId }))
           .resumeBlockDetail,
         detail,
+      );
+      await assert.rejects(
+        observer.agentRunMarkNotResumable({
+          ...mark,
+          expectedStatus: "running",
+        }),
+        /AGENT_RUN_OWNER_MISMATCH/,
       );
       const marked = await observer.agentRunMarkNotResumable(mark);
       assert.deepEqual(JSON.parse(marked), runState(1, "interrupted"));
@@ -332,11 +418,17 @@ test("AgentRun records a blocked gate and marks an interrupted run under its old
   );
 });
 
-test("AgentRun refuses a live owner's finalizing run and closes it after owner exit", async (t) => {
+test("AgentRun requires both an old-enough finalizing run and a dead foreign owner", async (t) => {
   const root = tempRoot();
   const observer = await openWorkspace(t, root);
   const assistantMessageId = "assistant-message-1";
   const finalizing = { runId, version: 1 };
+  const evidence = {
+    ...finalizing,
+    userMessageComplete: true,
+    assistantMessageComplete: true,
+  };
+  const recovery = { ...evidence, reason: "renderer_lost" };
   await observer.dbExecute(
     "INSERT INTO chat_messages (id, session_id, role, content) VALUES (?, ?, ?, ?)",
     [assistantMessageId, chatSessionId, "assistant", "Opening scene outline"],
@@ -358,6 +450,7 @@ test("AgentRun refuses a live owner's finalizing run and closes it after owner e
       await assert.rejects(
         observer.agentRunMarkNotResumable({
           runId,
+          expectedStatus: "finalizing",
           reason: "route_unsupported",
         }),
         /AGENT_RUN_OWNER_MISMATCH/,
@@ -367,15 +460,18 @@ test("AgentRun refuses a live owner's finalizing run and closes it after owner e
         JSON.parse(await observer.agentRunListFinalizing({})),
         [],
       );
+      assert.deepEqual(JSON.parse(await observer.agentRunListOwned({})), []);
       await assert.rejects(
-        observer.agentRunFinishFinalizing(finalizing),
+        observer.agentRunFinishFinalizing({
+          ...finalizing,
+          minActivityAgeSecs: 0,
+        }),
         /AGENT_RUN_OWNER_LOCK_BUSY/,
       );
       await assert.rejects(
         observer.agentRunRecoverFinalizing({
-          ...finalizing,
-          userMessageComplete: true,
-          assistantMessageComplete: true,
+          ...recovery,
+          minActivityAgeSecs: 0,
         }),
         /AGENT_RUN_OWNER_LOCK_BUSY/,
       );
@@ -401,12 +497,314 @@ test("AgentRun refuses a live owner's finalizing run and closes it after owner e
     ),
     status,
   );
-  const completed = await observer.agentRunFinishFinalizing(finalizing);
+  await assert.rejects(
+    observer.agentRunFinishFinalizing(finalizing),
+    /AGENT_RUN_ACTIVITY_AGE_REQUIRED/,
+  );
+  await assert.rejects(
+    observer.agentRunRecoverFinalizing(recovery),
+    /AGENT_RUN_ACTIVITY_AGE_REQUIRED/,
+  );
+  const minActivityAgeSecs = 86_400;
+  const skipped = {
+    ...finalizing,
+    outcome: "skipped",
+    reason: "AGENT_RUN_ACTIVITY_TOO_RECENT",
+  };
+  assert.deepEqual(
+    JSON.parse(
+      await observer.agentRunFinishFinalizing({
+        ...finalizing,
+        minActivityAgeSecs,
+      }),
+    ),
+    skipped,
+  );
+  assert.deepEqual(
+    JSON.parse(
+      await observer.agentRunRecoverFinalizing({
+        ...recovery,
+        minActivityAgeSecs,
+      }),
+    ),
+    skipped,
+  );
+  assert.deepEqual(
+    JSON.parse(
+      await observer.agentRunRecover({
+        finalizingEvidence: [evidence],
+        minActivityAgeSecs,
+      }),
+    ),
+    [{ outcome: "recovered", results: [] }],
+  );
+  assert.deepEqual(
+    JSON.parse(await observer.agentRunGetStatus({ runId })),
+    status,
+  );
+  const completed = await observer.agentRunFinishFinalizing({
+    ...finalizing,
+    minActivityAgeSecs: 0,
+  });
   assert.deepEqual(JSON.parse(completed), runState(2, "completed"));
+});
+
+test("AgentRun batch append is atomic and keys updates by execution and call", async (t) => {
+  const backend = await openWorkspace(t);
+  await backend.agentRunStart(startPayload);
+  const extraEntry = { ...ledgerEntry, toolCallId: "tool-call-2" };
+  const otherExecution = { ...ledgerEntry, executionId: "execution-2" };
+  await assert.rejects(
+    backend.agentRunAppendToolCalls({
+      runId,
+      entries: [ledgerEntry, otherExecution],
+    }),
+    /AGENT_RUN_TOOL_CALL_BATCH_EXECUTION_MISMATCH/,
+  );
+  const append = { runId, entries: [ledgerEntry, extraEntry] };
+  assert.equal(JSON.parse(await backend.agentRunAppendToolCalls(append)), null);
+  await assert.rejects(
+    backend.agentRunAppendToolCalls(append),
+    /AGENT_RUN_DUPLICATE_TOOL_CALL_ID/,
+  );
+  await backend.agentRunAppendToolCalls({ runId, entries: [otherExecution] });
+  for (const { executionId, toolCallId } of [
+    ledgerEntry,
+    extraEntry,
+    otherExecution,
+  ]) {
+    assert.equal(
+      JSON.parse(
+        await backend.agentRunUpdateToolCall({
+          runId,
+          executionId,
+          toolCallId,
+          mainOwnedProvenanceId: `${executionId}-${toolCallId}`,
+        }),
+      ),
+      null,
+    );
+  }
+  await assert.rejects(
+    backend.agentRunUpdateToolCall({
+      runId,
+      executionId: otherExecution.executionId,
+      toolCallId: extraEntry.toolCallId,
+    }),
+    /AGENT_RUN_UNKNOWN_TOOL_CALL_ID/,
+  );
+});
+
+test("AgentRun lists owned unfinished runs, records audit IDs and finishes without messages", async (t) => {
+  const root = tempRoot();
+  const backend = await openWorkspace(t, root);
+  const owned = async () => JSON.parse(await backend.agentRunListOwned({}));
+  assert.deepEqual(await owned(), []);
+  const originAssistantMessageId = "assistant-at-start";
+  await backend.agentRunStart({ ...startPayload, originAssistantMessageId });
+  const [run] = await owned();
+  assert.deepEqual(await owned(), [
+    {
+      ...runState(0, "running"),
+      projectId,
+      chatSessionId,
+      turnId: startPayload.turnId,
+      originUserMessageId,
+      originAssistantMessageId,
+      activityAt: run.activityAt,
+      interruptReason: null,
+      finalizingTargetStatus: null,
+    },
+  ]);
+  assert.equal(typeof run.activityAt, "string");
+  const audit = { runId, executionId: "child-execution-1" };
+  assert.equal(
+    JSON.parse(await backend.agentRunAddAuditExecutionId(audit)),
+    null,
+  );
+  assert.equal(
+    JSON.parse(await backend.agentRunAddAuditExecutionId(audit)),
+    null,
+  );
+  const sqlite = new DatabaseSync(join(root, "workspace", "grimodex.db"), {
+    readOnly: true,
+  });
+  try {
+    const stored = sqlite
+      .prepare("SELECT audit_execution_ids FROM agent_runs WHERE run_id = ?")
+      .get(runId);
+    assert.deepEqual(JSON.parse(stored.audit_execution_ids), [
+      audit.executionId,
+    ]);
+  } finally {
+    sqlite.close();
+  }
+  await assert.rejects(
+    backend.agentRunAddAuditExecutionId({ ...audit, executionId: "" }),
+    /AGENT_RUN_EXECUTION_ID_INVALID/,
+  );
+  const finish = {
+    runId,
+    expectedStatus: "running",
+    expectedVersion: 0,
+    target: "user_stop",
+  };
+  await assert.rejects(
+    backend.agentRunFinishWithoutMessages({ ...finish, expectedVersion: 1 }),
+    /AGENT_RUN_VERSION_OR_STATUS_MISMATCH/,
+  );
+  assert.deepEqual(
+    JSON.parse(await backend.agentRunFinishWithoutMessages(finish)),
+    runState(1, "cancelled"),
+  );
+  assert.equal(
+    JSON.parse(await backend.agentRunGetStatus({ runId })).terminalReason,
+    "user_stop",
+  );
+  assert.deepEqual(await owned(), []);
+  await assert.rejects(
+    backend.agentRunAddAuditExecutionId(audit),
+    /AGENT_RUN_TERMINAL/,
+  );
+});
+
+test("AgentRun recovers owned finalizing with the supplied reason and no age minimum", async (t) => {
+  const backend = await openWorkspace(t);
+  await backend.agentRunStart(startPayload);
+  await backend.agentRunBeginFinalizing({
+    runId,
+    expectedStatus: "running",
+    version: 0,
+    target: "completed",
+    assistantMessageId: "incomplete-assistant",
+  });
+  const recovered = await backend.agentRunRecoverFinalizing({
+    runId,
+    version: 1,
+    userMessageComplete: true,
+    assistantMessageComplete: false,
+    reason: "profile_switched",
+  });
+  assert.deepEqual(JSON.parse(recovered), {
+    runId,
+    version: 2,
+    outcome: "interrupted",
+  });
+  const [run] = JSON.parse(await backend.agentRunListOwned({}));
+  assert.equal(run.status, "interrupted");
+  assert.equal(run.interruptReason, "profile_switched");
+  const newRun = {
+    ...startPayload,
+    runId: "run-2",
+    turnId: "turn-2",
+    originAssistantMessageId: "superseding-assistant",
+  };
+  assert.deepEqual(
+    JSON.parse(
+      await backend.agentRunStartSuperseding({
+        oldRunId: runId,
+        oldVersion: run.version,
+        newRun,
+      }),
+    ),
+    {
+      discarded: runState(3, "discarded"),
+      started: { runId: newRun.runId, version: 0, status: "running" },
+    },
+  );
+  const [superseding] = JSON.parse(await backend.agentRunListOwned({}));
+  assert.equal(
+    superseding.originAssistantMessageId,
+    newRun.originAssistantMessageId,
+  );
+});
+
+test("AgentRun recovery groups successes and failures by owner without owner IDs", async (t) => {
+  const root = tempRoot();
+  const observer = await openWorkspace(t, root);
+  const lockDir = join(root, "workspace", ".grimodex", "agent-run-owners");
+  await withOwnerProcess(root, "agentRunGetStatus", { runId }, () => {});
+  const [failedLock] = readdirSync(lockDir);
+  const path = join(lockDir, failedLock);
+  renameSync(path, `${path}.fixture`);
+  mkdirSync(path);
+
+  const otherRun = {
+    ...startPayload,
+    runId: "run-2",
+    turnId: "turn-2",
+    chatSessionId: "session-2",
+    originUserMessageId: "user-message-2",
+  };
+  await observer.dbExecute(
+    "INSERT INTO chat_sessions (id, project_id, title) VALUES (?, ?, ?)",
+    [otherRun.chatSessionId, projectId, "Second recovery fixture"],
+    "run",
+  );
+  await observer.dbExecute(
+    "INSERT INTO chat_messages (id, session_id, role, content) VALUES (?, ?, ?, ?)",
+    [
+      otherRun.originUserMessageId,
+      otherRun.chatSessionId,
+      "user",
+      "Draft a scene.",
+    ],
+    "run",
+  );
+  await withOwnerProcess(
+    root,
+    "agentRunGetStatus",
+    { runId: otherRun.runId },
+    () => {},
+    otherRun,
+  );
+  const recovered = JSON.parse(
+    await observer.agentRunRecover({
+      minActivityAgeSecs: 0,
+      finalizingEvidence: [],
+    }),
+  );
+  assert.deepEqual(
+    recovered.sort((a, b) => a.outcome.localeCompare(b.outcome)),
+    [
+      { outcome: "failed", reason: "AGENT_RUN_OWNER_RECOVERY_FAILED" },
+      {
+        outcome: "recovered",
+        results: [
+          { runId: otherRun.runId, version: 1, outcome: "interrupted" },
+        ],
+      },
+    ],
+  );
+  assert.equal(
+    JSON.parse(await observer.agentRunGetStatus({ runId })).status,
+    "running",
+  );
 });
 
 test("AgentRun rejects unknown fields and caller-supplied owner IDs", async (t) => {
   const backend = await openWorkspace(t);
+  await assert.rejects(
+    backend.agentRunListOwned({ owner: "caller-owner" }),
+    /unknown field `owner`/,
+  );
+  await assert.rejects(
+    backend.agentRunAppendToolCalls({
+      runId,
+      entries: [{ ...ledgerEntry, unexpected: true }],
+    }),
+    /unknown field `unexpected`/,
+  );
+  await assert.rejects(
+    backend.agentRunRecoverFinalizing({
+      runId,
+      version: 0,
+      userMessageComplete: false,
+      assistantMessageComplete: false,
+      reason: "invalid_reason",
+    }),
+    /unknown variant `invalid_reason`/,
+  );
   await assert.rejects(
     backend.agentRunStart({ ...startPayload, unexpected: true }),
     /unknown field `unexpected`/,
