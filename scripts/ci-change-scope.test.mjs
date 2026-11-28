@@ -606,6 +606,7 @@ test("every file a skippable lane's JS tests import stays outside that lane's ne
         "src/AiAuditLazyImport.test.ts -> ./cliApi",
         "src/AiAuditLazyImport.test.ts -> ./codexAppApi",
         "src/AiAuditLazyImport.test.ts -> ./lazyTransportApi",
+        "src/AiAuditLazyImport.test.ts -> ./mastraAgentTurnResponder",
         "src/AiAuditLazyImport.test.ts -> ./singleShotTransport",
         "src/features/codex/components/CodexDetailContent.test.tsx -> ./CodexEditLockBanner",
         "src/features/editor/sceneEditorSurfaceParity.test.tsx -> @/features/editor/useInsertHighlight",
