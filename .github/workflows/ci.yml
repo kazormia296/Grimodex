@@ -645,7 +645,7 @@ jobs:
 
       - name: Chromium バイナリキャッシュ
         id: pw-cache
-        uses: actions/cache@0c907a75c2c80ebcb7f088228285e798b750cf8f # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v4
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-chromium
@@ -698,7 +698,7 @@ jobs:
 
       - name: Chromium binary cache
         id: pw-cache
-        uses: actions/cache@0c907a75c2c80ebcb7f088228285e798b750cf8f # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v4
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-chromium
@@ -754,7 +754,7 @@ jobs:
 
       - name: Chromium バイナリキャッシュ
         id: pw-cache
-        uses: actions/cache@0c907a75c2c80ebcb7f088228285e798b750cf8f # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v4
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-chromium
