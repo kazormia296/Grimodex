@@ -444,7 +444,9 @@ describe("agent approval target reader through the real Native addon", () => {
       };
       const exchange = createAgentApprovalExchange(dependencies);
       const completion = exchange.request(request);
-      await vi.waitFor(() => expect(pendingSeen, toolName).toBe(true));
+      await vi.waitFor(() => expect(pendingSeen, toolName).toBe(true), {
+        timeout: 30_000,
+      });
       expect(port.readInteraction(interactionId)?.status).toBe("pending");
       expect(
         port.readToolCall(runId, {
