@@ -194,3 +194,33 @@
   - 保存した承認はそのまま使わず、続けるときに main が確かめ直して権限を出す。
   - AWA/1（年表の出来事の更新・削除の承認）にも同じ記録を及ぼす。確認 69 の「承認の記録は変更の記録に印を足すだけ」と、AWA/1 の下書き、ADR 007・008 の 11-23 の追補は、この範囲で改訂する。
   - 年表の担当が、AWA/1 の 1 本目（claude/awa1-docs）の ADR の追補を合わせて直す。
+
+## 問 24（2026-11-28 10:50、統合者の AskUserQuestion。問 7 の例外の扱い。回答 10:53）
+- 背景：Quick の失敗が observation-prep.test.mjs の祖先の試験だと、同じ suite の後ろの step と後ろの suite が走らない（#1208 の run 46019741289 では 9 step と nir1-capacity-diagnostics が not-run）。ci.yml は PR では impact の step を走らせない。問 7 の問いには、この点が無かった。
+- tool_use toolu_017CwDWK2dKmJBP3bEed5NfR の 3 問目。回答の全文は、年表の記録の確認 164 にある。
+
+問いの原文：
+
+> 問 7 の例外（Quick の失敗が「master が枝の祖先」の試験 1 件だけなら製品 PR も merge 可）を今後どうしますか？この試験が落ちると、同じまとまりの後ろの試験（今回は 9 step と 1 suite）は走らず、一部は merge の前にどこでも検査されません（後の夜間 CI で走ります）。例外を決めていただいた問いには、この点がありませんでした。
+
+選択肢の原文：
+
+- 「試験の方を直す (Recommended)」：この試験が落ちても後ろが走るように直せるか調べる（できるかは未確認）。直るまでは取り直す。
+- 「例外を今のまま使う」：走らなかった分は PR 本文に書き、merge 後の夜間 CI で確かめる。
+- 「例外をやめる」：毎回取り直す。Mastra の merge が続く時間帯は、何度も落ちる可能性がある。
+- （ほかに、自由記述の「Other」が出る）
+
+- 回答：「試験の方を直す (Recommended)」
+- 効力：
+  - 試験の方を直す。祖先の試験が落ちても後ろが走る形にできるかを調べる（可否は未確認）。
+  - 直るまでは、祖先の試験が落ちたら取り直す。問 7 の例外は使わない。
+
+## 問 25（2026-11-28 10:38、heap のセッションの AskUserQuestion。S11 の大きさの退行検査。統合者は直接見ておらず、heap の引き継ぎ nir1-s11-leftovers-handoff-20261126.md の §4.1 をそのまま写す）
+```text
+[2026-11-28T01:38:01.481Z] 問：同梱の C-query worker は、#1172 で Linux の release が 91.7 MB から 7.8 MB になりました（macOS／Windows は未測定）。元の大きさに戻っても、自動で気づく検査はありません。戻ると install 後のディスクが約 84 MB 増えますが、動作は変わりません。検査を足すと新しい gate になるので、どうするか選んでください。
+  - 足さない (Recommended)：今のまま閉じます。追加の作業はありません。
+  - Linux だけ足す：release と packaged smoke の build で、worker が 32 MB を超えたら失敗にします。製品 PR が 1 本必要で、枠の順番を待ちます。古い「約 90 MB」の注記も同じ PR で直します。
+  - mac/Win を測ってから：今は決めません。次の packaged smoke か release の debug run で macOS／Windows の大きさを測り、3 OS の値を見て上限を決めます。
+[2026-11-28T01:38:56.927Z] 回答：Your questions have been answered: "同梱の C-query worker は、#1172 で Linux の release が 91.7 MB から 7.8 MB になりました（macOS／Windows は未測定）。元の大きさに戻っても、自動で気づく検査はありません。戻ると install 後のディスクが約 84 MB 増えますが、動作は変わりません。検査を足すと新しい gate になるので、どうするか選んでください。"="足さない (Recommended)". You can now continue with these answers in mind.
+```
+- 効力：大きさの退行検査は足さない。DR-S11-5 (1) のまま閉じる。
