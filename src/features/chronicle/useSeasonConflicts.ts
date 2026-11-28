@@ -18,6 +18,8 @@ import {
   ageConflictEventIds,
   type AgeConflict,
 } from "./ageCheck";
+import { hasChronicleDate } from "@/../electron/shared/readDomain/features/chronicle/chronicleSpan";
+import type { EventRow } from "@/../electron/shared/readDomain/features/chronicle/eventRows";
 import {
   getProjectCalendar,
   upsertProjectCalendar,
@@ -73,13 +75,27 @@ export function mergeAgeCheckEvents<E extends { id: string }>(
 export interface EventForCheck {
   id: string;
   startTime: number | null;
+  startGranularity?: EventRow["startGranularity"];
+  precision?: EventRow["precision"];
   primaryCodexId: string | null;
   kind: string;
 }
 
+type CheckEvent = EventForCheck &
+  Pick<EventRow, "startGranularity" | "precision">;
+
+function prepareCheckEvents(events: EventForCheck[]): CheckEvent[] {
+  return events.map((event) => ({
+    ...event,
+    startGranularity:
+      event.startGranularity ?? (event.startTime == null ? "none" : "day"),
+    precision: event.precision ?? "exact",
+  }));
+}
+
 /**
  * 整合チェック入力の指紋。季節/年齢チェックが実際に読むフィールド
- * （id / startTime / primaryCodexId / kind とリンク対）だけを畳むため、
+ * （id / startTime / startGranularity / precision / primaryCodexId / kind とリンク対）だけを畳むため、
  * title 等のテキスト編集や配列 identity の変化（楽観 setEvents / nodes 更新に
  * よる再導出）では変わらない。effect の依存をこれに絞ることで、per-keystroke に
  * 本文 batch SELECT＋再チェックが走るカスケードを防ぐ。
@@ -90,7 +106,7 @@ export function checkInputsFingerprint(
   ageExtraEvents?: EventForCheck[],
 ): string {
   const ev = (e: EventForCheck) =>
-    `${e.id}\u0000${e.startTime ?? ""}\u0000${e.primaryCodexId ?? ""}\u0000${e.kind}`;
+    `${e.id}\u0000${e.startTime ?? ""}\u0000${e.startGranularity ?? ""}\u0000${e.precision ?? ""}\u0000${e.primaryCodexId ?? ""}\u0000${e.kind}`;
   return [
     events.map(ev).join("\n"),
     links.map((l) => `${l.sceneId}\u0000${l.eventId}`).join("\n"),
@@ -351,12 +367,21 @@ export function useSeasonConflicts({
       links,
       ageExtraEvents,
     );
+    const seasonCheckEvents = prepareCheckEvents(events);
+    const ageCheckEvents = prepareCheckEvents(ageEvents);
 
+    const isCheckable = (e: CheckEvent) =>
+      e.precision !== "unknown" &&
+      hasChronicleDate({
+        startTime: e.startTime,
+        startMinute: null,
+        startGranularity: e.startGranularity,
+      });
     const seasonCheckable = new Set(
-      events.filter((e) => e.startTime != null).map((e) => e.id),
+      seasonCheckEvents.filter(isCheckable).map((e) => e.id),
     );
     const ageCheckable = new Set(
-      ageEvents.filter((e) => e.startTime != null).map((e) => e.id),
+      ageCheckEvents.filter(isCheckable).map((e) => e.id),
     );
     // 本文をロードするシーン = 季節(links) ∪ 年齢(ageLinks) の被参照シーン。
     const sceneIds = [
@@ -388,14 +413,14 @@ export function useSeasonConflicts({
           const sceneTexts = collectLoadedSceneTexts(sceneIds, contents);
           // 季節は実 event のみ（event↔リンクシーン本文モデル）。
           const nextConflicts = findSeasonConflicts({
-            events,
+            events: seasonCheckEvents,
             calendar,
             links,
             sceneTexts,
           });
           // 年齢は scene-event も含む（本文=自分自身の暗黙リンク）。
           const nextAgeConflicts = findAgeConflicts({
-            events: ageEvents,
+            events: ageCheckEvents,
             calendar,
             links: ageLinks,
             sceneTexts,

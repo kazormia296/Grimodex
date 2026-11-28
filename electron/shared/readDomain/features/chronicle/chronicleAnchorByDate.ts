@@ -18,14 +18,11 @@
  * 作中日付のある場面（保管済みを除く）も無いときに限り、確度が「不明」の出来事も材料にする。
  * 日時の無い出来事は、C3a でも材料にならない。
  *
- * 呼び出す側の責任：秘密の印の判定を先に掛けた出来事を渡す。保管済みの場面は
- * sceneChronicle・sceneEvents から除いて渡す。
- * C3a の「作品の出来事が全部」は、この関数では、渡された出来事だけで判定する。
- * 秘密の印で除く前の全部を渡すか、除いた後を渡すかは、切り替えの PR（§5 の 5）で、
- * 渡す集合とあわせて決める（DR-CED-14）。
+ * DR-CED-20：出来事は全件を使い、場面は保管した node と子孫を除く。
  *
  * 純粋な関数だけ。DOM・Node・DB・store・React を使わない。
  */
+import type { CoreTreeNode } from "../../../mastraRead/ports.js";
 import type { EventPrecision } from "../../db/schema.js";
 import {
   type ChronicleOrderRow,
@@ -56,6 +53,45 @@ export interface ChronicleAnchorByDateContext {
    * 省略すると、sceneChronicle に日時のある場面があるかで決める。
    */
   hasDatedLiveScene?: boolean;
+}
+
+export type SnapshotSceneDate = Pick<
+  CoreTreeNode,
+  | "id"
+  | "chronicleStartTime"
+  | "chronicleStartMinute"
+  | "chronicleStartGranularity"
+  | "chroniclePrecision"
+>;
+
+/** readingOrder は保管した枝をたどらない buildReadingOrder の結果。 */
+export function resolveSnapshotSceneAnchor(
+  sceneId: string,
+  args: {
+    events: ChronicleAnchorEventRow[];
+    sceneEvents: SceneEventRow[];
+    readingOrder: Map<string, number>;
+    nodes?: readonly SnapshotSceneDate[];
+    calendar: ChronicleCalendar | null;
+  },
+): ChronicleAnchor {
+  const sceneChronicle = new Map<string, SceneChronicle>();
+  for (const node of args.nodes ?? []) {
+    if (!args.readingOrder.has(node.id)) continue;
+    sceneChronicle.set(node.id, {
+      startTime: node.chronicleStartTime ?? null,
+      startMinute: node.chronicleStartMinute ?? null,
+      startGranularity: node.chronicleStartGranularity ?? "none",
+      precision: (node.chroniclePrecision ?? "exact") as EventPrecision,
+    });
+  }
+  return resolveSceneAnchorByDate(sceneId, {
+    ...args,
+    sceneChronicle,
+    sceneEvents: args.sceneEvents.filter((link) =>
+      args.readingOrder.has(link.sceneId),
+    ),
+  });
 }
 
 /** 現在地と、それを決めた出来事の id（scene・none では null）。 */

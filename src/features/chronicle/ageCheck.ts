@@ -1,4 +1,6 @@
 import { computeAge, type ChronicleCalendar } from "./chronicleTime";
+import { hasChronicleDate } from "@/../electron/shared/readDomain/features/chronicle/chronicleSpan";
+import type { EventRow } from "@/../electron/shared/readDomain/features/chronicle/eventRows";
 
 export interface AgeWordEntry {
   words: string[];
@@ -106,6 +108,8 @@ export interface AgeCheckInput {
     id: string;
     primaryCodexId: string | null;
     startTime: number | null;
+    startGranularity: string;
+    precision: EventRow["precision"];
     kind: string;
   }[];
   calendar: ChronicleCalendar;
@@ -124,8 +128,17 @@ export function findAgeConflicts(input: AgeCheckInput): AgeConflict[] {
   const { events, calendar, links, sceneTexts, ageWords } = input;
   if (calendar.daysPerYear <= 0) return [];
 
+  const checkableEvents = events.filter(
+    (e) =>
+      e.precision !== "unknown" &&
+      hasChronicleDate({
+        startTime: e.startTime,
+        startMinute: null,
+        startGranularity: e.startGranularity,
+      }),
+  );
   const birthByCodex = new Map<string, number>();
-  for (const e of events) {
+  for (const e of checkableEvents) {
     if (e.kind === "birth" && e.primaryCodexId && e.startTime != null) {
       // 最も早い birth を採用。
       const prev = birthByCodex.get(e.primaryCodexId);
@@ -143,7 +156,7 @@ export function findAgeConflicts(input: AgeCheckInput): AgeConflict[] {
   }
 
   const conflicts: AgeConflict[] = [];
-  const orderedEvents = [...events].sort((a, b) =>
+  const orderedEvents = [...checkableEvents].sort((a, b) =>
     a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
   );
   for (const e of orderedEvents) {

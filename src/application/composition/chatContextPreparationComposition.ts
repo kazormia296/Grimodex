@@ -118,15 +118,10 @@ import {
   collectChronicleCandidateCodexIds,
   dropHiddenCodexFromChronicleInput,
 } from "@/../electron/shared/readDomain/features/chronicle/chronicleHiddenCodex";
-import type { SceneChronicle } from "@/features/chronicle/resolveSceneAnchor";
 import { calendarFromRow } from "@/features/chronicle/chronicleTime";
 import { useChronicleStore } from "@/features/chronicle/chronicleStore";
 import { listCodexIdsHiddenFromAi } from "@/features/codex/context/codexHiddenFromAi";
-import {
-  PLOT_PHASE_TYPES,
-  type EventPrecision,
-  type PlotPhaseType,
-} from "@/db/schema";
+import { PLOT_PHASE_TYPES, type PlotPhaseType } from "@/db/schema";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 import { computeSceneThreadContext } from "@/features/plot-threads/sceneThreadTracks";
 import {
@@ -997,22 +992,11 @@ export async function buildChronicleSnapshotTextForScene(
 ): Promise<string | undefined> {
   if (!enabled) return undefined;
   const events = await listEvents(projectId);
-  const sceneChronicle = new Map<string, SceneChronicle>();
-  for (const node of treeNodes) {
-    if (node.nodeType !== "scene") continue;
-    sceneChronicle.set(node.id, {
-      startTime: node.chronicleStartTime ?? null,
-      startMinute: node.chronicleStartMinute ?? null,
-      startGranularity: node.chronicleStartGranularity ?? "none",
-      precision: (node.chroniclePrecision ?? "exact") as EventPrecision,
-    });
-  }
-  const current = sceneChronicle.get(sceneId);
-  const currentHasDate =
-    !!current &&
-    current.startGranularity !== "none" &&
-    current.startTime != null;
-  if (events.length === 0 && !currentHasDate) return undefined;
+  if (
+    events.length === 0 &&
+    !treeNodes.some((node) => node.chronicleStartTime != null)
+  )
+    return undefined;
 
   const [participants, sceneEvents, calendarRow, relations] = await Promise.all(
     [
@@ -1039,7 +1023,7 @@ export async function buildChronicleSnapshotTextForScene(
     codexNames,
     sceneCodexIds,
     mentionedCodexIds,
-    sceneChronicle,
+    nodes: treeNodes,
     lang: language,
   };
   const entryIds = collectChronicleCandidateCodexIds(args);

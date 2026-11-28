@@ -99,7 +99,7 @@ L4 のトークン予算超過時、**数値が小さいブロックほど先に
 |------|--------|--------|---------|
 | シーン配置・Codex Phase ピン | Timeline (`scenes`) | story-time / reading / write | Phase 解決は L4 |
 | プロット through-line | Timeline (`threads`) | reading-order | PLOT_THREAD 層 |
-| 作中イベント（Event） | Chronicle | fabula（ordinal + 暦ライト） | CHRONICLE 層 |
+| 作中イベント（Event） | Chronicle | fabula（出来事の日時と暦。前後は日時で決め、`ordinal` は同じ日時の順だけ） | CHRONICLE 層 |
 
 `get_scene_timeline_neighbors` ツールは **Timeline の story-time 隣接**（`tree_nodes.story_time_order`）であり、Chronicle の `events` ではない。
 

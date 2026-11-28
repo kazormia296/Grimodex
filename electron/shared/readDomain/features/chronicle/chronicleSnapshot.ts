@@ -1,4 +1,12 @@
-import { cmpKeys } from "../tree/fractionalIndex.js";
+import {
+  classifyEventRelation,
+  compareChronicleEvents,
+} from "./chronicleOrder.js";
+import { effectiveEventPrecision, hasChronicleDate } from "./chronicleSpan.js";
+import {
+  type SnapshotSceneDate,
+  resolveSnapshotSceneAnchor,
+} from "./chronicleAnchorByDate.js";
 import type { EventPrecision } from "../../db/schema.js";
 import {
   seasonOf,
@@ -7,11 +15,7 @@ import {
   type ChronicleCalendar,
   type DateLang,
 } from "./chronicleTime.js";
-import {
-  resolveSceneAnchor,
-  type ChronicleAnchor,
-  type SceneChronicle,
-} from "./resolveSceneAnchor.js";
+import type { ChronicleAnchor } from "./resolveSceneAnchor.js";
 import type {
   EventRow,
   ParticipantRow,
@@ -52,12 +56,15 @@ export interface SnapshotEvent {
    * 暦なし・日付欠落・アンカー未確定では null（省略）。絶対日付は使わない。
    */
   relTime: string | null;
+  precision: EventPrecision;
   revealScene?: ChronicleRevealMark;
 }
 
 export interface CausalPair {
   causeTitle: string;
   effectTitle: string;
+  causePrecision: EventPrecision;
+  effectPrecision: EventPrecision;
 }
 
 export interface ChronicleSnapshot {
@@ -81,6 +88,7 @@ export interface ChronicleSnapshot {
 
 export interface ChronicleSnapshotInput {
   anchor: ChronicleAnchor;
+  sceneId?: string;
   events: EventRow[];
   participants: ParticipantRow[];
   relations: EventRelationRow[];
@@ -98,16 +106,29 @@ function truncate(s: string, cap: number): string {
   return s.length > cap ? s.slice(0, cap) + "…" : s;
 }
 
-/**
- * ordinal が anchor 以前か。anchor.ordinal="" は常に false。これは source=none
- * （暦アンカー無し）のほか、source=scene でシーンの暦日付が全 event より前＝
- * syntheticOrdinal が "" になるケースでも起きる。後者では recent/offpage/causal
- * が空になるが「その時点ではまだ何も起きていない」という意味で正しい（未来の
- * 出来事を背景に出さない）。
- */
-function atOrBefore(ordinal: string, anchorOrdinal: string): boolean {
-  if (anchorOrdinal === "") return false;
-  return cmpKeys(ordinal, anchorOrdinal) <= 0;
+function snapshotPosition(
+  anchor: ChronicleAnchor,
+  calendar: ChronicleCalendar | null,
+  sceneId?: string,
+  links: { sceneId: string; eventId: string }[] = [],
+) {
+  const current = new Set(
+    links
+      .filter((link) => link.sceneId === sceneId)
+      .map((link) => link.eventId),
+  );
+  return (event: EventRow) => {
+    const relation = classifyEventRelation(event, anchor, calendar);
+    if (relation !== "unknown" && current.has(event.id)) return "current";
+    return relation;
+  };
+}
+
+type PositionOf = ReturnType<typeof snapshotPosition>;
+function isKnown(position: ReturnType<PositionOf>): boolean {
+  return (
+    position === "before" || position === "concurrent" || position === "current"
+  );
 }
 
 /** ある時刻における人物の生死・年齢を導出（純粋）。 */
@@ -121,24 +142,33 @@ export function deriveCharacterStateAt(
   let birthTime: number | null = null;
   let deathTime: number | null = null;
   for (const e of events) {
-    if (e.primaryCodexId !== characterId || e.startTime == null) continue;
+    if (e.primaryCodexId !== characterId) continue;
+    // 不明の死亡（CED/2）は Infinity で印を付ける。確かな死亡があれば、その日に置き換わる。
+    if (
+      e.kind === "death" &&
+      (!hasChronicleDate(e) ||
+        (e.precision === "unknown" && e.startTime! <= t!))
+    )
+      deathTime ??= Infinity;
+    if (!hasChronicleDate(e) || e.precision === "unknown") continue;
     if (e.kind === "birth")
-      birthTime =
-        birthTime == null ? e.startTime : Math.min(birthTime, e.startTime);
+      birthTime = Math.min(birthTime ?? e.startTime!, e.startTime!);
     else if (e.kind === "death")
-      deathTime =
-        deathTime == null ? e.startTime : Math.min(deathTime, e.startTime);
+      deathTime = Math.min(deathTime ?? e.startTime!, e.startTime!);
   }
 
   if (t == null || birthTime == null) return { status: "unknown", age: null };
   if (birthTime > t) return { status: "unborn", age: null };
 
-  const dead = deathTime != null && deathTime <= t;
+  const dead = Number.isFinite(deathTime) && deathTime! <= t;
   const refTime = dead ? (deathTime as number) : t;
   const daysPerYear = calendar?.daysPerYear ?? 0;
   const age =
     daysPerYear > 0 ? Math.floor((refTime - birthTime) / daysPerYear) : null;
-  return { status: dead ? "dead" : "alive", age };
+  return {
+    status: dead ? "dead" : deathTime === Infinity ? "unknown" : "alive",
+    age,
+  };
 }
 
 /** 最後に判明する居場所（純粋）。primary か participant で関与し location 付きの最新 event。 */
@@ -148,15 +178,17 @@ export function deriveLastKnownLocation(
   events: EventRow[],
   participantEventIds: Set<string>,
   codexNames: Map<string, string>,
+  calendar: ChronicleCalendar | null = null,
+  positionOf: PositionOf = snapshotPosition(anchor, calendar),
 ): string | null {
   let best: EventRow | null = null;
   for (const e of events) {
     if (e.locationCodexId == null) continue;
-    if (!atOrBefore(e.ordinal, anchor.ordinal)) continue;
+    if (!isKnown(positionOf(e))) continue;
     const involved =
       e.primaryCodexId === characterId || participantEventIds.has(e.id);
     if (!involved) continue;
-    if (best == null || cmpKeys(e.ordinal, best.ordinal) > 0) best = e;
+    if (best == null || compareChronicleEvents(e, best, calendar) > 0) best = e;
   }
   if (!best || best.locationCodexId == null) return null;
   return codexNames.get(best.locationCodexId) ?? null;
@@ -196,21 +228,24 @@ function deriveRecentEvents(
 ): SnapshotEvent[] {
   return events
     .filter(
-      (e) => e.kind === "generic" && atOrBefore(e.ordinal, anchor.ordinal),
+      (e) =>
+        e.kind === "generic" &&
+        isKnown(classifyEventRelation(e, anchor, calendar)),
     )
-    .sort((a, b) => cmpKeys(b.ordinal, a.ordinal))
+    .sort((a, b) => compareChronicleEvents(b, a, calendar))
     .slice(0, MAX_RECENT)
     .map((e) => ({
       eventId: e.id,
       title: truncate(e.title, TITLE_CAP),
       note: e.note ? truncate(e.note, NOTE_CAP) : null,
       relTime: relTimeFor(e, anchor, calendar, lang),
+      precision: effectiveEventPrecision(e),
       ...revealOf(e.id),
     }));
 }
 
 function deriveUnresolvedCausal(
-  anchor: ChronicleAnchor,
+  positionOf: PositionOf,
   events: EventRow[],
   relations: EventRelationRow[],
 ): CausalPair[] {
@@ -221,13 +256,12 @@ function deriveUnresolvedCausal(
     const effect = byId.get(r.effectId);
     if (!cause || !effect) continue;
     // 原因は起きた（<=anchor）が結果は未到来（>anchor）。
-    if (
-      atOrBefore(cause.ordinal, anchor.ordinal) &&
-      !atOrBefore(effect.ordinal, anchor.ordinal)
-    ) {
+    if (isKnown(positionOf(cause)) && positionOf(effect) === "after") {
       out.push({
         causeTitle: truncate(cause.title, TITLE_CAP),
         effectTitle: truncate(effect.title, TITLE_CAP),
+        causePrecision: effectiveEventPrecision(cause),
+        effectPrecision: effectiveEventPrecision(effect),
       });
     }
   }
@@ -247,12 +281,18 @@ function deriveOffpageEvents(
   return events
     .filter((e) => !stamped.has(e.id))
     .filter(
-      (e) => anchor.source === "none" || atOrBefore(e.ordinal, anchor.ordinal),
+      (e) =>
+        anchor.source === "none" ||
+        isKnown(classifyEventRelation(e, anchor, calendar)),
     )
     .sort((a, b) => {
       const rk = kindRank(a.kind) - kindRank(b.kind);
       if (rk !== 0) return rk;
-      return cmpKeys(b.ordinal, a.ordinal);
+      // B1: 同じ kind 優先度の中では日時なしを末尾に置く。
+      return (
+        Number(hasChronicleDate(b)) - Number(hasChronicleDate(a)) ||
+        compareChronicleEvents(b, a, calendar)
+      );
     })
     .slice(0, MAX_OFFPAGE)
     .map((e) => ({
@@ -260,6 +300,7 @@ function deriveOffpageEvents(
       title: truncate(e.title, TITLE_CAP),
       note: e.note ? truncate(e.note, NOTE_CAP) : null,
       relTime: relTimeFor(e, anchor, calendar, lang),
+      precision: effectiveEventPrecision(e),
       ...revealOf(e.id),
     }));
 }
@@ -275,6 +316,12 @@ export function deriveChronicleSnapshot(
   const { anchor, events, participants, relations, sceneEvents, calendar } =
     input;
 
+  const positionOf = snapshotPosition(
+    anchor,
+    calendar,
+    input.sceneId,
+    sceneEvents,
+  );
   const season =
     anchor.startTime != null && calendar
       ? seasonOf(anchor.startTime, calendar)
@@ -316,6 +363,8 @@ export function deriveChronicleSnapshot(
         events,
         participantsByCodex.get(cid) ?? new Set(),
         input.codexNames,
+        calendar,
+        positionOf,
       );
       return {
         codexId: cid,
@@ -347,7 +396,7 @@ export function deriveChronicleSnapshot(
       dateLang,
       revealOf,
     ),
-    unresolvedCausal: deriveUnresolvedCausal(anchor, events, relations),
+    unresolvedCausal: deriveUnresolvedCausal(positionOf, events, relations),
     offpage: deriveOffpageEvents(
       anchor,
       events,
@@ -377,6 +426,9 @@ export function pickSnapshotCharacters(args: {
   sceneCodexIds?: string[];
   mentionedCodexIds?: string[];
   max?: number;
+  sceneId?: string;
+  sceneEvents?: SceneEventRow[];
+  calendar?: ChronicleCalendar | null;
 }): string[] {
   if (args.anchor.source === "none") return [];
   // @mention 人物を最初に積むことで、Set の挿入順 → 末尾 slice の cap でも
@@ -385,9 +437,16 @@ export function pickSnapshotCharacters(args: {
     ...(args.mentionedCodexIds ?? []),
     ...(args.sceneCodexIds ?? []),
   ]);
+  const calendar = args.calendar ?? null;
+  const positionOf = snapshotPosition(
+    args.anchor,
+    calendar,
+    args.sceneId,
+    args.sceneEvents,
+  );
   const recent = args.events
-    .filter((e) => atOrBefore(e.ordinal, args.anchor.ordinal))
-    .sort((a, b) => cmpKeys(b.ordinal, a.ordinal))
+    .filter((e) => isKnown(positionOf(e)))
+    .sort((a, b) => compareChronicleEvents(b, a, calendar))
     .slice(0, MAX_RECENT);
   const recentIds = new Set(recent.map((e) => e.id));
   for (const e of recent) if (e.primaryCodexId) ids.add(e.primaryCodexId);
@@ -418,37 +477,15 @@ export function assembleChronicleSnapshotText(args: {
   sceneCodexIds?: string[];
   /** @mention で明示された人物 codexId（最優先で snapshot に含める）。 */
   mentionedCodexIds?: string[];
-  /** sceneId → シーン自身の暦日付（scene-own アンカー源）。 */
-  sceneChronicle?: Map<string, SceneChronicle>;
+  nodes?: readonly SnapshotSceneDate[];
   /** 開示判定用の読む順と非 archived scene。 */
   revealSceneView?: ChronicleRevealView;
   lang: string;
 }): string | undefined {
-  const anchor = resolveSceneAnchor(args.sceneId, {
-    sceneEvents: args.sceneEvents,
-    events: args.events,
-    readingOrder: args.readingOrder,
-    sceneChronicle: args.sceneChronicle,
-  });
-  const characterIds = pickSnapshotCharacters({
-    anchor,
-    events: args.events,
-    participants: args.participants,
-    sceneCodexIds: args.sceneCodexIds,
-    mentionedCodexIds: args.mentionedCodexIds,
-  });
+  const anchor = resolveSnapshotSceneAnchor(args.sceneId, args);
+  const characterIds = pickSnapshotCharacters({ ...args, anchor });
   const snapshot = deriveChronicleSnapshot(
-    {
-      anchor,
-      events: args.events,
-      participants: args.participants,
-      relations: args.relations,
-      sceneEvents: args.sceneEvents,
-      calendar: args.calendar,
-      characterIds,
-      codexNames: args.codexNames,
-      revealSceneView: args.revealSceneView,
-    },
+    { ...args, anchor, characterIds },
     args.lang,
   );
   const text = renderChronicleSnapshot(snapshot, args.lang);
@@ -570,6 +607,8 @@ function renderAtLevel(
   o: RenderLevel,
 ): string {
   const lines: string[] = [];
+  const precisionSuffix = (p: EventPrecision | null) =>
+    p === "approx" || p === "unknown" ? L.precisionSuffix(p) : "";
   const recent = snapshot.recentEvents.slice(0, o.recent);
   const offpage = snapshot.offpage.slice(0, o.offpage);
   const unrevealed = (e: SnapshotEvent) =>
@@ -585,12 +624,7 @@ function renderAtLevel(
         ? L.timeSeason(snapshot.time.season)
         : L.timeOrderOnly;
     if (snapshot.time.source === "proxy") timeLine += L.timeProxySuffix;
-    if (
-      snapshot.time.precision === "approx" ||
-      snapshot.time.precision === "unknown"
-    ) {
-      timeLine += L.precisionSuffix(snapshot.time.precision);
-    }
+    timeLine += precisionSuffix(snapshot.time.precision);
     lines.push(timeLine);
   }
 
@@ -608,7 +642,7 @@ function renderAtLevel(
   const eventLine = (e: SnapshotEvent): string =>
     `- ${e.title}${o.dates && e.relTime ? `（${e.relTime}）` : ""}${
       o.notes && e.note ? `（${e.note}）` : ""
-    }${unrevealed(e) ? L.unrevealedSuffix : ""}`;
+    }${precisionSuffix(e.precision)}${unrevealed(e) ? L.unrevealedSuffix : ""}`;
 
   if (recent.length > 0) {
     lines.push(L.recentHeader);
@@ -621,7 +655,9 @@ function renderAtLevel(
   if (snapshot.unresolvedCausal.length > 0) {
     lines.push(L.causalHeader);
     for (const c of snapshot.unresolvedCausal) {
-      lines.push(`- ${L.causalLine(c.causeTitle, c.effectTitle)}`);
+      lines.push(
+        `- ${L.causalLine(c.causeTitle + precisionSuffix(c.causePrecision), c.effectTitle + precisionSuffix(c.effectPrecision))}`,
+      );
     }
   }
 

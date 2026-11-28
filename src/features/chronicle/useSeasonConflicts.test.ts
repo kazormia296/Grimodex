@@ -80,6 +80,25 @@ describe("checkInputsFingerprint", () => {
     ).not.toBe(a);
   });
 
+  it("precision と startGranularity の変化では変わる", () => {
+    const event: EventForCheck = {
+      id: "e1",
+      startTime: 10,
+      startGranularity: "day",
+      precision: "exact",
+      primaryCodexId: "c1",
+      kind: "generic",
+    };
+    const initial = checkInputsFingerprint([event], links);
+
+    expect(
+      checkInputsFingerprint([{ ...event, precision: "approx" }], links),
+    ).not.toBe(initial);
+    expect(
+      checkInputsFingerprint([{ ...event, startGranularity: "none" }], links),
+    ).not.toBe(initial);
+  });
+
   it("ageExtraEvents（scene-event）の増減・日付変化でも変わる", () => {
     const extra: EventForCheck[] = [
       { id: "scene:sc1", startTime: 20, primaryCodexId: "c1", kind: "generic" },

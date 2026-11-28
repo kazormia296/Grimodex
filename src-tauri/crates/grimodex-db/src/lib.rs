@@ -926,6 +926,7 @@ pub mod chat_typed_writes;
 pub mod mastra_memory;
 pub mod chronicle;
 pub mod chronicle_bulk;
+pub mod chronicle_read;
 pub mod codex_relation_keys;
 pub mod codex_writes;
 pub mod domain_writes;

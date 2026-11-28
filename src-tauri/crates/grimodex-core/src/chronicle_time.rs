@@ -54,6 +54,15 @@ pub fn require_event_date(
     }
 }
 
+/// Undated restored events have unknown precision regardless of the stored label (CED/1 B1).
+pub fn effective_event_precision<'a>(day: Option<i64>, granularity: &str, stored: &'a str) -> &'a str {
+    if require_event_date(day, granularity).is_ok() {
+        stored
+    } else {
+        "unknown"
+    }
+}
+
 /// Resolve an omitted granularity without overriding an explicit caller
 /// choice. A written minute promotes the endpoint to `time`; a written day
 /// creates a `day` endpoint only when the current endpoint is absent.
