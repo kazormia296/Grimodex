@@ -37,6 +37,24 @@ impl ChronicleScene {
 }
 
 pub fn live_scenes(conn: &Connection, project_id: &str) -> Result<Vec<ChronicleScene>> {
+    map_live_scenes(conn, project_id, |row| Ok(ChronicleScene {
+        id: row.get(0)?,
+        start_time: row.get(1)?,
+        end_time: row.get(2)?,
+        start_minute: row.get(3)?,
+        end_minute: row.get(4)?,
+        start_granularity: row.get(5)?,
+        end_granularity: row.get(6)?,
+        precision: row.get(7)?,
+        title: row.get(8)?,
+    }))
+}
+
+pub(crate) fn map_live_scenes<T>(
+    conn: &Connection,
+    project_id: &str,
+    read: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+) -> Result<Vec<T>> {
     // Rank siblings first so DFS keeps a folder's entire subtree together.
     let mut stmt = conn.prepare(
         "WITH RECURSIVE siblings AS (
@@ -59,17 +77,7 @@ pub fn live_scenes(conn: &Connection, project_id: &str) -> Result<Vec<ChronicleS
            FROM live JOIN tree_nodes n ON n.id = live.id
           WHERE live.node_type = 'scene' ORDER BY live.path",
     )?;
-    let scenes = stmt.query_map([project_id], |row| Ok(ChronicleScene {
-        id: row.get(0)?,
-        start_time: row.get(1)?,
-        end_time: row.get(2)?,
-        start_minute: row.get(3)?,
-        end_minute: row.get(4)?,
-        start_granularity: row.get(5)?,
-        end_granularity: row.get(6)?,
-        precision: row.get(7)?,
-        title: row.get(8)?,
-    }))?.collect::<rusqlite::Result<_>>()?;
+    let scenes = stmt.query_map([project_id], read)?.collect::<rusqlite::Result<_>>()?;
     Ok(scenes)
 }
 

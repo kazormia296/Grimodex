@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 48,
+  "schemaVersion": 49,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -1503,6 +1503,46 @@
       ],
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE chat_summary_messages ( summary_id TEXT NOT NULL REFERENCES chat_summaries(id) ON DELETE CASCADE, message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE, PRIMARY KEY (summary_id, message_id) )"
+    },
+    "chronicle_date_migration_events": {
+      "kind": "table",
+      "columns": {
+        "event_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "project_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "recorded_at": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE chronicle_date_migration_events ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, event_id TEXT NOT NULL, recorded_at TEXT NOT NULL, PRIMARY KEY(project_id, event_id) )"
     },
     "codex_chunks": {
       "kind": "table",
@@ -18945,6 +18985,9 @@
     "grimodex_clock_chat_summary_messages_ad": "CREATE TRIGGER \"grimodex_clock_chat_summary_messages_ad\" AFTER DELETE ON \"chat_summary_messages\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_chat_summary_messages_ai": "CREATE TRIGGER \"grimodex_clock_chat_summary_messages_ai\" AFTER INSERT ON \"chat_summary_messages\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_chat_summary_messages_au": "CREATE TRIGGER \"grimodex_clock_chat_summary_messages_au\" AFTER UPDATE ON \"chat_summary_messages\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_chronicle_date_migration_events_ad": "CREATE TRIGGER \"grimodex_clock_chronicle_date_migration_events_ad\" AFTER DELETE ON \"chronicle_date_migration_events\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_chronicle_date_migration_events_ai": "CREATE TRIGGER \"grimodex_clock_chronicle_date_migration_events_ai\" AFTER INSERT ON \"chronicle_date_migration_events\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+    "grimodex_clock_chronicle_date_migration_events_au": "CREATE TRIGGER \"grimodex_clock_chronicle_date_migration_events_au\" AFTER UPDATE ON \"chronicle_date_migration_events\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_codex_chunks_ad": "CREATE TRIGGER \"grimodex_clock_codex_chunks_ad\" AFTER DELETE ON \"codex_chunks\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_codex_chunks_ai": "CREATE TRIGGER \"grimodex_clock_codex_chunks_ai\" AFTER INSERT ON \"codex_chunks\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
     "grimodex_clock_codex_chunks_au": "CREATE TRIGGER \"grimodex_clock_codex_chunks_au\" AFTER UPDATE ON \"codex_chunks\" BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",

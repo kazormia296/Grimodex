@@ -353,6 +353,34 @@ fn temporal_event_date_change_requires_a_dated_start() {
     assert!(
         format!("{err:#}").contains(grimodex_core::chronicle_time::CHRONICLE_EVENT_DATE_REQUIRED)
     );
+    let items = [(
+        "temporal.event.metadata.patch",
+        json!({
+            "eventId": "legacy", "baseVersion": 0, "startGranularity": "none",
+            "endGranularity": "none", "precision": "approx"
+        }),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-precision", "set-precision", &items);
+    let error = prepare_then_apply(
+        &db,
+        build_prepare(
+            "req-precision",
+            "digest-precision",
+            "set-precision",
+            "run-precision",
+            zip_ops(&pairs, &items),
+        ),
+    )
+    .expect_err("changing only precision on an undated event");
+    assert!(
+        format!("{error:#}").contains(grimodex_core::chronicle_time::CHRONICLE_EVENT_DATE_REQUIRED)
+    );
+    db.with_conn(|conn| {
+        conn.execute("INSERT INTO narrative_field_authority
+            (project_id, entity_kind, entity_id, field_path, owner_kind, explicit_lock, version, updated_at)
+            VALUES ('project-1','event','legacy','/startTime','human',1,3,'locked')", [])?;
+        Ok(())
+    }).unwrap();
     apply_items(
         &db,
         "date-unchanged",
@@ -360,10 +388,22 @@ fn temporal_event_date_change_requires_a_dated_start() {
             "temporal.event.metadata.patch",
             json!({
                 "eventId": "legacy", "baseVersion": 0, "startGranularity": "none",
-                "endGranularity": "none", "precision": "unknown"
+                "endGranularity": "none", "precision": "exact"
             }),
         )],
     );
+    db.with_conn(|conn| {
+        let repaired: bool = conn.query_row(
+            "SELECT start_time = 0 AND precision = 'unknown' AND start_granularity = 'day'
+             FROM events WHERE id = 'legacy'", [], |r| r.get(0))?;
+        assert!(repaired);
+        let owners: (i64, i64) = conn.query_row(
+            "SELECT sum(owner_kind = 'system'), sum(field_path = '/startTime' AND owner_kind = 'human'
+             AND explicit_lock = 1 AND version = 3 AND updated_at = 'locked')
+             FROM narrative_field_authority WHERE entity_id = 'legacy'", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        assert_eq!(owners, (6, 1));
+        Ok(())
+    }).unwrap();
 }
 
 #[test]
@@ -1480,6 +1520,7 @@ mod commit_undo_after_restore {
     #[test]
     fn undo_of_an_event_chronicle_patch_after_a_body_restore_and_a_later_edit_is_refused_and_the_edit_stays(
     ) {
+        // N4a では復元後の題の編集で開始日が 0 になる。取り消しが拒まれた後もその編集が残る。
         let db = migrated_db();
         seed_event(&db, "event-rs", "Event RS");
         snapshot_restore::seed_restore_prerequisites(&db, "project-1", RESTORE_SESSION);
@@ -1518,13 +1559,13 @@ mod commit_undo_after_restore {
             .expect("update payload"),
         )
         .expect("author edits the event after the restore");
-        assert_eq!(event_state(&db, "event-rs"), "AUTHOR AFTER RESTORE|-1|v1");
+        assert_eq!(event_state(&db, "event-rs"), "AUTHOR AFTER RESTORE|0|v1");
 
         assert_superseded_by_restore(
             undo_result(&db, &commit, "rs-event-undo"),
             "undo after the Body restore and a later event edit",
         );
-        assert_eq!(event_state(&db, "event-rs"), "AUTHOR AFTER RESTORE|-1|v1");
+        assert_eq!(event_state(&db, "event-rs"), "AUTHOR AFTER RESTORE|0|v1");
     }
     // --- 復元の後に作者が書いていない object で、版が取り込みの時と一致する筋書き（確認 88 の点検） ---
     //
@@ -1595,6 +1636,7 @@ mod commit_undo_after_restore {
     #[test]
     fn undo_of_an_event_chronicle_patch_after_restores_that_branch_must_not_roll_back_the_restored_event(
     ) {
+        // N4a では枝の題の編集で開始日が 0 になる。枝の復元後も取り消しの拒否後もこの値が残る。
         let db = migrated_db();
         seed_event(&db, "event-ru", "Event RU");
         snapshot_restore::seed_restore_prerequisites(&db, "project-1", RESTORE_SESSION);
@@ -1608,7 +1650,7 @@ mod commit_undo_after_restore {
             .expect("update payload"),
         )
         .expect("author edits the event on a branch");
-        assert_eq!(event_state(&db, "event-ru"), "BRANCH|-1|v1");
+        assert_eq!(event_state(&db, "event-ru"), "BRANCH|0|v1");
         snapshot_restore::snapshot(&db, "project-1", "snap-rue1");
         restore_body(&db, "restore-rue0", "snap-rue0");
         assert_eq!(event_state(&db, "event-ru"), "Event RU|-1|v0");
@@ -1634,13 +1676,13 @@ mod commit_undo_after_restore {
         let commit = applied["commitId"].as_str().unwrap().to_string();
         assert_eq!(event_state(&db, "event-ru"), "Event RU|5|v1");
         restore_body(&db, "restore-rue1", "snap-rue1");
-        assert_eq!(event_state(&db, "event-ru"), "BRANCH|-1|v1");
+        assert_eq!(event_state(&db, "event-ru"), "BRANCH|0|v1");
 
         assert_superseded_by_restore(
             undo_result(&db, &commit, "ru-event-undo"),
             "undo of the event patch after a restore that put a different event at the same version",
         );
-        assert_eq!(event_state(&db, "event-ru"), "BRANCH|-1|v1");
+        assert_eq!(event_state(&db, "event-ru"), "BRANCH|0|v1");
     }
 
     /// 復元の後の最初の書き込みが取り込み（commit）でも通り、2 回目の commit も通る。

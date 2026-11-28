@@ -133,21 +133,32 @@ struct BulkEventState {
 )]
 enum BulkEventFields {
     Date {
-        start_time: Option<i64>,
-        start_minute: Option<i64>,
-        start_granularity: String,
-        end_time: Option<i64>,
-        end_minute: Option<i64>,
-        end_granularity: String,
+        #[serde(flatten)]
+        date: BulkDateFields,
         updated_at: String,
         version: i64,
     },
     Lane {
         primary_codex_id: Option<String>,
         lane_group: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        date: Option<BulkDateFields>,
         updated_at: String,
         version: i64,
     },
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BulkDateFields {
+    start_time: Option<i64>,
+    start_minute: Option<i64>,
+    start_granularity: String,
+    end_time: Option<i64>,
+    end_minute: Option<i64>,
+    end_granularity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    precision: Option<String>,
 }
 
 impl BulkEventFields {
@@ -175,6 +186,7 @@ struct BulkEventRecord {
     end_time: Option<i64>,
     end_minute: Option<i64>,
     end_granularity: String,
+    precision: String,
     updated_at: String,
     version: i64,
 }
@@ -397,8 +409,8 @@ fn event_feed_state(state: &BulkEventState) -> anyhow::Result<Option<Value>> {
     }
 }
 
-fn event_feed_contract(kind: &str) -> anyhow::Result<(&'static str, Vec<String>)> {
-    let (change_kind, paths): (&str, &[&str]) = match kind {
+fn event_feed_contract(state: &BulkEventState) -> anyhow::Result<(&'static str, Vec<String>)> {
+    let (change_kind, paths): (&str, &[&str]) = match state.kind.as_str() {
         "eventDelete" => ("metadata", &["/"]),
         "eventClearDate" | "eventSetDate" => (
             "calendar",
@@ -414,10 +426,19 @@ fn event_feed_contract(kind: &str) -> anyhow::Result<(&'static str, Vec<String>)
         "eventSetLane" => ("association", &["/primaryCodexId", "/laneGroup"]),
         other => anyhow::bail!("unsupported Chronicle bulk feed event kind '{other}'"),
     };
-    Ok((
-        change_kind,
-        paths.iter().map(|path| (*path).to_string()).collect(),
-    ))
+    let mut paths: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
+    match &state.fields {
+        Some(BulkEventFields::Lane { date: Some(_), .. }) => paths.extend(
+            crate::narrative_extraction::TEMPORAL_FIELD_PATHS
+                .iter()
+                .map(|p| p.to_string()),
+        ),
+        Some(BulkEventFields::Date { date, .. }) if date.precision.is_some() => {
+            paths.push("/precision".into())
+        }
+        _ => {}
+    }
+    Ok((change_kind, paths))
 }
 
 fn scene_feed_contract(kind: &str) -> anyhow::Result<(&'static str, Vec<String>)> {
@@ -458,7 +479,7 @@ fn event_feed_input(
         (false, true) => "restore",
         other => anyhow::bail!("unsupported Chronicle bulk feed event transition {other:?}"),
     };
-    let (change_kind, changed_paths) = event_feed_contract(&before.kind)?;
+    let (change_kind, changed_paths) = event_feed_contract(before)?;
     Ok(NarrativeChangeEventInput {
         object_key: json!({
             "kind": "chronicle-event",
@@ -643,7 +664,7 @@ fn narrative_feed_events_with_full_event_states(
                     && before_state.kind == after_state.kind,
                 "chronicle bulk feed event snapshot identity mismatch"
             );
-            let (change_kind, paths) = event_feed_contract(&before_state.kind)?;
+            let (change_kind, paths) = event_feed_contract(before_state)?;
             Ok((
                 before_state.event_id.clone(),
                 (change_kind.to_string(), paths),
@@ -763,7 +784,7 @@ fn load_event_records(
             "SELECT id, primary_codex_id, lane_group,
                     start_time, start_minute, start_granularity,
                     end_time, end_minute, end_granularity,
-                    updated_at, version
+                    updated_at, version, precision
                FROM events
               WHERE project_id = ? AND id IN ({placeholders})"
         );
@@ -785,6 +806,7 @@ fn load_event_records(
                     end_granularity: row.get(8)?,
                     updated_at: row.get(9)?,
                     version: row.get(10)?,
+                    precision: row.get(11)?,
                 })
             },
         )?;
@@ -873,21 +895,31 @@ fn ensure_codex_ids_in_project(
     Ok(())
 }
 
+impl BulkEventRecord {
+    fn date_fields(&self) -> BulkDateFields {
+        BulkDateFields {
+            start_time: self.start_time,
+            start_minute: self.start_minute,
+            start_granularity: self.start_granularity.clone(),
+            end_time: self.end_time,
+            end_minute: self.end_minute,
+            end_granularity: self.end_granularity.clone(),
+            precision: None,
+        }
+    }
+}
+
 fn event_fields(record: &BulkEventRecord, kind: &str) -> anyhow::Result<BulkEventFields> {
     match kind {
         "eventClearDate" | "eventSetDate" => Ok(BulkEventFields::Date {
-            start_time: record.start_time,
-            start_minute: record.start_minute,
-            start_granularity: record.start_granularity.clone(),
-            end_time: record.end_time,
-            end_minute: record.end_minute,
-            end_granularity: record.end_granularity.clone(),
+            date: record.date_fields(),
             updated_at: record.updated_at.clone(),
             version: record.version,
         }),
         "eventSetLane" => Ok(BulkEventFields::Lane {
             primary_codex_id: record.primary_codex_id.clone(),
             lane_group: record.lane_group.clone(),
+            date: None,
             updated_at: record.updated_at.clone(),
             version: record.version,
         }),
@@ -995,57 +1027,41 @@ fn update_event_to_fields(
     target: &mut BulkEventFields,
 ) -> anyhow::Result<i64> {
     let next = checked_next_version(expected_version)?;
-    let updated = match target {
+    // A repaired lane carries its date on both journal sides; old lane journals omit it.
+    let (date, lane, updated_at) = match &*target {
         BulkEventFields::Date {
-            start_time,
-            start_minute,
-            start_granularity,
-            end_time,
-            end_minute,
-            end_granularity,
-            updated_at,
-            ..
-        } => conn.execute(
-            "UPDATE events
-                SET start_time = ?1, start_minute = ?2,
-                    start_granularity = ?3, end_time = ?4,
-                    end_minute = ?5, end_granularity = ?6,
-                    updated_at = ?7, version = ?8
-              WHERE id = ?9 AND project_id = ?10 AND version = ?11",
-            rusqlite::params![
-                *start_time,
-                *start_minute,
-                start_granularity.as_str(),
-                *end_time,
-                *end_minute,
-                end_granularity.as_str(),
-                updated_at.as_str(),
-                next,
-                event_id,
-                project_id,
-                expected_version,
-            ],
-        )?,
+            date, updated_at, ..
+        } => (Some(date), None, updated_at),
         BulkEventFields::Lane {
+            date,
             primary_codex_id,
             lane_group,
             updated_at,
             ..
-        } => conn.execute(
-            "UPDATE events
-                SET primary_codex_id = ?1, lane_group = ?2,
-                    updated_at = ?3, version = ?4
+        } => (
+            date.as_ref(),
+            Some((primary_codex_id.as_deref(), lane_group.as_deref())),
+            updated_at,
+        ),
+    };
+    let (primary, group) = lane.unwrap_or_default();
+    let updated = if let Some(date) = date {
+        conn.execute(
+            "UPDATE events SET start_time = ?1, start_minute = ?2, start_granularity = ?3,
+                end_time = ?4, end_minute = ?5, end_granularity = ?6, precision = COALESCE(?7, precision),
+                primary_codex_id = CASE WHEN ?8 THEN ?9 ELSE primary_codex_id END,
+                lane_group = CASE WHEN ?8 THEN ?10 ELSE lane_group END, updated_at = ?11, version = ?12
+              WHERE id = ?13 AND project_id = ?14 AND version = ?15",
+            rusqlite::params![date.start_time, date.start_minute, date.start_granularity,
+                date.end_time, date.end_minute, date.end_granularity, date.precision,
+                lane.is_some(), primary, group, updated_at, next, event_id, project_id, expected_version],
+        )?
+    } else {
+        conn.execute(
+            "UPDATE events SET primary_codex_id = ?1, lane_group = ?2, updated_at = ?3, version = ?4
               WHERE id = ?5 AND project_id = ?6 AND version = ?7",
-            rusqlite::params![
-                primary_codex_id.as_deref(),
-                lane_group.as_deref(),
-                updated_at.as_str(),
-                next,
-                event_id,
-                project_id,
-                expected_version,
-            ],
-        )?,
+            rusqlite::params![primary, group, updated_at, next, event_id, project_id, expected_version],
+        )?
     };
     if updated != 1 {
         anyhow::bail!("event '{event_id}' version conflict: expected {expected_version}");
@@ -1374,7 +1390,9 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
         .as_ref()
         .map(|context| context.event_uid.clone())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let timestamp = chrono::Utc::now().timestamp_millis();
+    let now = chrono::Utc::now();
+    let timestamp = now.timestamp_millis();
+    let now = now.to_rfc3339();
 
     db.with_conn(|conn| {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -1546,6 +1564,7 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
                                     lane_group: next_group,
                                     updated_at,
                                     version,
+                                    ..
                                 },
                             ) => {
                                 *next_primary = primary_codex_id.clone();
@@ -1563,17 +1582,10 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
                                     end_granularity: next_end_granularity,
                                     ..
                                 },
-                                BulkEventFields::Date {
-                                    start_time,
-                                    start_minute,
-                                    start_granularity,
-                                    end_time,
-                                    end_minute,
-                                    end_granularity,
-                                    updated_at,
-                                    version,
-                                },
+                                BulkEventFields::Date { date, updated_at, version },
                             ) => {
+                                let BulkDateFields { start_time, start_minute, start_granularity,
+                                    end_time, end_minute, end_granularity, .. } = date;
                                 if *start_time != Some(*next_start)
                                     || start_minute != next_start_minute
                                     || start_granularity != next_start_granularity
@@ -1690,6 +1702,51 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
                 }
             }
 
+            let mut repair_ids = BTreeSet::new();
+            if crate::agent_writes::is_forward_chronicle_edit(renderer_context.as_ref()) {
+                for state in &after.events {
+                    let record = &event_records[&state.event_id];
+                    let (start, granularity) = match &state.fields {
+                        Some(BulkEventFields::Lane { .. }) => (record.start_time, &record.start_granularity),
+                        Some(BulkEventFields::Date { date, .. }) => (date.start_time, &date.start_granularity),
+                        None => continue,
+                    };
+                    if require_event_date(start, granularity).is_err() {
+                        repair_ids.insert(state.event_id.as_str());
+                    }
+                }
+            }
+            let date_repairs = crate::chronicle_date_migration::update_date_repairs(conn, &payload.project_id, &repair_ids)?;
+            for (old, new) in before.events.iter_mut().zip(&mut after.events) {
+                let Some(&repair) = date_repairs.get(&new.event_id) else {
+                    continue;
+                };
+                let record = &event_records[&new.event_id];
+                let mut previous = record.date_fields();
+                previous.precision = Some(record.precision.clone());
+                let range = repair.range(ChronicleTimestamp {
+                    day: record.end_time,
+                    minute: record.end_minute,
+                    granularity: &record.end_granularity,
+                });
+                let assigned = BulkDateFields {
+                    start_time: range.start.day,
+                    start_minute: range.start.minute,
+                    start_granularity: range.start.granularity.into(),
+                    end_time: range.end.day,
+                    end_minute: range.end.minute,
+                    end_granularity: range.end.granularity.into(),
+                    precision: Some(repair.precision().unwrap_or(&record.precision).into()),
+                };
+                for (state, value) in [(old, previous), (new, assigned)] {
+                    match &mut state.fields {
+                        Some(BulkEventFields::Lane { date, .. }) => *date = Some(value),
+                        Some(BulkEventFields::Date { date, .. }) => *date = value,
+                        None => anyhow::bail!("missing bulk fields for date assignment"),
+                    }
+                }
+            }
+
             // Bound the fully expanded journal before the first UPDATE/DELETE.
             let (before_json, after_json) = serialize_bounded_journal(&before, &after)?;
             let mut event_feed_ids = bulk_event_feed_ids(&before);
@@ -1754,6 +1811,9 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
                             *base_version,
                             fields,
                         )?;
+                        if let Some(repair) = date_repairs.get(event_id) {
+                            repair.record_authority(conn, &payload.project_id, event_id, &now)?;
+                        }
                         state.last_version = version;
                         event_results.push(BulkEventResult {
                             kind: state.kind.clone(),
@@ -1966,6 +2026,96 @@ mod tests {
         })
         .unwrap();
         apply(set_date).expect("all six stored fields are unchanged");
+        db.with_conn(|conn| {
+            let repaired: bool = conn.query_row(
+                "SELECT start_time = 30 AND start_granularity = 'day' AND precision = 'exact'
+                   FROM events WHERE id = ?1",
+                [&event_id],
+                |row| row.get(0),
+            )?;
+            assert!(repaired);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn n4a_bulk_places_selected_rows_by_ordinal_then_id_and_replays_the_dates() {
+        let db = test_db();
+        let (project, _, _, _, _) = setup(&db);
+        db.with_conn(|conn| {
+            for (id, ordinal, created) in [
+                ("unselected", "a0", "1990-01-01T00:00:00Z"),
+                ("z", "a0", "2025-01-01T00:00:00Z"),
+                ("a", "a1", "2025-01-01T00:00:00Z"),
+                ("b", "a1", "2000-01-01T00:00:00Z"),
+            ] {
+                conn.execute("INSERT INTO events
+                    (id, project_id, ordinal, created_at, end_time, end_granularity, precision)
+                    VALUES (?1, ?2, ?3, ?4, 80, 'day', 'approx')",
+                    rusqlite::params![id, project, ordinal, created])?;
+            }
+            conn.execute("INSERT INTO narrative_field_authority
+                (project_id, entity_kind, entity_id, field_path, owner_kind, explicit_lock, version, updated_at)
+                VALUES (?1, 'event', 'a', '/endTime', 'human', 1, 2, 'locked')", [&project])?;
+            Ok(())
+        }).unwrap();
+        let result = agent_chronicle_bulk_mutate_impl(
+            &db,
+            AgentChronicleBulkPayload {
+                request_id: "bulk-place".into(),
+                project_id: project.clone(),
+                session_id: "session".into(),
+                surface: Some("manual".into()),
+                operations: ["b", "a", "z"]
+                    .into_iter()
+                    .map(|id| ChronicleBulkOperation::EventSetLane {
+                        event_id: id.into(),
+                        base_version: 0,
+                        primary_codex_id: None,
+                        lane_group: Some("group".into()),
+                    })
+                    .collect(),
+            },
+        )
+        .unwrap();
+        for action in ["forward", "undo", "redo"] {
+            if action != "forward" {
+                crate::agent_writes::agent_undo_journal_impl(
+                    &db,
+                    crate::agent_writes::AgentUndoJournalPayload {
+                        request_id: format!("bulk-{action}"),
+                        project_id: project.clone(),
+                        session_id: "session".into(),
+                        journal_id: result["undoJournalId"].as_str().unwrap().into(),
+                        direction: action.into(),
+                        authority_route: "history-replay".into(),
+                        origin: action.into(),
+                        caller: "undo-redo-command".into(),
+                        controls: history_replay_controls(),
+                    },
+                )
+                .unwrap();
+            }
+            db.with_conn(|conn| {
+                for (id, day) in [("z", 22), ("a", 23), ("b", 24), ("unselected", 0)] {
+                    let (start, end, precision, lane): (Option<i64>, Option<i64>, String, Option<String>) =
+                        conn.query_row("SELECT start_time, end_time, precision, lane_group FROM events WHERE id = ?1",
+                            [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+                    if action == "undo" || id == "unselected" {
+                        assert_eq!((start, end, precision.as_str(), lane.as_deref()), (None, Some(80), "approx", None));
+                    } else {
+                        assert_eq!((start, end, precision.as_str(), lane.as_deref()), (Some(day), None, "unknown", Some("group")));
+                    }
+                }
+                let owners: (i64, i64) = conn.query_row(
+                    "SELECT sum(owner_kind = 'system'), sum(field_path = '/endTime' AND owner_kind = 'human'
+                     AND explicit_lock = 1 AND version = 2 AND updated_at = 'locked')
+                     FROM narrative_field_authority WHERE entity_id = 'a'", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                assert_eq!(owners, (6, 1));
+                Ok(())
+            }).unwrap();
+        }
     }
 
     fn setup(db: &Database) -> (String, String, String, String, String) {
@@ -2996,6 +3146,7 @@ mod tests {
 
     #[test]
     fn legacy_full_event_update_journal_remains_replayable() {
+        // N4a では EventSetLane が開始日 22 を日単位で補う。redo はその記録値を復元する。
         let db = test_db();
         let (project_id, codex_id, _event_delete_id, event_id, _scene_id) = setup(&db);
         let before_snapshot = db
@@ -3123,7 +3274,7 @@ mod tests {
                 rusqlite::params![event_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?;
-            assert_eq!(redone, (None, "none".to_string(), 4));
+            assert_eq!(redone, (Some(22), "day".to_string(), 4));
             Ok(())
         })
         .expect("verify legacy redo");

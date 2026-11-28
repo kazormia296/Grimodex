@@ -529,6 +529,7 @@ pub(crate) use temporal_snapshots::{
 pub use commit::digest_plan;
 pub(crate) use field_authority::{
     legacy_value_present, propagate_source_change_freshness_in_tx, record_human_field_write,
+    TEMPORAL_FIELD_PATHS,
 };
 pub use models::{
     AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload, ArtifactInput,

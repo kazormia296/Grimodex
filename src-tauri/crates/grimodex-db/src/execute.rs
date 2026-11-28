@@ -4916,8 +4916,9 @@ mod tests {
             .iter()
             .filter(|table| is_read_open_table(table.name))
             .count();
-        assert_eq!((closed, read_open), (37, 58));
+        assert_eq!((closed, read_open), (38, 58));
         for name in [
+            "chronicle_date_migration_events",
             "mastra_message_parts",
             "mastra_thread_metadata",
             "mastra_resources",

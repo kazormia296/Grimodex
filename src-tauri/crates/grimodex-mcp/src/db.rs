@@ -2422,6 +2422,7 @@ struct VisibleEventDateState {
     end_minute: Option<i64>,
     start_granularity: String,
     end_granularity: String,
+    precision: String,
 }
 
 #[allow(dead_code)]
@@ -2433,7 +2434,7 @@ fn visible_event_date_state(
     use rusqlite::OptionalExtension;
     conn.query_row(
         "SELECT version, start_time, end_time, start_minute, end_minute,
-                start_granularity, end_granularity
+                start_granularity, end_granularity, precision
          FROM events
          WHERE id = ?1 AND project_id = ?2",
         params![event_id, project_id],
@@ -2446,6 +2447,7 @@ fn visible_event_date_state(
                 end_minute: row.get(4)?,
                 start_granularity: row.get(5)?,
                 end_granularity: row.get(6)?,
+                precision: row.get(7)?,
             })
         },
     )
@@ -2755,7 +2757,14 @@ pub fn chronicle_update_event(
             || merged_end.day != current.end_time
             || merged_end.minute != current.end_minute
             || merged_end.granularity != current.end_granularity;
-        let (canonical_start, canonical_end) = if touches_chronicle_date {
+        let repair = grimodex_db::chronicle_date_migration::date_repair_if_needed(
+            conn, project_id, event_id, touches_chronicle_date, merged_start,
+            patch.precision, &current.precision,
+        )?;
+        let (canonical_start, canonical_end) = if let Some(repair) = repair {
+            let range = repair.range(merged_end);
+            (range.start, range.end)
+        } else if touches_chronicle_date {
             require_event_date(merged_start.day, merged_start.granularity)?;
             let start = normalize_chronicle_timestamp(merged_start);
             let end = normalize_chronicle_timestamp(merged_end);
@@ -2812,7 +2821,7 @@ pub fn chronicle_update_event(
             vals.push(V::Text(v.to_string()));
             fields.push("locationCodexId");
         }
-        if touches_chronicle_date {
+        if touches_chronicle_date || repair.is_some() {
             if canonical_start.day != current.start_time {
                 sets.push(if let Some(v) = canonical_start.day {
                     vals.push(V::Integer(v));
@@ -2850,17 +2859,17 @@ pub fn chronicle_update_event(
                 fields.push("endMinute");
             }
         }
-        if patch.start_granularity.is_some() || start_granularity != current.start_granularity {
+        if patch.start_granularity.is_some() || canonical_start.granularity != current.start_granularity {
             sets.push("start_granularity = ?".into());
-            vals.push(V::Text(start_granularity.to_string()));
+            vals.push(V::Text(canonical_start.granularity.to_string()));
             fields.push("startGranularity");
         }
-        if patch.end_granularity.is_some() || end_granularity != current.end_granularity {
+        if patch.end_granularity.is_some() || canonical_end.granularity != current.end_granularity {
             sets.push("end_granularity = ?".into());
-            vals.push(V::Text(end_granularity.to_string()));
+            vals.push(V::Text(canonical_end.granularity.to_string()));
             fields.push("endGranularity");
         }
-        if let Some(v) = patch.precision {
+        if let Some(v) = repair.and_then(|repair| repair.precision()).or(patch.precision) {
             sets.push("precision = ?".into());
             vals.push(V::Text(v.to_string()));
             fields.push("precision");
@@ -2900,6 +2909,9 @@ pub fn chronicle_update_event(
             base_version
         );
 
+        if let Some(repair) = repair {
+            repair.record_authority(conn, project_id, event_id, &now)?;
+        }
         let after = collect_event_snapshot(conn, event_id)?.to_string();
         insert_undo_journal_in_tx(
             conn,
@@ -5041,6 +5053,42 @@ pub(crate) mod tests {
             relink_after["incarnationToken"].as_str(),
             Some(replacement_token.as_str())
         );
+    }
+
+    #[test]
+    fn n4a_legacy_mcp_writer_uses_the_project_day_and_preserves_the_lock() {
+        let db = grimodex_db::Database::new(std::path::Path::new(":memory:")).unwrap();
+        db.migrate().unwrap();
+        db.with_conn(|conn| {
+            insert_project(conn, "p1", "Novel");
+            conn.execute("INSERT INTO events (id, project_id, title, start_time, start_granularity, end_time, end_granularity)
+                          VALUES ('dated', 'p1', 'dated', 5, 'day', 12, 'day'),
+                                 ('legacy', 'p1', 'before', NULL, 'none', 80, 'day')", [])?;
+            conn.execute(
+                "INSERT INTO tree_nodes
+                    (id, project_id, node_type, title, sort_order, chronicle_start_time, chronicle_start_granularity, archived_at)
+                 VALUES ('live', 'p1', 'scene', 'live', 'a0', 42, 'day', NULL),
+                        ('archived', 'p1', 'scene', 'archived', 'a1', 100, 'day', '2026-01-01')", [],
+            )?;
+            conn.execute("INSERT INTO narrative_field_authority
+                          (project_id, entity_kind, entity_id, field_path, owner_kind, explicit_lock, version, updated_at)
+                          VALUES ('p1', 'event', 'legacy', '/precision', 'human', 1, 4, 'locked')", [])?;
+            let update = |patch| chronicle_update_event(conn, "p1", "session", "legacy", 0, patch);
+            assert_eq!(update(ChroniclePatch { precision: Some("approx"), ..Default::default() })
+                .unwrap_err().to_string(), grimodex_core::chronicle_time::CHRONICLE_EVENT_DATE_REQUIRED);
+            update(ChroniclePatch { title: Some("after"), precision: Some("exact"), ..Default::default() })?
+                .expect("updated event");
+            let repaired: bool = conn.query_row(
+                "SELECT start_time = 43 AND end_time IS NULL AND precision = 'unknown' AND title = 'after'
+                   FROM events WHERE id = 'legacy'", [], |r| r.get(0))?;
+            assert!(repaired);
+            let owners: (i64, i64) = conn.query_row(
+                "SELECT sum(owner_kind = 'system'), sum(field_path = '/precision' AND owner_kind = 'human'
+                     AND explicit_lock = 1 AND version = 4 AND updated_at = 'locked')
+                   FROM narrative_field_authority WHERE entity_id = 'legacy'", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            assert_eq!(owners, (6, 1));
+            Ok(())
+        }).unwrap();
     }
 
     #[test]

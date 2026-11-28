@@ -4,6 +4,7 @@
 // status so the fixture cannot drift from the ledger.
 
 export const NATIVE_CLOSED_TABLES: readonly string[] = [
+  "chronicle_date_migration_events",
   "narrative_apply_commits",
   "narrative_apply_operations",
   "narrative_commit_journals",
