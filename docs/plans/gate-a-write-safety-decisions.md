@@ -36,7 +36,9 @@ Gate A は Roadmap の A3（stage の分離）・A4（AI policy parse の fail-c
   - 呼ぶ順：交換の確かめ直し → `approved` の記録 → 台帳に発行を記録（失敗したら Capability を使わない）→ 使う → 実行の状態を記録。台帳の `requestId` は保存せず、tool・project・toolCallId から再計算する。
   - 保存した resolution は認可に使わない。`approved` の記録の後に落ちた呼出しは、resolution を tool_result に入れ直さず、commit 済みかの照会だけにする（DR-A3-6）。
   - 却下は固定の文を tool_result で返して続ける。resolution は `approved`／`rejected` の 2 値。ADR 008 の `executed` は台帳（Capability の消費・実行）が、`expired`・`superseded` は status が持つ。
-  - A3 は対象の版を保存しない。版の保存は保存の追加なので、A2 の設計で利用者に伺う。保存しない場合、再起動の後はカードを今の状態から組み直し、「要求の時点から変わっていないか」は確かめられない（DR-GA-3 との差として A2 で扱う）。
+  - 対象の版を、A3 の承認の Interaction に保存する（利用者の回答、2026-11-28、AskUserQuestion「版を保存する (推奨)」）。保存するのは対象ごとの種類・ID・版（無ければ内容の hash）の配列だけで、本文は保存しない（新規作成は無し）。Run の終端で消し、backup などの写し（DR-A3-7）では空にする。再起動や時間切れの後に出し直すとき、提案の後の変更があれば、承認の画面を出さず、AI に知らせて提案し直させる。
+  - どの場合も、main は出し直したカードを見せた時点の状態を固定し、承認を押した時に変わっていれば実行しない（AWA/1 の A5・A6 と同じ形）。
+  - 上の回答は版の保存についてのもので、A2 の設計全体の承認ではない。
   - Mastra の Run は `resumable` が偽の間（DR-A3-8）、再起動の後の出し直しは使えない。`approval_timeout` で中断した Run の `pending` は、破棄か `superseded_by_new_turn` で `cancelled` になる。
 
 ## 4. owner／lifecycle（GDX-PRECHECK-001）
