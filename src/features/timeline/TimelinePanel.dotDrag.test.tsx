@@ -2,22 +2,37 @@
 // 作中時間の軸の場面の点：押して離すだけでは保存せず、置けない場所への
 // 落とし込みは例外を出さずに無視する。保存（updateNode）と undo の履歴まで見る。
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { act, cleanup, fireEvent, render } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  waitFor,
+} from "@testing-library/react";
 import { TimelinePanel } from "./TimelinePanel";
 import { useTimelineStore } from "./timelineStore";
 import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import { cmpKeys } from "@/features/tree/fractionalIndex";
 
-const updateNode = vi.hoisted(() =>
-  vi.fn(async () => ({ updatedAt: "2024-01-02T00:00:00Z" })),
-);
+const { saved, updateNode } = vi.hoisted(() => {
+  const saved = async (
+    id: string,
+    _data: unknown,
+    _options?: { writeContext?: unknown },
+  ) => ({ updatedAt: "2024-01-02T00:00:00Z", receipt: id });
+  return { saved, updateNode: vi.fn(saved) };
+});
 
 vi.mock("@/lib/tauri", () => ({ invoke: vi.fn(), isTauri: () => false }));
 vi.mock("@/features/tree/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/features/tree/api")>()),
   updateNode,
-  treeWriteReceipt: vi.fn(() => undefined),
-  historyWriteContext: vi.fn(),
+  treeWriteReceipt: vi.fn((result?: { receipt: string }) => result?.receipt),
+  historyWriteContext: vi.fn((origin: string, receipt: string) => ({
+    origin,
+    receipt,
+  })),
 }));
 vi.mock("@/features/layout/layoutStore", () => ({
   useLayoutStore: Object.assign(
@@ -121,7 +136,8 @@ const onError = (event: ErrorEvent) => {
 
 describe("TimelinePanel – 作中時間の軸の点の押下とドラッグ", () => {
   beforeEach(() => {
-    updateNode.mockClear();
+    updateNode.mockReset();
+    updateNode.mockImplementation(saved);
     errors.length = 0;
     window.addEventListener("error", onError);
     useGlobalHistoryStore.getState().clear();
@@ -249,9 +265,110 @@ describe("TimelinePanel – 作中時間の軸の点の押下とドラッグ", (
     expect(updateNode).toHaveBeenCalledTimes(1);
   });
 
-  it("同じ印の場面の間に落としても、例外を出さず何も保存しない", async () => {
-    const { point } = setup({ s1: "a1", s2: "a1", s3: "a2" });
-    await press(point("s3"), between(point("s1"), point("s2")));
+  const orders = () =>
+    Object.fromEntries(
+      useTreeStore.getState().nodes.map((n) => [n.id, n.storyTimeOrder]),
+    );
+  const visible = () =>
+    useTreeStore
+      .getState()
+      .nodes.filter((n) => n.storyTimeOrder !== null)
+      .sort((a, b) => cmpKeys(a.storyTimeOrder!, b.storyTimeOrder!))
+      .map((n) => n.id);
+
+  it("同じ値の間に落とすと、後ろの同値の場面を振り直して間に置く", async () => {
+    const { point } = setup({ s1: "a1", s2: "a1", s3: "a1", s4: "a2" });
+    await press(point("s4"), between(point("s1"), point("s2")));
+    await waitFor(() => expect(updateNode).toHaveBeenCalledTimes(3));
+    // 後ろの場面から書き、落とした場面は最後。
+    expect(updateNode.mock.calls.map(([id]) => id)).toEqual(["s3", "s2", "s4"]);
+    expect(visible()).toEqual(["s1", "s4", "s2", "s3"]);
+    const after = orders();
+    expect(after.s1).toBe("a1");
+    expect(after.s2).toBe(after.s3);
+    expect(errors).toEqual([]);
+  });
+
+  it("振り直した場面も、元に戻す 1 回で一緒に戻り、やり直せる", async () => {
+    const { point } = setup({ s1: "a1", s2: "a1", s3: "a1", s4: "a2" });
+    const before = orders();
+    await press(point("s4"), between(point("s1"), point("s2")));
+    await waitFor(() =>
+      expect(useGlobalHistoryStore.getState().past).toHaveLength(1),
+    );
+    const after = orders();
+
+    updateNode.mockClear();
+    await act(() => useGlobalHistoryStore.getState().undo());
+    expect(orders()).toEqual(before);
+    expect(useGlobalHistoryStore.getState().past).toHaveLength(0);
+    // 逆順に戻し、それぞれ自分の書き込みの受領票を使う。
+    expect(
+      updateNode.mock.calls.map(([id, , options]) => [
+        id,
+        options?.writeContext,
+      ]),
+    ).toEqual([
+      ["s4", { origin: "undo", receipt: "s4" }],
+      ["s2", { origin: "undo", receipt: "s2" }],
+      ["s3", { origin: "undo", receipt: "s3" }],
+    ]);
+
+    await act(() => useGlobalHistoryStore.getState().redo());
+    expect(orders()).toEqual(after);
+  });
+
+  it("振り直しの途中で失敗したら残りを書かず、済んだ分は元に戻せる", async () => {
+    const { point } = setup({ s1: "a1", s2: "a1", s3: "a1", s4: "a2" });
+    const before = orders();
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on("unhandledRejection", onRejection);
+    try {
+      updateNode.mockImplementationOnce(saved);
+      updateNode.mockImplementationOnce(async () => {
+        throw new Error("write failed");
+      });
+      await press(point("s4"), between(point("s1"), point("s2")));
+      await waitFor(() => expect(rejections).toHaveLength(1));
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+    expect(updateNode.mock.calls.map(([id]) => id)).toEqual(["s3", "s2"]);
+    // 書けたのは後ろの 1 件だけで、表示順は変わらない。
+    expect(visible()).toEqual(["s1", "s2", "s3", "s4"]);
+    expect(useGlobalHistoryStore.getState().past).toHaveLength(1);
+    await act(() => useGlobalHistoryStore.getState().undo());
+    expect(orders()).toEqual(before);
+  });
+
+  it("同じ値の場面を元と同じ順番に落とし直しても、何も保存しない", async () => {
+    const { point } = setup({ s1: "a1", s2: "a1", s3: "a1" });
+    const from = point("s2");
+    await act(async () => {
+      fireEvent.mouseDown(from.dot, {
+        button: 0,
+        clientX: from.x,
+        clientY: from.y,
+      });
+      fireEvent.mouseMove(document, { clientX: from.x + 40, clientY: from.y });
+      fireEvent.mouseUp(document, {
+        button: 0,
+        clientX: from.x,
+        clientY: from.y,
+      });
+    });
+    expectNothingSaved();
+  });
+
+  it("同じ値の上の隣が読めない形なら、振り直さず何も保存しない", async () => {
+    const { point } = setup({
+      s1: "a1",
+      s2: "a1",
+      s3: "a2000000000000",
+      s4: null,
+    });
+    await press(point("s4"), between(point("s1"), point("s2")));
     expectNothingSaved();
   });
 

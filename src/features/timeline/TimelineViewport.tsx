@@ -170,6 +170,8 @@ interface Props {
     prevKey: string | null,
     nextKey: string | null,
     toUnscheduled: boolean,
+    /** 落とした位置の直後の場面（末尾・未配置なら null）。 */
+    nextSceneId?: string | null,
   ) => void;
   onSelectScene: (id: string) => void;
   /** threads モードでマーカーをクリックしたとき（インスペクタ選択用）。 */
@@ -1051,7 +1053,13 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
           insertIdx < scheduledWithOrigin.length
             ? (scheduledWithOrigin[insertIdx].scene.storyTimeOrder ?? null)
             : null;
-        onDropStoryTime(current.nodeId, prevKey, nextKey, false);
+        onDropStoryTime(
+          current.nodeId,
+          prevKey,
+          nextKey,
+          false,
+          scheduledWithOrigin[insertIdx]?.scene.id ?? null,
+        );
       }
     }
     const commitDropRef = useRef(commitDrop);
