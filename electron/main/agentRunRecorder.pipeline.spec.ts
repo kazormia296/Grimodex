@@ -40,7 +40,7 @@ afterEach(async () => {
   }
 });
 
-async function openFixture() {
+async function openFixture(readPersistence = false) {
   root = await mkdtemp(path.join(os.tmpdir(), "grimodex-agentrun-"));
   const appData = path.join(root, "app-data");
   await mkdir(appData);
@@ -76,6 +76,33 @@ async function openFixture() {
     isEnabled: () => true,
     toolInputDigest: () => digest,
     newRunId: randomUUID,
+    readTurnPersistence: readPersistence
+      ? async ({
+          projectId,
+          chatSessionId,
+          userMessageId,
+          assistantMessageId,
+        }) => {
+          const { rows } = JSON.parse(
+            await native.dbExecute(
+              `SELECT m.role FROM chat_messages m
+                JOIN chat_sessions s ON s.id = m.session_id
+               WHERE s.project_id = ? AND s.id = ?
+                 AND ((m.id = ? AND m.role = 'user')
+                   OR (m.id = ? AND m.role = 'assistant'
+                       AND (m.content <> '' OR m.metadata IS NOT NULL)))`,
+              [projectId, chatSessionId, userMessageId, assistantMessageId],
+              "all",
+            ),
+          ) as { rows: { role: string }[] };
+          return {
+            userMessageComplete: rows.some(({ role }) => role === "user"),
+            assistantMessageComplete: rows.some(
+              ({ role }) => role === "assistant",
+            ),
+          };
+        }
+      : undefined,
   });
   const started = await recorder.start(turn);
   if (started.kind !== "recorded") throw new Error("expected a recorded Run");
@@ -206,6 +233,43 @@ describe("AgentRun recorder against the real Native addon", () => {
       interruptReason: "renderer_lost",
       version: 2,
       resumable: true,
+    });
+  });
+
+  it("recovers a Stop after both messages are saved and the renderer is lost", async () => {
+    const { native, recorder, turn, runId, status } = await openFixture(true);
+    await recorder.beginFinalizing(turn, "user_stop", turn.assistantMessageId);
+    for (const [id, role, content] of [
+      [turn.userMessageId, "user", "Fixture user message"],
+      [turn.assistantMessageId, "assistant", ""],
+    ]) {
+      await native.dbExecute(
+        "INSERT INTO chat_messages (id, session_id, role, content) VALUES (?, ?, ?, ?)",
+        [id, turn.chatSessionId, role, content],
+        "run",
+      );
+    }
+    expect(
+      await recorder.interruptSender(turn.senderId, "renderer_lost"),
+    ).toEqual([runId]);
+    expect(await status()).toMatchObject({ status: "finalizing", version: 1 });
+
+    await native.dbExecute(
+      "UPDATE chat_messages SET content = ? WHERE id = ? AND session_id = ?",
+      [
+        "Fixture assistant message",
+        turn.assistantMessageId,
+        turn.chatSessionId,
+      ],
+      "run",
+    );
+    expect(
+      await recorder.interruptSender(turn.senderId, "renderer_lost"),
+    ).toEqual([]);
+    expect(await status()).toMatchObject({
+      status: "cancelled",
+      terminalReason: "user_stop",
+      version: 2,
     });
   });
 });

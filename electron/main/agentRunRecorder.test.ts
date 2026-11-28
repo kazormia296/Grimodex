@@ -59,6 +59,8 @@ type Payload = {
   expectedVersion?: number;
   runVersion?: number;
   target?: string;
+  userMessageComplete?: boolean;
+  assistantMessageComplete?: boolean;
 };
 
 function defer() {
@@ -69,7 +71,12 @@ function defer() {
   return { promise, release };
 }
 
-function fixture(enabled = true) {
+function fixture(
+  readTurnPersistence?: Parameters<
+    typeof createAgentRunRecorder
+  >[0]["readTurnPersistence"],
+) {
+  let enabled = true;
   const rows = new Map<string, RunRow>();
   function row(id: string) {
     const state = rows.get(id);
@@ -146,6 +153,15 @@ function fixture(enabled = true) {
     ),
     agentRunRecoverFinalizing: wire((payload: Payload) => {
       const state = row(payload.runId);
+      if (payload.userMessageComplete && payload.assistantMessageComplete) {
+        return {
+          ...change(
+            payload,
+            state.target === "user_stop" ? "cancelled" : "completed",
+          ),
+          outcome: "finalized",
+        };
+      }
       return state.target === "user_stop"
         ? { ...state, outcome: "needs_stop_message_replay" }
         : { ...change(payload, "interrupted"), outcome: "interrupted" };
@@ -185,6 +201,7 @@ function fixture(enabled = true) {
     isEnabled: () => enabled,
     toolInputDigest,
     newRunId: () => `run-${++count}`,
+    readTurnPersistence,
     logger: { warn },
   });
   async function recordedRun() {
@@ -418,15 +435,134 @@ describe("AgentRun recorder", () => {
     ]);
   });
 
-  it("refuses to resolve an execution ID recorded by two Runs", async () => {
-    const { recorder, recordedRun } = fixture();
-    await recordedRun();
+  it.each(["valid-looking\n", "a".repeat(65)])(
+    "redacts invalid Run IDs in Native error logs",
+    async (runId) => {
+      const { backend, recorder, warn } = fixture();
+      await expect(recorder.getPendingApproval(runId)).rejects.toThrow(
+        "AGENT_RUN_NOT_FOUND",
+      );
+      expect(backend.agentRunGetPendingApproval).toHaveBeenCalledWith({
+        runId,
+      });
+      expect(warn).toHaveBeenCalledExactlyOnceWith(
+        "invalid_id AGENT_RUN_NOT_FOUND",
+      );
+    },
+  );
+
+  it("rejects a colliding execution before Native and revokes an issued handle", async () => {
+    const { backend, recorder, recordedRun } = fixture();
+    const { transact } = await recordedRun();
     const other = { ...turn, operationId: "other", chatSessionId: "other" };
     await recorder.start(other);
     expect(await recorder.recordResponse({ ...response, ...other })).toBe(
-      "marked_not_resumable",
+      "failed",
     );
+    expect(await recorder.recordResponse(response)).toBe("failed");
+    expect(backend.agentRunAppendToolCalls).toHaveBeenCalledTimes(1);
+    expect(backend.agentRunMarkNotResumable).not.toHaveBeenCalled();
     expect(recorder.resolveRun(resolveInput)).toEqual({ kind: "unrecorded" });
+    const op = vi.fn();
+    await expect(transact(op)).rejects.toThrow();
+    expect(op).not.toHaveBeenCalled();
+  });
+
+  it("reserves an execution while its first append is in Native", async () => {
+    const { backend, recorder } = fixture();
+    const other = { ...turn, operationId: "other", chatSessionId: "other" };
+    await recorder.start(turn);
+    await recorder.start(other);
+    const entered = defer();
+    const release = defer();
+    const nativeAppend =
+      backend.agentRunAppendToolCalls.getMockImplementation()!;
+    backend.agentRunAppendToolCalls.mockImplementationOnce(async (payload) => {
+      entered.release();
+      await release.promise;
+      return nativeAppend(payload);
+    });
+    const first = recorder.recordResponse(response);
+    await entered.promise;
+    expect(recorder.resolveRun(resolveInput)).toEqual({ kind: "unrecorded" });
+    const second = await recorder.recordResponse({ ...response, ...other });
+    release.release();
+    expect(second).toBe("failed");
+    expect(await first).toBe("failed");
+    expect(backend.agentRunAppendToolCalls).toHaveBeenCalledTimes(1);
+    expect(recorder.resolveRun(resolveInput)).toEqual({ kind: "unrecorded" });
+  });
+
+  it("rejects cross-Run port calls inside a transaction before Native", async () => {
+    const { backend, recorder, recordedRun } = fixture();
+    const { transact } = await recordedRun();
+    await recorder.start({
+      ...turn,
+      operationId: "other",
+      chatSessionId: "other",
+    });
+    await expect(
+      transact((expectedVersion) =>
+        recorder.openApproval({ ...approval, runId: "run-2", expectedVersion }),
+      ),
+    ).rejects.toThrow("AGENT_RUN_NOT_FOUND");
+    await expect(
+      transact(async () => {
+        await recorder.getPendingApproval("run-2");
+        throw new Error("cross-Run read was allowed");
+      }),
+    ).rejects.toThrow("AGENT_RUN_NOT_FOUND");
+    expect(backend.agentRunOpenApproval).not.toHaveBeenCalled();
+    expect(backend.agentRunGetPendingApproval).not.toHaveBeenCalled();
+  });
+
+  it("queues finalization behind a standalone openApproval", async () => {
+    const { backend, recorder, recordedRun } = fixture();
+    const { transact } = await recordedRun();
+    const entered = defer();
+    const release = defer();
+    const nativeOpen = backend.agentRunOpenApproval.getMockImplementation()!;
+    backend.agentRunOpenApproval.mockImplementationOnce(async (payload) => {
+      entered.release();
+      await release.promise;
+      return nativeOpen(payload);
+    });
+    const opened = recorder.openApproval({ ...approval, expectedVersion: 0 });
+    await entered.promise;
+    const finalizing = recorder.beginFinalizing(
+      turn,
+      "completed",
+      turn.assistantMessageId,
+    );
+    const finish = recorder.finishFinalizing(turn);
+    const op = vi.fn();
+    const queued = transact(op);
+    const queuedRejection =
+      expect(queued).rejects.toThrow("AGENT_RUN_TERMINAL");
+    release.release();
+    expect(await opened).toMatchObject({
+      version: 1,
+      status: "waiting_approval",
+    });
+    expect(await finalizing).toMatchObject({
+      version: 2,
+      status: "finalizing",
+    });
+    expect(await finish).toMatchObject({ version: 3, status: "completed" });
+    await queuedRejection;
+    expect(recorder.resolveRun(resolveInput)).toEqual({ kind: "unrecorded" });
+    expect(op).not.toHaveBeenCalled();
+    expect(backend.agentRunGetStatus).not.toHaveBeenCalled();
+  });
+
+  it("rejects an issued handle once finalizing starts", async () => {
+    const { recorder, recordedRun } = fixture();
+    const { transact } = await recordedRun();
+    await recorder.beginFinalizing(turn, "completed", turn.assistantMessageId);
+    expect(recorder.resolveRun(resolveInput)).toEqual({ kind: "unrecorded" });
+    const op = vi.fn();
+    await expect(transact(op)).rejects.toThrow();
+    expect(op).not.toHaveBeenCalled();
   });
 
   it("serializes transactions, refreshes a failed version and allows port calls inside a transaction", async () => {
@@ -524,8 +660,57 @@ describe("AgentRun recorder", () => {
     });
   });
 
-  it("interrupts by sender and across Runs, preserving a pending Stop and isolating failures", async () => {
-    const { backend, recorder, rows } = fixture();
+  it.each(["interrupt", "interruptAll", "interruptSender"] as const)(
+    "recovers persisted finalizing messages through %s",
+    async (method) => {
+      const readTurnPersistence = vi.fn().mockResolvedValue({
+        userMessageComplete: true,
+        assistantMessageComplete: true,
+      });
+      const { backend, recorder, rows } = fixture(readTurnPersistence);
+      await recorder.start(turn);
+      await recorder.beginFinalizing(
+        turn,
+        "user_stop",
+        turn.assistantMessageId,
+      );
+      const reason = "renderer_lost";
+      if (method === "interrupt") {
+        expect(await recorder.interrupt(turn, reason)).toMatchObject({
+          status: "cancelled",
+          version: 2,
+        });
+      } else {
+        const failures =
+          method === "interruptAll"
+            ? await recorder.interruptAll(reason)
+            : await recorder.interruptSender(turn.senderId, reason);
+        expect(failures).toEqual([]);
+      }
+      expect(rows.get("run-1")?.status).toBe("cancelled");
+      expect(readTurnPersistence).toHaveBeenCalledExactlyOnceWith({
+        projectId: turn.projectId,
+        chatSessionId: turn.chatSessionId,
+        userMessageId: turn.userMessageId,
+        assistantMessageId: turn.assistantMessageId,
+      });
+      expect(backend.agentRunRecoverFinalizing).toHaveBeenCalledExactlyOnceWith(
+        {
+          runId: "run-1",
+          version: 1,
+          reason,
+          userMessageComplete: true,
+          assistantMessageComplete: true,
+        },
+      );
+    },
+  );
+
+  it("interrupts the batch snapshot and reports every Run that did not settle", async () => {
+    const readTurnPersistence = vi
+      .fn()
+      .mockRejectedValue(new Error("read failed"));
+    const { backend, recorder, rows } = fixture(readTurnPersistence);
     const otherTurn = (
       operationId: string,
       senderId: number = turn.senderId,
@@ -548,15 +733,28 @@ describe("AgentRun recorder", () => {
     );
     await recorder.beginFinalizing(stop, "user_stop", stop.assistantMessageId);
     await recorder.finishWithoutMessages(finished, "user_stop");
-    backend.agentRunInterrupt.mockRejectedValueOnce(
-      new Error("AGENT_RUN_OWNER_MISMATCH"),
-    );
+    const entered = defer();
+    const release = defer();
+    backend.agentRunInterrupt.mockImplementationOnce(async () => {
+      entered.release();
+      await release.promise;
+      throw new Error("AGENT_RUN_OWNER_MISMATCH");
+    });
 
-    await recorder.interruptSender(turn.senderId, "renderer_lost");
+    const interrupting = recorder.interruptSender(
+      turn.senderId,
+      "renderer_lost",
+    );
+    await entered.promise;
+    const late = otherTurn("late");
+    await recorder.start(late);
+    release.release();
+    expect(await interrupting).toEqual(["run-1", "run-3"]);
     expect(rows.get("run-1")?.status).toBe("running");
     expect(rows.get("run-2")?.status).toBe("interrupted");
     expect(rows.get("run-3")?.status).toBe("finalizing");
     expect(rows.get("run-4")?.status).toBe("running");
+    expect(rows.get("run-6")?.status).toBe("running");
     expect(backend.agentRunRecoverFinalizing.mock.calls).toEqual(
       ["run-2", "run-3"].map((runId) => [
         {
@@ -568,21 +766,89 @@ describe("AgentRun recorder", () => {
         },
       ]),
     );
-    await recorder.interruptAll("workspace_switched");
+    expect(await recorder.interruptAll("workspace_switched")).toEqual([
+      "run-3",
+    ]);
     expect([...rows.values()].map(({ status }) => status)).toEqual([
       "interrupted",
       "interrupted",
       "finalizing",
       "interrupted",
       "cancelled",
+      "interrupted",
     ]);
-    expect(backend.agentRunInterrupt).toHaveBeenCalledTimes(3);
+    expect(backend.agentRunInterrupt).toHaveBeenCalledTimes(4);
     expect(backend.agentRunRecoverFinalizing).toHaveBeenLastCalledWith({
       runId: "run-3",
       version: 1,
       reason: "workspace_switched",
       userMessageComplete: false,
       assistantMessageComplete: false,
+    });
+  });
+
+  it("revokes interrupted execution handles for the same sender", async () => {
+    const { recorder, recordedRun } = fixture();
+    const { transact } = await recordedRun();
+    expect(
+      await recorder.interruptSender(turn.senderId, "renderer_lost"),
+    ).toEqual([]);
+    expect(recorder.resolveRun(resolveInput)).toEqual({ kind: "unrecorded" });
+    const op = vi.fn();
+    await expect(transact(op)).rejects.toThrow();
+    expect(op).not.toHaveBeenCalled();
+  });
+
+  it("quiesces a pending Native start and queued port calls before forgetting", async () => {
+    const { backend, recorder, recordedRun } = fixture();
+    const { runId, transact } = await recordedRun();
+    const startEntered = defer();
+    const startRelease = defer();
+    const nativeStart = backend.agentRunStart.getMockImplementation()!;
+    backend.agentRunStart.mockImplementationOnce(async (payload) => {
+      startEntered.release();
+      await startRelease.promise;
+      return nativeStart(payload);
+    });
+    const updateEntered = defer();
+    const updateRelease = defer();
+    backend.agentRunUpdateToolCall.mockImplementationOnce(async () => {
+      updateEntered.release();
+      await updateRelease.promise;
+      return "null";
+    });
+    const other = { ...turn, operationId: "other", chatSessionId: "other" };
+    const starting = recorder.start(other);
+    const updating = recorder.updateToolCall(runId, approval, {});
+    await Promise.all([startEntered.promise, updateEntered.promise]);
+    const reading = recorder.getPendingApproval(runId);
+    const settled = vi.fn();
+    const draining = recorder.quiesce().then(settled);
+    const refused = "AGENT_RUN_QUIESCING";
+    expect(await recorder.start(turn)).toEqual({ kind: "unrecorded" });
+    expect(await recorder.recordResponse(response)).toBe("failed");
+    expect(recorder.resolveRun(resolveInput)).toEqual({ kind: "unrecorded" });
+    await expect(recorder.appendToolCalls(runId, [])).rejects.toThrow(refused);
+    await expect(recorder.getPendingApproval(runId)).rejects.toThrow(refused);
+    const op = vi.fn();
+    await expect(transact(op)).rejects.toThrow(refused);
+    expect(op).not.toHaveBeenCalled();
+    expect(settled).not.toHaveBeenCalled();
+    expect(backend.agentRunGetPendingApproval).not.toHaveBeenCalled();
+    startRelease.release();
+    expect(await starting).toEqual({ kind: "recorded", runId: "run-2" });
+    expect(settled).not.toHaveBeenCalled();
+    updateRelease.release();
+    await updating;
+    expect(await reading).toBeNull();
+    await draining;
+    expect(settled).toHaveBeenCalledOnce();
+    recorder.forgetAll();
+    expect(recorder.resolveRun(resolveInput)).toEqual({ kind: "unrecorded" });
+    await expect(transact(op)).rejects.toThrow("AGENT_RUN_WORKSPACE_CHANGED");
+    expect(await recorder.start(turn)).toEqual({
+      kind: "recorded",
+      runId: "run-3",
     });
   });
 
