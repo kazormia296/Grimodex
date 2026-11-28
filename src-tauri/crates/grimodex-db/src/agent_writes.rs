@@ -15334,6 +15334,50 @@ mod tests {
     }
 
     #[test]
+    fn scene_event_expected_treats_the_empty_legacy_incarnation_as_linked() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let scene_id = insert_scene(&db, &project_id);
+        // 識別子を持つ前の行は change feed の履歴も持たないので、writer を通さずに置く。
+        let event_id = "legacy-linked-event".to_string();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO events (id, project_id, title, ordinal, created_at, updated_at)
+                 VALUES (?1, ?2, 'Legacy link', 'a0', datetime('now'), datetime('now'))",
+                rusqlite::params![event_id, project_id],
+            )?;
+            conn.execute(
+                "INSERT INTO scene_events (scene_id, event_id) VALUES (?1, ?2)",
+                rusqlite::params![scene_id, event_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed a link without an incarnation");
+        let version = event_version(&db, &event_id);
+        assert_eq!(
+            scene_link_token(&db, &event_id, &scene_id),
+            Some(String::new())
+        );
+        let unstamp = |link_incarnation: Option<String>| {
+            let mut payload = scene_payload(&project_id, &scene_id, &event_id);
+            payload.expected = Some(AgentSceneEventExpected {
+                link_incarnation,
+                event_version: version,
+            });
+            agent_scene_event_mutate_impl(&db, payload, false)
+        };
+
+        let error = unstamp(None).expect_err("an empty incarnation is still a link");
+        assert!(error.to_string().contains("version conflict"), "{error:#}");
+        assert_eq!(
+            scene_link_token(&db, &event_id, &scene_id),
+            Some(String::new())
+        );
+        unstamp(Some(String::new())).expect("the empty incarnation matches itself");
+        assert_eq!(scene_link_token(&db, &event_id, &scene_id), None);
+    }
+
+    #[test]
     fn scene_event_expected_state_matches_stamp_unstamp_and_replay() {
         let db = test_db();
         let project_id = insert_project(&db);

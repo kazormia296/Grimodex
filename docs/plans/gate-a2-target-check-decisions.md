@@ -17,6 +17,7 @@
   - 紐付け：`{ linkIncarnation: string | null, eventVersion: number }`。`linkIncarnation` は `scene_events.incarnation_token` の値そのまま。`null` だけが「関係が無いはず」。古い行の空文字列は「関係がある」。
   - 出来事の関係：`{ related: boolean, causeVersion: number, effectVersion: number }`。`event_relations` は両端の組しか持たないので、外して付け直した関係は区別しない。
 - `expected` を渡すときは、全部の欄が要る。欄の欠落と未知の欄は拒む（`linkIncarnation` の書き忘れを「関係が無いはず」と読まない）。
+- `expected` 全体が `null` の依頼は、省略と同じに扱う。照合せずに通り、request hash も省略と同じになる。承認を経る呼び手は、`expected` を値で渡す。
 - 場面の版（`tree_nodes.version`）は照らさない。本文の保存のたびに進み、承認を待つ間の執筆で必ず食い違うため。場面があることは writer が今までどおり確かめる。
 - 出来事の版は照らす。承認の後に出来事の欄が変われば、対象が変わったとみなす。
 - hash は Native で作らない。TypeScript と Rust で読みの食い違いを作らないように、値のまま渡す。
