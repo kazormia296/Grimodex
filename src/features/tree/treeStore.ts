@@ -18,7 +18,10 @@ import {
   isInlineAiPending,
 } from "@/features/editor/inlineAi/pendingGuard";
 import { markStart, markEnd } from "@/lib/perfLog";
-import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import {
+  useGlobalHistoryStore,
+  type HistoryCollector,
+} from "@/store/globalHistoryStore";
 import {
   cancelPendingTrash,
   captureSceneDeletion,
@@ -798,6 +801,8 @@ interface TreeState {
     id: string,
     order: string | null,
     label?: string,
+    /** 複数の書き込みを 1 つの履歴にまとめるときの受け口。 */
+    history?: HistoryCollector,
   ) => Promise<void>;
 
   updatePovCharacter: (
@@ -1831,7 +1836,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     }
   },
 
-  async updateStoryTime(id, order, label) {
+  async updateStoryTime(id, order, label, history) {
     const node = get().nodes.find((n) => n.id === id);
     if (!node) return;
     const oldOrder = node.storyTimeOrder;
@@ -1858,7 +1863,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     }));
     recomputeCodexSceneOrder(get().nodes);
     if (!useGlobalHistoryStore.getState().isReplaying) {
-      useGlobalHistoryStore.getState().push({
+      (history ?? useGlobalHistoryStore.getState()).push({
         kind: "scenes",
         label: i18next.t("tree.undo.storyTimeChanged"),
         entityId: id,
