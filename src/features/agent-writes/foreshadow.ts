@@ -11,13 +11,15 @@ import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { AiPolicyWriteBlockedError } from "@/features/ai-policy/writeBlockedError";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { getCurrentProjectId } from "@/features/project/projectStore";
-import { useForeshadowStore } from "@/features/foreshadow/foreshadowStore";
-import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import {
+  reloadForeshadowsAfterCommit,
+  useForeshadowStore,
+} from "@/features/foreshadow/foreshadowStore";
 import {
   createCanonicalWriteContext,
   type CanonicalWriteAuthorityOptions,
 } from "@/features/native-writes/writeContext";
-import { applyUndoJournal } from "./undoJournal";
+import { pushCommittedWriteHistory } from "./committedWriteHistory";
 import type { ForeshadowRow } from "@/features/foreshadow/types";
 
 export type AgentForeshadowLoadBearing = "critical" | "supporting" | "optional";
@@ -80,37 +82,48 @@ function assertLoadBearing(value: string | undefined): void {
   }
 }
 
-async function reloadAndFind(
+type ForeshadowWriteTool = "create_foreshadow" | "update_foreshadow";
+
+function registerForeshadowHistory(
+  tool: ForeshadowWriteTool,
   projectId: string,
   entityId: string,
-): Promise<ForeshadowRow> {
-  await useForeshadowStore.getState().load(projectId);
+  journalId: string,
+): ForeshadowRow {
   const item = useForeshadowStore
     .getState()
-    .items.find((i) => i.id === entityId);
+    .items.find((i) => i.id === entityId && i.projectId === projectId);
   if (!item) {
     throw new Error(`Foreshadow ${entityId} not found after reload`);
   }
+  pushCommittedWriteHistory(
+    projectId,
+    {
+      kind: "foreshadow",
+      label: i18next.t(
+        tool === "create_foreshadow"
+          ? "foreshadow.store.agentHistoryCreate"
+          : "foreshadow.store.agentHistoryUpdate",
+      ),
+      operationId: journalId,
+      entityId,
+    },
+    (isCurrent) => reloadForeshadowsAfterCommit(projectId, isCurrent, false),
+  );
   return item;
 }
 
-function pushUndo(label: string, projectId: string, result: AgentWriteResult) {
-  if (useGlobalHistoryStore.getState().isReplaying) return;
-  const journalId = result.undoJournalId;
-  useGlobalHistoryStore.getState().push({
-    kind: "foreshadow",
-    label,
-    operationId: journalId,
-    entityId: result.entityId,
-    async undo() {
-      await applyUndoJournal(journalId, "undo");
-      await useForeshadowStore.getState().load(projectId);
-    },
-    async redo() {
-      await applyUndoJournal(journalId, "redo");
-      await useForeshadowStore.getState().load(projectId);
-    },
-  });
+export async function projectMastraForeshadowWrite(
+  tool: ForeshadowWriteTool,
+  projectId: string,
+  entityId: string,
+  journalId: string,
+  isCurrent: () => boolean,
+): Promise<void> {
+  if (!isCurrent()) return;
+  await reloadForeshadowsAfterCommit(projectId, isCurrent);
+  if (!isCurrent()) return;
+  registerForeshadowHistory(tool, projectId, entityId, journalId);
 }
 
 export async function agentCreateForeshadow(
@@ -159,9 +172,13 @@ export async function agentCreateForeshadow(
     },
   });
 
-  const item = await reloadAndFind(projectId, result.entityId);
-  pushUndo(i18next.t("foreshadow.store.agentHistoryCreate"), projectId, result);
-  return item;
+  await useForeshadowStore.getState().load(projectId);
+  return registerForeshadowHistory(
+    "create_foreshadow",
+    projectId,
+    result.entityId,
+    result.undoJournalId,
+  );
 }
 
 export async function agentUpdateForeshadow(
@@ -226,7 +243,11 @@ export async function agentUpdateForeshadow(
     },
   });
 
-  const item = await reloadAndFind(projectId, result.entityId);
-  pushUndo(i18next.t("foreshadow.store.agentHistoryUpdate"), projectId, result);
-  return item;
+  await useForeshadowStore.getState().load(projectId);
+  return registerForeshadowHistory(
+    "update_foreshadow",
+    projectId,
+    result.entityId,
+    result.undoJournalId,
+  );
 }

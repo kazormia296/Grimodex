@@ -183,7 +183,10 @@ interface CodexState {
   previewPhaseByEntry: Record<string, string | null>;
   setPreviewPhase: (entryId: string, phaseId: string | null) => void;
 
-  loadEntries: (options?: { propagateError?: boolean }) => Promise<void>;
+  loadEntries: (options?: {
+    propagateError?: boolean;
+    afterWrite?: () => boolean;
+  }) => Promise<void>;
   /** mount 用の dedup 付きロード。同一キー (projectId|filterType) のロードが
    *  進行中ならそれに相乗りする。settle 後は毎回ロードする (remount での
    *  再フェッチ = MCP 等の外部書き込み追従は維持)。 */
@@ -258,6 +261,8 @@ interface CodexState {
 // mount eager load の in-flight dedup (詳細は ensureEntriesLoaded の docs)
 const entriesLoadTracker = createInFlightTracker();
 let entriesLoadGeneration = 0;
+// The search field retains its text when the author switches back to a type-filtered list.
+let entriesUseSearch = false;
 
 function entriesLoadKey(
   projectId: string,
@@ -361,26 +366,37 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     const projectId = getCurrentProjectId();
     const filterType = get().filterType;
     const key = entriesLoadKey(projectId, filterType);
-    const inFlight = entriesLoadTracker.peek(key);
+    const afterWrite = options?.afterWrite;
+    const query = afterWrite && entriesUseSearch ? get().searchQuery : "";
+    // A read already in flight can predate the committed write.
+    const inFlight = !afterWrite && entriesLoadTracker.peek(key);
     if (inFlight) {
       return options?.propagateError
         ? inFlight
         : swallowEntriesLoadFailure(inFlight);
     }
+    if (!afterWrite) entriesUseSearch = false;
     const generation = ++entriesLoadGeneration;
     const run = (async () => {
       set({ isLoading: true });
       try {
         const [entries, types, completionTargets] = await Promise.all([
-          listCodexEntries(projectId, filterType ?? undefined),
+          query.trim()
+            ? searchCodexEntries(query, projectId)
+            : listCodexEntries(projectId, filterType ?? undefined),
           listCodexTypes(projectId),
           listCodexMatchTargets(projectId),
         ]);
         if (generation !== entriesLoadGeneration) return;
+        if (afterWrite?.() === false) {
+          set({ isLoading: false });
+          return;
+        }
         set({ entries, types, completionTargets, isLoading: false });
       } catch (e) {
         if (generation === entriesLoadGeneration) {
           set({ isLoading: false });
+          if (afterWrite?.() === false) return;
           if (!isIpcLifecycleCancellation(e)) {
             toast.error(i18next.t("codex.store.loadFailed"));
             debugLog.error("CodexStore", "loadEntries failed", errorDetail(e));
@@ -408,6 +424,9 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
   },
 
   search: async (query: string) => {
+    entriesUseSearch = !!query.trim();
+    const generation = ++entriesLoadGeneration;
+    entriesLoadTracker.clear();
     set({ searchQuery: query, isLoading: true });
     try {
       if (query.trim() === "") {
@@ -416,9 +435,11 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
           getCurrentProjectId(),
           filterType ?? undefined,
         );
+        if (generation !== entriesLoadGeneration) return;
         set({ entries, isLoading: false });
       } else {
         const entries = await searchCodexEntries(query, getCurrentProjectId());
+        if (generation !== entriesLoadGeneration) return;
         set({ entries, isLoading: false });
         // 成功パスは toast を出さないため、SR には結果件数が無音になる。
         // 呼び出し側 (パネル) が debounce 済みなので確定検索ごとに 1 回だけ、
@@ -430,6 +451,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         }
       }
     } catch (e) {
+      if (generation !== entriesLoadGeneration) return;
       set({ isLoading: false });
       toast.error(i18next.t("codex.store.searchFailed"));
       debugLog.error("CodexStore", "search failed", errorDetail(e));
@@ -1042,6 +1064,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
   requestSelectEntry: (id) => set({ pendingEntryId: id }),
   clearPendingEntry: () => set({ pendingEntryId: null }),
   resetForProject: () => {
+    entriesUseSearch = false;
     entriesLoadGeneration++;
     entriesLoadTracker.clear();
     _clearCodexCrossMentionCaches();
@@ -1059,14 +1082,19 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
   },
 
   setFilterType: async (type) => {
+    entriesUseSearch = false;
+    const generation = ++entriesLoadGeneration;
+    entriesLoadTracker.clear();
     set({ filterType: type, isLoading: true });
     try {
       const entries = await listCodexEntries(
         getCurrentProjectId(),
         type ?? undefined,
       );
+      if (generation !== entriesLoadGeneration) return;
       set({ entries, isLoading: false });
     } catch (e) {
+      if (generation !== entriesLoadGeneration) return;
       set({ isLoading: false });
       toast.error(i18next.t("codex.store.filterFailed"));
       debugLog.error("CodexStore", "setFilterType failed", errorDetail(e));

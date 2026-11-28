@@ -167,7 +167,7 @@ function awaitWritableChatComposerAuthority(
  */
 const recallPromoteTracker = createRecallPromoteTracker();
 
-export const useChatStore = create<ChatState>()((set, get) => ({
+export const useChatStore = create<ChatState>()((set, get, store) => ({
   sessions: [],
   activeSessionId: null,
   isLoadingSessions: false,
@@ -333,11 +333,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     },
   }),
 
-  // --- Streaming chat ---
-
   ...createConfiguredChatTurnStoreActions({
     set,
     get,
+    subscribe: store.subscribe,
     prepareChatTurn: (input) => getConfiguredChatTurnPreflight(set, get)(input),
     turnRuntime,
     userQuestionRuntime,

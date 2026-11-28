@@ -862,11 +862,17 @@ describe("main's typed reads against the real Native addon: the shape the later 
       abandoned: 0,
     });
 
-    const ws = await startSeededWorkspace();
+    const ws = await startSeededWorkspace([
+      {
+        sql: "UPDATE foreshadows SET version = ? WHERE project_id = ? AND id = ?",
+        params: [7, MAIN, "fs-2"],
+      },
+    ]);
     const reads = createMainTypedReads({
       backend: ws.backend,
       identity: ws.identity,
     });
+    const foreshadowOpen = vi.fn(reads.foreshadowOpen);
     const mainDb = createCoreReadDb(
       createMainReadDb({ backend: ws.readBackend, identity: ws.identity }),
     );
@@ -878,17 +884,9 @@ describe("main's typed reads against the real Native addon: the shape the later 
         activeSceneId: null,
       }),
       body: createDbSceneBodyReader(() => mainDb),
-      native: reads,
+      native: { ...reads, foreshadowOpen },
       countTokens: (text) => (text ? text.length : 0),
     });
-
-    // The raw wire includes fs-2 and its setup (fsu-4).
-    const wire = (await reads.foreshadowOpen({ projectId: MAIN })) as {
-      foreshadows: Array<{ id: string }>;
-      setups: Array<{ foreshadow_id: string }>;
-    };
-    expect(wire.foreshadows.map((f) => f.id)).toContain("fs-2");
-    expect(wire.setups.map((x) => x.foreshadow_id)).toContain("fs-2");
 
     // The tool's answer is the golden's first case, to the byte, with fs-2.
     const golden = goldenOf("list_open_foreshadows")[0]!;
@@ -904,6 +902,33 @@ describe("main's typed reads against the real Native addon: the shape the later 
     expect(listed.summary).toBe(golden.result.summary);
     expect(listed.tokensUsed).toBe(golden.result.tokensUsed);
     expect(ws.dbExecute).not.toHaveBeenCalled();
+    // The parent revisions are on the very same read that supplied the model's
+    // titles. The setup projection above has only its parent's id.
+    expect(foreshadowOpen).toHaveBeenCalledExactlyOnceWith({ projectId: MAIN });
+    type ForeshadowWire = {
+      foreshadows: Array<{ id: string; title: string; version: number }>;
+      setups: Array<{ foreshadow_id: string }>;
+    };
+    const wire = (await foreshadowOpen.mock.results[0]!
+      .value) as ForeshadowWire;
+    const parentVersions = new Map(
+      wire.foreshadows.map(({ id, version }) => [id, version]),
+    );
+    expect(parentVersions).toEqual(
+      new Map([
+        ["fs-1", 0],
+        ["fs-2", 7],
+        ["fs-5", 0],
+      ]),
+    );
+    expect(wire.foreshadows.map(({ id, title }) => ({ id, title }))).toEqual(
+      expect.arrayContaining(
+        (listed.content as Array<{ id: string; title: string }>).map(
+          ({ id, title }) => ({ id, title }),
+        ),
+      ),
+    );
+    expect(wire.setups.map((x) => x.foreshadow_id)).toContain("fs-2");
 
     // get_foreshadow_detail answers the same foreshadow by id (moved as it is).
     const detailGolden = goldenOf("get_foreshadow_detail").find(
@@ -916,6 +941,33 @@ describe("main's typed reads against the real Native addon: the shape the later 
     expect((detail.content as { id: string; intent: string }).intent).toBe(
       "黒幕は最初から出ている",
     );
+
+    // A separate writer advances one parent after the model-visible read.
+    execFileSync(process.execPath, [
+      "--no-warnings",
+      "-e",
+      `const { DatabaseSync } = require("node:sqlite");
+       const db = new DatabaseSync(process.argv[1]);
+       db.prepare("UPDATE foreshadows SET title = ?, version = version + 1 WHERE project_id = ? AND id = ? AND version = 7").run(...process.argv.slice(2));
+       db.close();`,
+      path.join(ws.workspacePath, "grimodex.db"),
+      "改題後",
+      MAIN,
+      "fs-2",
+    ]);
+    const afterEdit = (await reads.foreshadowOpen({
+      projectId: MAIN,
+    })) as ForeshadowWire;
+    expect(afterEdit.foreshadows.find(({ id }) => id === "fs-2")).toMatchObject(
+      {
+        title: "改題後",
+        version: 8,
+      },
+    );
+    expect(wire.foreshadows.find(({ id }) => id === "fs-2")).toMatchObject({
+      title: "黒幕の伏線",
+      version: 7,
+    });
   });
 
   it("the semantic reads refuse a workspace that is not the active one; for the active one they stop after the workspace check", async () => {

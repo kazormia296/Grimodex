@@ -12,6 +12,9 @@ const mastraMocks = vi.hoisted(() => ({
   registerQuestion: vi.fn(),
   listenProgress: vi.fn(),
   flushSceneWrites: vi.fn(),
+  watchAuthority: vi.fn<(observe: () => void) => () => void>(
+    () => () => undefined,
+  ),
 }));
 
 vi.mock("@/lib/mastraAgentTurn", () => ({
@@ -24,6 +27,9 @@ vi.mock("./mastraAgentTurnResponder", () => ({
 }));
 vi.mock("@/features/tree/pendingSceneWrites", () => ({
   awaitPendingSceneContentWrite: mastraMocks.flushSceneWrites,
+}));
+vi.mock("./mastraTurnAuthorityWatcher", () => ({
+  watchMastraTurnAuthority: mastraMocks.watchAuthority,
 }));
 import {
   chatTurnMastraEngine,
@@ -138,6 +144,11 @@ function executionContext(): MastraTurnExecutionContext {
     userQuestionRuntime: {} as never,
     dismissNote: "dismiss",
     assertAuthority: vi.fn(),
+    signal: new AbortController().signal,
+    checkRunningAuthority: vi.fn(),
+    subscribeChat: vi.fn(),
+    bindingIsCurrent: () => true,
+    routeAuthorityKey: null,
     isCurrentTurn: () => true,
     isAborted: () => false,
     onSendAccepted: vi.fn(),
@@ -299,7 +310,7 @@ describe("Mastra turn wiring", () => {
 
   it("keeps the start request bound to the captured session and invokes start only after admission", () => {
     expect(source).toMatch(
-      /createMastraTurnAttempt\([\s\S]*?startMastraAgentTurn\(request\)/,
+      /createMastraTurnAttempt\([\s\S]*?startMastraAgentTurn\(\s*request,/,
     );
     expect(source).toMatch(
       /chatSessionId: context.chatSessionId,[\s\S]*?projectId: context.projectId/,
@@ -500,6 +511,85 @@ describe("Mastra attempt terminal cleanup", () => {
     expect(unregisterProgress).toHaveBeenCalledOnce();
     expect(runtime.releaseMastraTurn).toHaveBeenCalledOnce();
     attempt!.release();
+  });
+
+  it.each(["stop", "authority"] as const)(
+    "cancels a dispatched turn once on %s and holds the audit until Main settles",
+    async (cause) => {
+      const controller = new AbortController();
+      const context = executionContext();
+      context.signal = controller.signal;
+      let expired = false;
+      context.checkRunningAuthority = () => {
+        if (expired) controller.abort();
+      };
+      const unwatch = vi.fn();
+      let notify!: () => void;
+      mastraMocks.watchAuthority.mockImplementationOnce(
+        (observe: () => void) => {
+          notify = observe;
+          return unwatch;
+        },
+      );
+      let finish!: () => void;
+      mastraMocks.start.mockImplementationOnce((_, dispatch: () => boolean) => {
+        expect(dispatch()).toBe(true);
+        context.onSendAccepted();
+        return new Promise((resolve) => {
+          finish = () =>
+            resolve({ kind: "completed", response: { blocks: [] } });
+        });
+      });
+      mastraMocks.cancel
+        .mockReset()
+        .mockResolvedValue({ kind: "ok", found: true });
+      const runtime = {
+        claimMastraTurn: () => true,
+        hasActiveMastraTurn: () => false,
+        releaseMastraTurn: vi.fn(),
+      };
+      const attempt = createMastraTurnAttempt(admission, runtime)!;
+      await attempt.preflight;
+      const running = attempt.run(context);
+      await vi.waitFor(() => expect(context.onSendAccepted).toHaveBeenCalled());
+      notify();
+      expect(mastraMocks.cancel).not.toHaveBeenCalled();
+      if (cause === "stop") controller.abort();
+      else expired = true;
+      notify();
+      notify();
+      expect(mastraMocks.cancel).toHaveBeenCalledExactlyOnceWith({
+        turnId: admission.turnId,
+      });
+      expect(_pendingAiAuditExecutionCountForTests()).toBe(1);
+      expect(unwatch).not.toHaveBeenCalled();
+      finish();
+      await running;
+      expect(unwatch).toHaveBeenCalledOnce();
+      expect(_pendingAiAuditExecutionCountForTests()).toBe(0);
+    },
+  );
+
+  it("withdraws a queued start when the lease closes admission", async () => {
+    const controller = new AbortController();
+    const context = executionContext();
+    context.signal = controller.signal;
+    context.checkRunningAuthority = () => controller.abort();
+    mastraMocks.cancel.mockClear();
+    mastraMocks.start.mockImplementationOnce((_, dispatch: () => boolean) => {
+      expect(dispatch()).toBe(false);
+      return { kind: "cancelled-before-dispatch" };
+    });
+    const attempt = createMastraTurnAttempt(admission, {
+      claimMastraTurn: () => true,
+      hasActiveMastraTurn: () => false,
+      releaseMastraTurn: vi.fn(),
+    })!;
+    await attempt.preflight;
+    await expect(attempt.run(context)).resolves.toEqual({ kind: "cancelled" });
+    expect(mastraMocks.cancel).not.toHaveBeenCalled();
+    expect(context.onLegacyFallback).not.toHaveBeenCalled();
+    expect(_pendingAiAuditExecutionCountForTests()).toBe(0);
   });
 
   it("falls back to the legacy path when Main reports Gate L closed", async () => {

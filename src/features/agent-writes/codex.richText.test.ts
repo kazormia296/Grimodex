@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { HistoryCommand } from "@/store/globalHistoryStore";
 import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import { _resetTimelapseGenesisBarriersForTests } from "@/features/timelapse/genesisBarrier";
 import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
@@ -12,7 +13,14 @@ const {
   mockScheduleCodexIndex,
   mockScheduleImeExportRefresh,
   mockEntries,
+  history,
+  mockApplyUndoJournal,
 } = vi.hoisted(() => ({
+  history: {
+    isReplaying: true,
+    push: vi.fn<(command: HistoryCommand) => void>(),
+  },
+  mockApplyUndoJournal: vi.fn(),
   mockInvoke: vi.fn(),
   mockLoadEntries: vi.fn(),
   mockGetCodexEntryVersion: vi.fn(),
@@ -50,7 +58,7 @@ vi.mock("@/features/codex/codexStore", () => ({
 }));
 vi.mock("@/store/globalHistoryStore", () => ({
   useGlobalHistoryStore: {
-    getState: () => ({ isReplaying: true, push: vi.fn() }),
+    getState: () => history,
   },
 }));
 vi.mock("@/features/attribution/aiAuthorship", () => ({
@@ -70,7 +78,7 @@ vi.mock("./authorshipSpans", () => ({
   extractAiSpansFromPmJson: () => [],
   syntheticAiSpans: () => [],
 }));
-vi.mock("./undoJournal", () => ({ applyUndoJournal: vi.fn() }));
+vi.mock("./undoJournal", () => ({ applyUndoJournal: mockApplyUndoJournal }));
 vi.mock("@/features/codex/version", () => ({
   getCodexEntryVersion: mockGetCodexEntryVersion,
 }));
@@ -88,6 +96,7 @@ import {
   agentCreateCodexEntry,
   agentUpdateCodexEntry,
   markCodexContentAsAi,
+  projectCodexWrite,
 } from "./codex";
 import { validateAgentProseMirrorJson } from "./richTextInput";
 
@@ -212,5 +221,93 @@ describe("agentUpdateCodexEntry document notification", () => {
         name: "Before",
       }),
     });
+  });
+});
+
+describe("Native Codex write projection", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    history.isReplaying = false;
+    setCurrentWorkspaceIdentity({ path: "/fixture", openRevision: 3 });
+  });
+
+  it.each([
+    ["create_codex_entry", true, "codex.store.agentHistoryCreate"],
+    ["update_codex_entry", false, "codex.store.agentHistoryUpdate"],
+    ["update_codex_entry", true, "codex.store.agentHistoryUpdate"],
+  ] as const)(
+    "reflects %s with IME refresh %s even outside the active list",
+    async (tool, refreshIme, label) => {
+      let currentTurn = true;
+      await projectCodexWrite(
+        tool,
+        "project-1",
+        "out-of-view",
+        "journal",
+        refreshIme,
+        () => currentTurn,
+      );
+      expect(mockInvoke).not.toHaveBeenCalled();
+      expect(mockScheduleCodexIndex).toHaveBeenCalledWith("out-of-view");
+      expect(mockScheduleImeExportRefresh).toHaveBeenCalledTimes(
+        refreshIme ? 1 : 0,
+      );
+      expect(mockNotifySameRendererDocumentWrite).toHaveBeenCalledTimes(
+        tool === "update_codex_entry" ? 1 : 0,
+      );
+      expect(history.push).toHaveBeenCalledWith(
+        expect.objectContaining({
+          entityId: "out-of-view",
+          operationId: "journal",
+          label,
+          kind: "codex",
+        }),
+      );
+      const [command] = history.push.mock.calls[0]!;
+      currentTurn = false;
+      await command.undo();
+      expect(mockApplyUndoJournal).toHaveBeenCalledWith("journal", "undo");
+      setCurrentWorkspaceIdentity({ path: "/fixture", openRevision: 4 });
+      await command.redo();
+      expect(mockApplyUndoJournal).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("does not notify or schedule in a replacement scope after reload", async () => {
+    let current = true;
+    mockLoadEntries.mockImplementationOnce(async () => {
+      current = false;
+    });
+    await projectCodexWrite(
+      "update_codex_entry",
+      "project-1",
+      "entry-1",
+      "journal",
+      true,
+      () => current,
+    );
+    expect(mockNotifySameRendererDocumentWrite).not.toHaveBeenCalled();
+    expect(mockScheduleImeExportRefresh).not.toHaveBeenCalled();
+    expect(mockScheduleCodexIndex).not.toHaveBeenCalled();
+    expect(history.push).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the confirmed undo journal when reloading fails", async () => {
+    const error = new Error("unavailable");
+    mockLoadEntries.mockRejectedValueOnce(error);
+    await expect(
+      projectCodexWrite(
+        "create_codex_entry",
+        "project-1",
+        "new",
+        "journal",
+        true,
+        () => true,
+      ),
+    ).rejects.toBe(error);
+    expect(history.push).toHaveBeenCalledWith(
+      expect.objectContaining({ operationId: "journal" }),
+    );
+    expect(mockInvoke).not.toHaveBeenCalled();
   });
 });

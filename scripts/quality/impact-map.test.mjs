@@ -60,6 +60,23 @@ test("the current Human capture preload test selects the AI routing contract", a
   );
 });
 
+test("agent tool input digest edits retain the IPC authority evaluation coverage", async () => {
+  const source = await readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8");
+  const map = parseImpactMap(source);
+  const ipc = selectImpact(map, ["electron/main/ipc.ts"]);
+  const digest = selectImpact(map, ["electron/main/agentToolInputDigest.ts"]);
+
+  assert.equal(digest.fallback, false);
+  for (const id of ipc.suiteIds) assert.ok(digest.suiteIds.includes(id), id);
+  for (const id of ipc.requirementIds) assert.ok(digest.requirementIds.includes(id), id);
+  const runsIpcTests = digest.suiteIds.some((id) =>
+    LIGHT_SUITE_DEFINITIONS[id].commands.some((command) =>
+      command.includes("electron/main/ipc.test.ts"),
+    ),
+  );
+  assert.ok(runsIpcTests, "run the capability and digest integration tests");
+});
+
 test("Windows command runners invoke pnpm shims directly", async () => {
   const [impactSource, evaluationRuntimeSource, certifySource] =
     await Promise.all([

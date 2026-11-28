@@ -5,13 +5,12 @@ import { AiPolicyWriteBlockedError } from "@/features/ai-policy/writeBlockedErro
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
-import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import {
   extractAiSpansFromPmJson,
   type AgentAuthorshipSpanInput,
 } from "./authorshipSpans";
 import { markCodexContentAsAi } from "./codex";
-import { applyUndoJournal } from "./undoJournal";
+import { pushCommittedWriteHistory } from "./committedWriteHistory";
 import type { Snippet } from "@/features/snippets/api";
 import {
   createCanonicalWriteContext,
@@ -40,6 +39,43 @@ interface AgentWriteResult {
   version: number;
   changeEventUid: string;
   undoJournalId: string;
+}
+
+export async function projectSnippetWrite(
+  projectId: string,
+  entityId: string,
+  journalId: string,
+  isCurrent?: () => boolean,
+): Promise<Snippet | undefined> {
+  if (isCurrent && !isCurrent()) return;
+  const registerUndo = () => {
+    pushCommittedWriteHistory(
+      projectId,
+      {
+        kind: "snippets",
+        label: i18next.t("snippets.store.agentHistoryCreate"),
+        operationId: journalId,
+        entityId,
+      },
+      (isProjectCurrent) =>
+        useSnippetStore
+          .getState()
+          .loadEntries({ afterWrite: isProjectCurrent }),
+    );
+  };
+  // The verified Native journal remains undoable even if this view cannot refresh.
+  if (isCurrent) registerUndo();
+  await useSnippetStore
+    .getState()
+    .loadEntries(
+      isCurrent ? { afterWrite: isCurrent, propagateError: true } : undefined,
+    );
+  if (isCurrent && !isCurrent()) return;
+  const entry = useSnippetStore
+    .getState()
+    .entries.find((item) => item.id === entityId);
+  if (!isCurrent && entry) registerUndo();
+  return entry;
 }
 
 export async function agentCreateSnippet(
@@ -113,36 +149,16 @@ export async function agentCreateSnippet(
       },
     });
 
-    await useSnippetStore.getState().loadEntries();
-
-    const entry = useSnippetStore
-      .getState()
-      .entries.find((e) => e.id === result.entityId);
+    const entry = await projectSnippetWrite(
+      projectId,
+      result.entityId,
+      result.undoJournalId,
+    );
     if (!entry) {
       throw new Error(
         `Created snippet ${result.entityId} not found after reload`,
       );
     }
-
-    if (!useGlobalHistoryStore.getState().isReplaying) {
-      const journalId = result.undoJournalId;
-      const entityId = result.entityId;
-      useGlobalHistoryStore.getState().push({
-        kind: "snippets",
-        label: i18next.t("snippets.store.agentHistoryCreate"),
-        operationId: journalId,
-        entityId,
-        async undo() {
-          await applyUndoJournal(journalId, "undo");
-          await useSnippetStore.getState().loadEntries();
-        },
-        async redo() {
-          await applyUndoJournal(journalId, "redo");
-          await useSnippetStore.getState().loadEntries();
-        },
-      });
-    }
-
     return entry;
   };
   if (input.content !== undefined) {

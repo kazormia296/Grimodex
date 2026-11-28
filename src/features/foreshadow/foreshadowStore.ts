@@ -95,7 +95,7 @@ interface ForeshadowState {
 
   load: (
     projectId: string,
-    options?: { propagateError?: boolean },
+    options?: { propagateError?: boolean; isCurrent?: () => boolean },
   ) => Promise<void>;
   /** Clear project-owned rows and derived caches before a reload. */
   resetForProject: () => void;
@@ -186,6 +186,21 @@ function swallowForeshadowLoadFailure(promise: Promise<void>): Promise<void> {
   return promise.catch(() => undefined);
 }
 
+/** 書き込み前に始まった読み込みを待ち、確定後の行を改めて読む。 */
+export async function reloadForeshadowsAfterCommit(
+  projectId: string,
+  isCurrent: () => boolean,
+  propagateError = true,
+): Promise<void> {
+  const previous = foreshadowLoadTracker.peek(projectId);
+  if (previous) await swallowForeshadowLoadFailure(previous);
+  if (isCurrent()) {
+    await useForeshadowStore
+      .getState()
+      .load(projectId, { propagateError, isCurrent });
+  }
+}
+
 export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
   items: [],
   isLoading: false,
@@ -231,6 +246,10 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         const { items, sceneInfoBySceneId, setupScenesByForeshadowId } =
           await listForeshadowsWithLabels(projectId);
         if (generation !== foreshadowLoadGeneration) return;
+        if (options?.isCurrent && !options.isCurrent()) {
+          set({ isLoading: false });
+          return;
+        }
         set({
           items,
           sceneInfoBySceneId,
@@ -240,6 +259,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       } catch (e) {
         if (generation === foreshadowLoadGeneration) {
           set({ isLoading: false });
+          if (options?.isCurrent && !options.isCurrent()) return;
           // The list is an own-data-read (O-2), so a D2a refusal (activation
           // stages 2-7, unavailable) is a failure to show, not a silent empty
           // list (Negative (11); DR-DA2B-R5). The previous items stay.

@@ -259,6 +259,16 @@ function canonical(value: unknown): string {
   });
 }
 
+/** 意味が同じ引数だけを、main が受け取ったときの key 順へ戻す。 */
+export function restoreToolInputOrder(
+  input: Record<string, unknown>,
+  original: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  return original !== undefined && canonical(original) === canonical(input)
+    ? original
+    : input;
+}
+
 function toolOutputToContent(
   output: Prompt[number] extends infer M
     ? M extends { role: "tool"; content: (infer P)[] }
@@ -336,12 +346,10 @@ export function promptToWireMessages(
             throw invalidPrompt(
               `tool-call ${part.toolCallId}: input is not an object`,
             );
-          const original = originalInputs.get(part.toolCallId);
-          // 意味が同じときだけ元の key 順へ戻す（Mastra が内容を変えたなら、変えた後を送る）。
-          const input =
-            original !== undefined && canonical(original) === canonical(parsed)
-              ? original
-              : parsed;
+          const input = restoreToolInputOrder(
+            parsed,
+            originalInputs.get(part.toolCallId),
+          );
           toolUses.push({ id: part.toolCallId, name: part.toolName, input });
         } else if (part.type === "reasoning") {
           // 署名の無い thinking（Chat Completions の reasoning）は会話に戻さない（renderer の extractThinkingBlocks）。

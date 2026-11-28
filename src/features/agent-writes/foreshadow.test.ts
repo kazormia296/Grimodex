@@ -8,6 +8,8 @@ const h = vi.hoisted(() => ({
   push: vi.fn(),
   isReplaying: false,
   applyUndoJournal: vi.fn().mockResolvedValue(undefined),
+  reloadAfterCommit: vi.fn().mockResolvedValue(undefined),
+  projectId: "p1",
 }));
 
 vi.mock("@/features/ai-policy/policyGuard", () => ({
@@ -20,9 +22,10 @@ vi.mock("@/features/timelapse/recorder", () => ({
   getRecorderSessionId: () => "sess-1",
 }));
 vi.mock("@/features/project/projectStore", () => ({
-  getCurrentProjectId: () => "p1",
+  getCurrentProjectId: () => h.projectId,
 }));
 vi.mock("@/features/foreshadow/foreshadowStore", () => ({
+  reloadForeshadowsAfterCommit: h.reloadAfterCommit,
   useForeshadowStore: {
     getState: () => ({ load: h.load, items: h.items }),
   },
@@ -36,7 +39,11 @@ vi.mock("./undoJournal", () => ({
   applyUndoJournal: h.applyUndoJournal,
 }));
 
-import { agentCreateForeshadow, agentUpdateForeshadow } from "./foreshadow";
+import {
+  agentCreateForeshadow,
+  agentUpdateForeshadow,
+  projectMastraForeshadowWrite,
+} from "./foreshadow";
 
 const writeResult = {
   entityId: "f1",
@@ -57,6 +64,107 @@ const storedItem = {
   loadBearing: null,
   version: 1,
 };
+
+describe("projectMastraForeshadowWrite", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.projectId = "p1";
+    h.items = [{ ...storedItem }];
+    h.isReplaying = false;
+  });
+
+  it.each(["create_foreshadow", "update_foreshadow"] as const)(
+    "projects %s with its committed journal and never repeats the write",
+    async (tool) => {
+      let turnCurrent = true;
+      await projectMastraForeshadowWrite(
+        tool,
+        "p1",
+        "f1",
+        "j1",
+        () => turnCurrent,
+      );
+      expect(h.reloadAfterCommit).toHaveBeenCalledTimes(1);
+      expect(h.push).toHaveBeenCalledTimes(1);
+      const history = h.push.mock.calls[0][0];
+      expect(history).toMatchObject({
+        kind: "foreshadow",
+        entityId: "f1",
+        operationId: "j1",
+      });
+      turnCurrent = false;
+      await history.undo();
+      await history.redo();
+      expect(h.applyUndoJournal.mock.calls).toEqual([
+        ["j1", "undo"],
+        ["j1", "redo"],
+      ]);
+      expect(h.invoke).not.toHaveBeenCalled();
+    },
+  );
+
+  it("drops stale receipts and does not register history when the scope changes during reload", async () => {
+    let current = false;
+    const project = () =>
+      projectMastraForeshadowWrite(
+        "update_foreshadow",
+        "p1",
+        "f1",
+        "j1",
+        () => current,
+      );
+    await project();
+    expect(h.reloadAfterCommit).not.toHaveBeenCalled();
+    current = true;
+    h.reloadAfterCommit.mockImplementationOnce(async () => {
+      current = false;
+    });
+    await project();
+    expect(h.reloadAfterCommit).toHaveBeenCalledTimes(1);
+    expect(h.push).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { reason: "deleted", rows: [] },
+    {
+      reason: "in a different project",
+      rows: [{ ...storedItem, projectId: "other" }],
+    },
+  ])(
+    "skips journal registration for a target that is $reason",
+    async ({ rows }) => {
+      h.items = rows;
+      await expect(
+        projectMastraForeshadowWrite(
+          "create_foreshadow",
+          "p1",
+          "f1",
+          "j1",
+          () => true,
+        ),
+      ).rejects.toThrow("not found after reload");
+      expect(h.push).not.toHaveBeenCalled();
+      expect(h.invoke).not.toHaveBeenCalled();
+    },
+  );
+
+  it("registers the same committed operation after its first reload failed", async () => {
+    h.reloadAfterCommit.mockRejectedValueOnce(new Error("read failed"));
+    const receive = () =>
+      projectMastraForeshadowWrite(
+        "update_foreshadow",
+        "p1",
+        "f1",
+        "j1",
+        () => true,
+      );
+    await expect(receive()).rejects.toThrow("read failed");
+    expect(h.push).not.toHaveBeenCalled();
+    await receive();
+    expect(h.push).toHaveBeenCalledTimes(1);
+    expect(h.invoke).not.toHaveBeenCalled();
+  });
+});
 
 describe("agentCreateForeshadow", () => {
   beforeEach(() => {
