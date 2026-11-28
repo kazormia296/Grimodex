@@ -64,3 +64,29 @@ export function rankAndMaterializeApprovedMentionedCodexItems<
   }
   return { items: ranked, materialized: rankedMaterialized };
 }
+
+/** builder に注入する並べ替え。builder は旗も承認済みの集合も持たない。 */
+export type ApprovedCodexRanker = <
+  TMaterialized extends { systemTokens: number },
+>(
+  items: ChatContextItem[],
+  materialized: TMaterialized,
+  materialize: (
+    items: readonly ChatContextItem[],
+    cachePrefixEnd?: number,
+  ) => TMaterialized,
+  exactSystemBudget?: number,
+) => { items: ChatContextItem[]; materialized: TMaterialized };
+
+export function createApprovedCodexRanker(
+  approvedCodexEntryIds: ReadonlySet<string>,
+): ApprovedCodexRanker {
+  return (items, materialized, materialize, exactSystemBudget) =>
+    rankAndMaterializeApprovedMentionedCodexItems(
+      items,
+      approvedCodexEntryIds,
+      materialized,
+      materialize,
+      exactSystemBudget,
+    );
+}
