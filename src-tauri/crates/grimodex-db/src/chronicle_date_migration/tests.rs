@@ -286,7 +286,7 @@ fn schema_48_repairs_dates_replays_heads_and_preserves_locks() -> Result<()> {
         let conn = db.lock()?;
         assert_eq!(
             conn.pragma_query_value(None, "user_version", |r| r.get::<_, i32>(0))?,
-            49
+            grimodex_core::SCHEMA_VERSION
         );
         assert!(has_chronicle_date_migration_marker(&conn)?);
         assert_eq!(day(&conn, "assigned")?, 21);
@@ -360,9 +360,13 @@ fn missing_completion_marker_blocks_both_shortcuts_and_rolls_back_failed_repairs
             [CHRONICLE_DATE_MIGRATION_ID],
         )?;
         assert!(!has_current_schema_checkpoint_invariants(&conn)?);
+        conn.pragma_update(
+            None,
+            "user_version",
+            grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+        )?;
         conn.execute_batch(
-            "PRAGMA user_version=48;
-             INSERT INTO events(id,project_id) VALUES ('assigned','ced');
+            "INSERT INTO events(id,project_id) VALUES ('assigned','ced');
              CREATE TRIGGER refuse_ced_marker BEFORE INSERT ON schema_data_migrations
              WHEN NEW.migration_id='chronicle-event-date-v49'
              BEGIN SELECT RAISE(ABORT,'refused CED marker'); END;",
@@ -377,7 +381,7 @@ fn missing_completion_marker_blocks_both_shortcuts_and_rolls_back_failed_repairs
         let conn = db.lock()?;
         assert_eq!(
             conn.pragma_query_value(None, "user_version", |r| r.get::<_, i32>(0))?,
-            48
+            grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION
         );
         let rolled_back: bool = conn.query_row(
             "SELECT start_time IS NULL AND NOT EXISTS(SELECT 1 FROM chronicle_date_migration_events)
