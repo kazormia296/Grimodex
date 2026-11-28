@@ -90,7 +90,7 @@ run("B1 live approved Codex rank evaluation", () => {
       0,
     );
     assertWithinCap(estimate, cap);
-    const records = [];
+    const records: Array<Record<string, unknown>> = [];
     const output = path.resolve(
       here,
       "../../..",

@@ -3,6 +3,7 @@ import {
   PROMPT_DATA_TAGS,
   type BuildSystemPromptInput,
 } from "@/features/chat/contextBuilder";
+import { createApprovedCodexRanker } from "@/features/chat/context/approvedCodexRank";
 import fixtures from "./fixture.v1.json";
 
 export type EvalCase = (typeof fixtures)[number];
@@ -17,7 +18,9 @@ export function buildPair(evalCase: EvalCase) {
   const control = buildSystemPrompt(base);
   const ranked = buildSystemPrompt({
     ...base,
-    approvedCodexEntryIds: new Set(evalCase.approvedCodexEntryIds),
+    approvedCodexRanker: createApprovedCodexRanker(
+      new Set(evalCase.approvedCodexEntryIds),
+    ),
   });
   const keys = (result: typeof control) =>
     result.contextPlan?.items.map((item) => item.key) ?? [];
