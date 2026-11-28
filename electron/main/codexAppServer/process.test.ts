@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import nodeProcess from "node:process";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +17,16 @@ async function temporaryRoot(): Promise<string> {
   const root = await mkdtemp(path.join(os.tmpdir(), "grimodex-codex-process-"));
   temporaryRoots.push(root);
   return root;
+}
+
+async function temporaryHomeOptions() {
+  const root = await temporaryRoot();
+  const sourceCodexHomeDir = path.join(root, "source-codex-home");
+  await mkdir(sourceCodexHomeDir);
+  return {
+    codexHomeDir: path.join(root, "isolated-codex-home"),
+    sourceCodexHomeDir,
+  };
 }
 
 function spawnedChild(): ChildProcess {
@@ -52,6 +62,7 @@ describe("CodexAppServerProcess", () => {
     const authorizeExecutable = vi.fn(async () => false);
     const spawn = vi.fn();
     const process = new CodexAppServerProcess({
+      ...(await temporaryHomeOptions()),
       getConfiguredExecutable: async () => "/configured/codex",
       resolveExecutable,
       realPath: async () => "/canonical/codex-runtime",
@@ -76,6 +87,7 @@ describe("CodexAppServerProcess", () => {
     const resolveExecutable = vi.fn(async () => "/detected/codex");
     const authorizeExecutable = vi.fn(async () => false);
     const process = new CodexAppServerProcess({
+      ...(await temporaryHomeOptions()),
       getConfiguredExecutable: async () => " codex ",
       resolveExecutable,
       realPath: async (candidate) => candidate,
@@ -99,6 +111,7 @@ describe("CodexAppServerProcess", () => {
     const spawn = vi.fn();
     const process = new CodexAppServerProcess({
       ...trustedFileOptions(),
+      ...(await temporaryHomeOptions()),
       spawn: spawn as never,
     });
 
@@ -127,6 +140,7 @@ describe("CodexAppServerProcess", () => {
     const spawn = vi.fn();
     const process = new CodexAppServerProcess({
       ...trustedFileOptions(),
+      ...(await temporaryHomeOptions()),
       resolveExecutable: () =>
         new Promise((resolve) => {
           resolveExecutable = resolve;
@@ -187,6 +201,9 @@ describe("CodexAppServerProcess", () => {
     expect(spawnOptions?.cwd).toBe(isolatedCodexHome);
     expect(spawnOptions?.env?.CODEX_HOME).toBe(isolatedCodexHome);
     expect(spawnOptions?.env?.CODEX_HOME).not.toBe(sourceCodexHome);
+    expect(
+      await readFile(path.join(isolatedCodexHome, "auth.json"), "utf8"),
+    ).toBe('{"OPENAI_API_KEY":"from-auth"}');
     const disposing = process.dispose();
     child.emit("close", null, "SIGTERM");
     await disposing;
@@ -221,7 +238,7 @@ describe("CodexAppServerProcess", () => {
     const child = spawnedChild();
     const process = new CodexAppServerProcess({
       ...trustedFileOptions(),
-      codexHomeDir: "/tmp/grimodex-codex",
+      ...(await temporaryHomeOptions()),
       authorizeExecutable: async () => true,
       forceKillAfterMs: 20,
       spawn: vi.fn(() => child) as never,
@@ -251,7 +268,7 @@ describe("CodexAppServerProcess", () => {
     });
     const server = new CodexAppServerProcess({
       ...trustedFileOptions(),
-      codexHomeDir: "/tmp/grimodex-codex",
+      ...(await temporaryHomeOptions()),
       authorizeExecutable: async () => true,
       forceKillAfterMs: 20,
       isProcessTreeAlive,
@@ -261,9 +278,7 @@ describe("CodexAppServerProcess", () => {
 
     const disposing = server.dispose();
     child.emit("close", null, "SIGTERM");
-    await vi.waitFor(() =>
-      expect(child.kill).toHaveBeenCalledWith("SIGKILL"),
-    );
+    await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith("SIGKILL"));
     await vi.waitFor(() => expect(isProcessTreeAlive).toHaveBeenCalled());
     await disposing;
   });
@@ -272,7 +287,7 @@ describe("CodexAppServerProcess", () => {
     const child = spawnedChild();
     const process = new CodexAppServerProcess({
       ...trustedFileOptions(),
-      codexHomeDir: "/tmp/grimodex-codex",
+      ...(await temporaryHomeOptions()),
       authorizeExecutable: async () => true,
       forceKillAfterMs: 20,
       spawn: vi.fn(() => child) as never,
@@ -293,7 +308,7 @@ describe("CodexAppServerProcess", () => {
     });
     const process = new CodexAppServerProcess({
       ...trustedFileOptions(),
-      codexHomeDir: "/tmp/grimodex-codex",
+      ...(await temporaryHomeOptions()),
       authorizeExecutable: async () => true,
       forceKillAfterMs: 20,
       spawn: vi.fn(() => child) as never,
@@ -310,7 +325,7 @@ describe("CodexAppServerProcess", () => {
     });
     const server = new CodexAppServerProcess({
       ...trustedFileOptions(),
-      codexHomeDir: "/tmp/grimodex-codex",
+      ...(await temporaryHomeOptions()),
       authorizeExecutable: async () => true,
       forceKillAfterMs: 20,
       spawn: vi.fn(() => child) as never,
