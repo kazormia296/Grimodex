@@ -329,6 +329,48 @@ describe("caller timeout policy（electron 分岐）", () => {
     });
   });
 
+  it("settles a withdrawn queued Mastra start locally before dispatch and lets audit export drain", async () => {
+    const releaseSlots: Array<() => void> = [];
+    const bridge = installBridge({
+      invoke: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            releaseSlots.push(() => resolve({ ok: true, value: null }));
+          }),
+      ),
+    });
+    const { invoke } = await import("./tauri");
+    const {
+      acquireAuditExportActualTaskFailureTracking,
+      awaitPendingIpcActualTasksForAuditExport,
+    } = await import("./ipcQueue");
+    const releaseTracking = acquireAuditExportActualTaskFailureTracking();
+    try {
+      const busy = Array.from({ length: 4 }, () => invoke("busy_mutation"));
+      await vi.waitFor(() => expect(bridge.invoke).toHaveBeenCalledTimes(4));
+      const controller = new AbortController();
+      const cancelled = Symbol();
+      const start = invoke(
+        "mastra_agent_turn_start",
+        { turnId: "waiting" },
+        {
+          allow: () => !controller.signal.aborted,
+          cancelledValue: cancelled,
+        },
+      );
+      controller.abort();
+      for (const release of releaseSlots) release();
+      await Promise.all(busy);
+      await expect(start).resolves.toBe(cancelled);
+      await expect(
+        awaitPendingIpcActualTasksForAuditExport(),
+      ).resolves.toBeUndefined();
+      expect(bridge.invoke).toHaveBeenCalledTimes(4);
+    } finally {
+      releaseTracking();
+    }
+  });
+
   it("Mastra answer と cancel は全 queue slot が埋まっていても通り、drain の mutation として残る", async () => {
     vi.useFakeTimers();
     const pendingStarts: Array<(value: unknown) => void> = [];

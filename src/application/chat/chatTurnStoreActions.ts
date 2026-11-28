@@ -118,7 +118,7 @@ import type {
 } from "@/features/chat/codexAppApi";
 import { resolveScopeSessionKey } from "@/features/chat/chatScope";
 import { getPromptCatalog } from "@/prompts/index";
-import type { ChatStoreActionPorts } from "./chatStoreActionPorts";
+import type { ChatTurnStorePorts } from "./chatStoreActionPorts";
 import type { ChatState } from "./chatStoreTypes";
 import type {
   ChatTurnPreflightDecision,
@@ -134,7 +134,7 @@ import {
 } from "./chatTurnLifecycle";
 import type { CaptureCurrentChatInputSubmission } from "@/lib/tauri";
 
-interface ChatTurnStoreActionCompositionPorts extends ChatStoreActionPorts {
+interface ChatTurnStoreActionCompositionPorts extends ChatTurnStorePorts {
   prepareChatTurn: (input: ChatTurnPreflightInput) => ChatTurnPreflightDecision;
   turnRuntime: ChatTurnRuntime;
   userQuestionRuntime: ChatUserQuestionRuntime;
@@ -329,6 +329,8 @@ function createChatTurnStoreActions(
         isCapturedProjectCurrent(turnProjectId, ports);
       const capturedWorkspaceIsCurrent = (): boolean =>
         isCapturedWorkspaceCurrent(turnWorkspaceIdentity);
+      const capturedBindingIsCurrent = (): boolean =>
+        capturedWorkspaceIsCurrent() && capturedProjectIsCurrent();
       const capturedChatAuthorityIsCurrent = (): boolean => {
         const current = get();
         const currentProjectId =
@@ -363,9 +365,7 @@ function createChatTurnStoreActions(
       const capturedTurnAuthorityIsCurrent = (): boolean =>
         mastraTurnAdmitted && transportStarted
           ? !shouldAbortTurn()
-          : capturedWorkspaceIsCurrent() &&
-            capturedProjectIsCurrent() &&
-            capturedChatAuthorityIsCurrent();
+          : capturedBindingIsCurrent() && capturedChatAuthorityIsCurrent();
       let replacementCommitted = false;
       const commitAssistantReplacement = async (): Promise<void> => {
         if (
@@ -396,22 +396,23 @@ function createChatTurnStoreActions(
           }
         }
       };
+      const mastraAuthorityLost = (): boolean =>
+        turnRuntime.shouldAbortMastraTurn({
+          explicitlyAborted: sendControl.aborted,
+          isCurrentTurn: isCurrentTurn(),
+          workspaceIsCurrent: capturedWorkspaceIsCurrent(),
+          projectIsCurrent: capturedProjectIsCurrent(),
+          chatPolicyAllows: !isAiFeatureBlockedByPolicy("chat"),
+          licenseAllows: !isWriteRestrictedByLicense(),
+          quiescenceAllowsMutation: canScheduleQuiescenceMutation(),
+        });
       const shouldAbortTurn = (): boolean =>
         mastraTurnAdmitted && transportStarted
-          ? turnRuntime.shouldAbortMastraTurn({
-              explicitlyAborted: sendControl.aborted,
-              isCurrentTurn: isCurrentTurn(),
-              workspaceIsCurrent: capturedWorkspaceIsCurrent(),
-              projectIsCurrent: capturedProjectIsCurrent(),
-              chatPolicyAllows: !isAiFeatureBlockedByPolicy("chat"),
-              licenseAllows: !isWriteRestrictedByLicense(),
-              quiescenceAllowsMutation: canScheduleQuiescenceMutation(),
-            })
+          ? mastraAuthorityLost()
           : sendControl.aborted ||
             !isCurrentTurn() ||
             (!transportStarted && !canScheduleQuiescenceMutation()) ||
-            !capturedWorkspaceIsCurrent() ||
-            !capturedProjectIsCurrent() ||
+            !capturedBindingIsCurrent() ||
             !capturedChatAuthorityIsCurrent() ||
             isAiFeatureBlockedByPolicy("chat") ||
             isWriteRestrictedByLicense();
@@ -428,8 +429,7 @@ function createChatTurnStoreActions(
         const currentState = get();
         const keepCapturedHuman =
           captureTurn.committed &&
-          capturedWorkspaceIsCurrent() &&
-          capturedProjectIsCurrent() &&
+          capturedBindingIsCurrent() &&
           currentState.activeSessionId ===
             captureTurn.submission?.chatSessionId &&
           currentState.chatScope === chatScope &&
@@ -691,7 +691,10 @@ function createChatTurnStoreActions(
           errorDetail,
         });
         const canFinalizeStoppedAgentTurn = (): boolean =>
-          sendControl.aborted && isCurrentTurn() && transportStarted;
+          sendControl.aborted &&
+          isCurrentTurn() &&
+          transportStarted &&
+          (!mastraTurnAdmitted || capturedBindingIsCurrent());
         const finalizeStoppedAgentTurnAfterTransport = (): Promise<boolean> =>
           recovery.finalizeStoppedAgentTurnAfterTransport({
             canFinalize: canFinalizeStoppedAgentTurn,
@@ -1019,6 +1022,13 @@ function createChatTurnStoreActions(
                   userQuestionRuntime,
                   dismissNote: agentControl.userDismissMessage,
                   assertAuthority: assertTurnAuthority,
+                  signal: sendControl.abortController.signal,
+                  subscribeChat: ports.subscribe,
+                  bindingIsCurrent: capturedBindingIsCurrent,
+                  checkRunningAuthority: () => {
+                    if (mastraAuthorityLost())
+                      turnCoordinator.abort(sendControl);
+                  },
                   isCurrentTurn,
                   isAborted: () => sendControl.aborted,
                   onSendAccepted: () => {
@@ -1030,25 +1040,10 @@ function createChatTurnStoreActions(
                   onResponseText: (text) => {
                     observedResponseText = text;
                     assistantRow.observeText(text);
-                    set((state) => ({
-                      messages: state.messages.map((message) =>
-                        message.id === assistantMsg.id
-                          ? { ...message, content: text }
-                          : message,
-                      ),
-                    }));
                   },
+                  routeAuthorityKey: turnRouteAuthorityKey,
                   updateContextUsage: (usage) => {
                     sentAgentContextTokenCount = usage.inputTokens;
-                    set({
-                      contextTokenCount: usage.inputTokens,
-                      contextWindowUsage: { ...usage, estimated: false },
-                      contextWindowSize: usage.contextWindow,
-                      contextModel: turnRoute?.model ?? null,
-                      contextProvider: turnRoute?.provider ?? null,
-                      contextRouteAuthorityKey:
-                        resolvedChatTurnRouteAuthorityKey(turnRoute),
-                    });
                   },
                   cancelBeforeTransport,
                   onLegacyFallback: () => {
@@ -1396,6 +1391,8 @@ function createChatTurnStoreActions(
               : {}),
           });
         } finally {
+          // Preparation may stop before run() owns the attempt's cleanup.
+          mastraTurnAttempt?.release();
           // 例外で抜けた場合も含め、回答待ちの ask_user を確実に解決して
           // awaiting 中のループ Promise をリークさせない。中断フラグもリセット。
           if (isCurrentTurn()) {

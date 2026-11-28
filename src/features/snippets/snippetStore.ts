@@ -77,7 +77,10 @@ interface SnippetState {
     next: Snippet | null | ((prev: Snippet | null) => Snippet | null),
   ) => void;
 
-  loadEntries: (options?: { propagateError?: boolean }) => Promise<void>;
+  loadEntries: (options?: {
+    propagateError?: boolean;
+    afterWrite?: () => boolean;
+  }) => Promise<void>;
   /** mount 用の dedup 付きロード。同一 projectId のロードが進行中なら
    *  それに相乗りする。settle 後は毎回ロードする (remount での再フェッチ =
    *  外部書き込み追従は維持)。 */
@@ -168,7 +171,10 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
   loadEntries: (options) => {
     const projectId = getCurrentProjectId();
     const key = entriesLoadKey(projectId);
-    const inFlight = entriesLoadTracker.peek(key);
+    const afterWrite = options?.afterWrite;
+    const query = afterWrite ? get().searchQuery : "";
+    // A read already in flight can predate the committed write.
+    const inFlight = !afterWrite && entriesLoadTracker.peek(key);
     if (inFlight) {
       return options?.propagateError
         ? inFlight
@@ -178,12 +184,19 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
     const run = (async () => {
       set({ isLoading: true });
       try {
-        const entries = await snippetApi.listSnippets(projectId);
+        const entries = query.trim()
+          ? await searchSnippets(query)
+          : await snippetApi.listSnippets(projectId);
         if (generation !== entriesLoadGeneration) return;
+        if (afterWrite?.() === false) {
+          set({ isLoading: false });
+          return;
+        }
         set({ entries, isLoading: false });
       } catch (e) {
         if (generation === entriesLoadGeneration) {
           set({ isLoading: false });
+          if (afterWrite?.() === false) return;
           if (isIpcLifecycleCancellation(e)) {
             // A workspace/project transition cancelled the read; the new
             // scope reloads its entries, so this is not a user-facing failure.
@@ -211,13 +224,17 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
   },
 
   search: async (query: string) => {
+    const generation = ++entriesLoadGeneration;
+    entriesLoadTracker.clear();
     set({ searchQuery: query, isLoading: true });
     try {
       if (query.trim() === "") {
         const entries = await snippetApi.listSnippets(getCurrentProjectId());
+        if (generation !== entriesLoadGeneration) return;
         set({ entries, isLoading: false });
       } else {
         const entries = await searchSnippets(query);
+        if (generation !== entriesLoadGeneration) return;
         set({ entries, isLoading: false });
         // 成功パスは toast を出さないため、SR には結果件数が無音になる。
         // 呼び出し側 (パネル) が debounce 済みなので確定検索ごとに 1 回だけ、
@@ -229,6 +246,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
         }
       }
     } catch (e) {
+      if (generation !== entriesLoadGeneration) return;
       set({ isLoading: false });
       toast.error(i18next.t("snippets.store.searchFailed"));
       debugLog.error("SnippetStore", "search", errorDetail(e));

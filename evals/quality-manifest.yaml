@@ -414,6 +414,7 @@ requirements:
       - scripts/product-journey-impact.test.mjs
       - electron/shared/nir1EntityRelationIpcContract.test.ts
       - electron/main/ipc.ts
+      - electron/main/agentToolInputDigest.ts
       - electron/main/profileEgress.ts
       - electron/main/d2aSqlPolicyFixture.ts
       - electron/main/devRendererUrl.ts

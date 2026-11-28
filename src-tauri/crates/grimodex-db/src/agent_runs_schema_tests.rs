@@ -2,6 +2,7 @@ use std::path::Path;
 
 use rusqlite::Connection;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use crate::agent_runs::{
     self, ActiveStatus, AnalysisReadBasisEntryV1, AnalysisReadBasisRevision, ApprovalDecision,
@@ -11,6 +12,7 @@ use crate::agent_runs::{
     ResumeBlockReason, ResumeGate, RunRoute, RunStart, RunState, RunStatus, TerminalOutcome,
     ToolCallUpdate, UnfinishedRun,
 };
+use crate::mastra_memory::{message_write, MemoryMessageInput, MessageWriteCommand};
 use crate::{test_support::current_schema_memory, Database};
 
 pub(crate) fn temp_workspace() -> std::path::PathBuf {
@@ -3143,11 +3145,37 @@ const SNAPSHOT_BODY_MARKERS: [&str; 5] = [
     "a3-copy-resolution-marker",
     "a3-copy-target-basis-marker",
 ];
+const MASTRA_ASSISTANT_TEXT: &str = "The sample scene was read.";
+const MASTRA_TOOL_RESULT: &str = "sample-mastra-tool-result-for-copy-check";
 
 pub(crate) fn seed_snapshot_contents(path: &Path) -> Database {
     let db = Database::new(path).expect("db");
     db.migrate().expect("migrate");
     seed(&db, &["s"]);
+    message_write(
+        &db,
+        MessageWriteCommand::Save {
+            messages: vec![MemoryMessageInput {
+                id: "mastra-message".into(),
+                thread_id: "s".into(),
+                role: "assistant".into(),
+                created_at: "2026-11-01T00:00:00Z".into(),
+                content: json!({
+                    "format": 2,
+                    "content": MASTRA_ASSISTANT_TEXT,
+                    "parts": [
+                        {"type": "tool-invocation", "toolInvocation": {
+                            "toolCallId": "read-call", "toolName": "get_scene",
+                            "args": {"id": "scene"}, "state": "result", "result": MASTRA_TOOL_RESULT
+                        }},
+                        {"type": "text", "text": MASTRA_ASSISTANT_TEXT}
+                    ]
+                }),
+                is_injected: false,
+            }],
+        },
+    )
+    .expect("save synthetic Mastra message");
     agent_runs::start_run(&db, &start("r", "s", "owner")).expect("start");
     let ledger = LedgerEntry {
         canonical_args: json!({"body": SNAPSHOT_BODY_MARKERS[1]}),
@@ -3197,6 +3225,14 @@ pub(crate) fn seed_snapshot_contents(path: &Path) -> Database {
 
 pub(crate) fn assert_snapshot_body_bytes(path: &Path, present: bool) {
     let bytes = std::fs::read(path).expect("read snapshot bytes");
+    // MP-8 stores the digest even in the live DB. A3 checkpoint bodies are scrubbed on copy.
+    assert!(
+        !bytes
+            .windows(MASTRA_TOOL_RESULT.len())
+            .any(|window| window == MASTRA_TOOL_RESULT.as_bytes()),
+        "Mastra tool result body found in {}",
+        path.display()
+    );
     for marker in SNAPSHOT_BODY_MARKERS {
         assert_eq!(
             bytes
@@ -3211,6 +3247,20 @@ pub(crate) fn assert_snapshot_body_bytes(path: &Path, present: bool) {
 
 pub(crate) fn assert_scrubbed_snapshot(path: &Path) {
     let conn = Connection::open(path).expect("read copy");
+    let (text, parts_json): (String, String) = conn
+        .query_row(
+            "SELECT m.content, p.parts_json FROM chat_messages m
+             JOIN mastra_message_parts p ON p.message_id=m.id WHERE m.id='mastra-message'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read copied Mastra message");
+    let content: serde_json::Value = serde_json::from_str(&parts_json).expect("message parts");
+    let result_json = serde_json::to_vec(MASTRA_TOOL_RESULT).expect("encode tool result");
+    let digest = format!("sha256:{}", hex::encode(Sha256::digest(result_json)));
+    assert_eq!(text, MASTRA_ASSISTANT_TEXT);
+    assert_eq!(content["parts"][0]["toolInvocation"]["result"], digest);
+    assert_eq!(content["parts"][1]["text"], MASTRA_ASSISTANT_TEXT);
     let row: (String, Option<String>, i64, Option<String>, bool) = conn
         .query_row(
             "SELECT status,interrupt_reason,resumable,not_resumable_reason,
