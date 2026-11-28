@@ -1,6 +1,7 @@
 import i18next from "i18next";
 import { invoke } from "@/lib/tauri";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { AiPolicyWriteBlockedError } from "@/features/ai-policy/writeBlockedError";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
@@ -197,7 +198,7 @@ export async function agentCreateCodexEntry(
   writeOpts?: TrackedWriteOpts,
 ): Promise<CodexEntry> {
   if (!writeOpts?.skipPolicyGate && blockIfPolicyOff("knowledgeWrite")) {
-    throw new Error("knowledgeWrite policy is off");
+    throw new AiPolicyWriteBlockedError("knowledgeWrite");
   }
   if (input.requestId.trim().length === 0) {
     throw new Error("requestId must be a non-empty string");
@@ -326,7 +327,7 @@ export async function agentUpdateCodexEntry(
     !options?.writeOpts?.skipPolicyGate &&
     blockIfPolicyOff("knowledgeWrite")
   ) {
-    throw new Error("knowledgeWrite policy is off");
+    throw new AiPolicyWriteBlockedError("knowledgeWrite");
   }
 
   const projectId = options?.writeOpts?.projectId ?? getCurrentProjectId();

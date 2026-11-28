@@ -83,6 +83,17 @@ describe("useAiCapability", () => {
     expect(result.current).toEqual({ state: "enabled" });
   });
 
+  it("disables body writing for an invalid current-project policy", () => {
+    setupMocks("ready", true);
+    mockUseCurrentProject.mockReturnValue({
+      id: "default-project",
+      title: "Test",
+      aiPolicy: "not-json",
+    } as never);
+    const { result } = renderHook(() => useAiCapability("bodyWrite"));
+    expect(result.current).toEqual({ state: "disabled", reason: "policy" });
+  });
+
   it("returns policy disabled when toggle is off", () => {
     setupMocks("ready", true, { chat: true, bodyWrite: false, analysis: true });
     const { result } = renderHook(() => useAiCapability("bodyWrite"));

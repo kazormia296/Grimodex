@@ -12,6 +12,7 @@ import {
   type AgentEventCreateInput,
   type TrackedWriteOpts,
 } from "@/features/agent-writes/event";
+import { toolFailureScreenText } from "./toolFailureScreenText";
 import {
   EVENT_KINDS,
   EVENT_GRANULARITIES,
@@ -52,13 +53,18 @@ const ok = (name: string, content: unknown, summary: string): ToolReturn => ({
   summary,
   tokensUsed: countTokens(JSON.stringify(content)),
 });
-const fail = (name: string, msg: string): ToolReturn => ({
+const fail = (name: string, msg: string, screen = msg): ToolReturn => ({
   name,
   content: null,
-  summary: msg,
+  summary: screen,
   tokensUsed: 0,
   error: msg,
 });
+/** 例外で失敗した書き込み。方針の壊れた値と未読込では画面の行の文を替える。 */
+const failFrom = (name: string, e: unknown): ToolReturn => {
+  const msg = e instanceof Error ? e.message : String(e);
+  return fail(name, msg, toolFailureScreenText(e, msg));
+};
 
 const str = (v: unknown): string => String(v ?? "").trim();
 function strArray(v: unknown): string[] {
@@ -175,7 +181,7 @@ export async function createEventTool(
       `Created event '${ev.title}'`,
     );
   } catch (e) {
-    return fail("create_event", e instanceof Error ? e.message : String(e));
+    return failFrom("create_event", e);
   } finally {
     // write 後はターン内共有キャッシュを必ず破棄（stale 読み防止）。
     invalidateChronicleToolCache();
@@ -273,7 +279,7 @@ export async function updateEventTool(
     );
     return ok("update_event", { id: eventId }, `Updated event ${eventId}`);
   } catch (e) {
-    return fail("update_event", e instanceof Error ? e.message : String(e));
+    return failFrom("update_event", e);
   } finally {
     invalidateChronicleToolCache();
   }
@@ -299,7 +305,7 @@ export async function deleteEventTool(
     });
     return ok("delete_event", { id: eventId }, `Deleted event ${eventId}`);
   } catch (e) {
-    return fail("delete_event", e instanceof Error ? e.message : String(e));
+    return failFrom("delete_event", e);
   } finally {
     invalidateChronicleToolCache();
   }
@@ -332,10 +338,7 @@ export async function stampSceneEventTool(
       `Stamped event ${eventId} on scene ${sceneId}`,
     );
   } catch (e) {
-    return fail(
-      "stamp_scene_event",
-      e instanceof Error ? e.message : String(e),
-    );
+    return failFrom("stamp_scene_event", e);
   } finally {
     invalidateChronicleToolCache();
   }
@@ -368,10 +371,7 @@ export async function unstampSceneEventTool(
       `Unstamped event ${eventId} from scene ${sceneId}`,
     );
   } catch (e) {
-    return fail(
-      "unstamp_scene_event",
-      e instanceof Error ? e.message : String(e),
-    );
+    return failFrom("unstamp_scene_event", e);
   } finally {
     invalidateChronicleToolCache();
   }
@@ -402,10 +402,7 @@ export async function setEventParticipantsTool(
       `Set ${codexIds.length} participant(s)`,
     );
   } catch (e) {
-    return fail(
-      "set_event_participants",
-      e instanceof Error ? e.message : String(e),
-    );
+    return failFrom("set_event_participants", e);
   } finally {
     invalidateChronicleToolCache();
   }
@@ -444,10 +441,7 @@ export async function addEventRelationTool(
       `Linked ${causeId} → ${effectId}`,
     );
   } catch (e) {
-    return fail(
-      "add_event_relation",
-      e instanceof Error ? e.message : String(e),
-    );
+    return failFrom("add_event_relation", e);
   } finally {
     invalidateChronicleToolCache();
   }
@@ -486,10 +480,7 @@ export async function removeEventRelationTool(
       `Unlinked ${causeId} → ${effectId}`,
     );
   } catch (e) {
-    return fail(
-      "remove_event_relation",
-      e instanceof Error ? e.message : String(e),
-    );
+    return failFrom("remove_event_relation", e);
   } finally {
     invalidateChronicleToolCache();
   }

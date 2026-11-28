@@ -5444,6 +5444,8 @@
     },
     "disabledReason": {
       "policy": "Disabled by AI policy",
+      "invalidPolicy": "Writing was stopped because the AI policy is damaged.",
+      "projectUnavailable": "AI writing was stopped because the project is not loaded.",
       "noModel": "No AI model selected",
       "noProvider": "AI is not configured"
     },

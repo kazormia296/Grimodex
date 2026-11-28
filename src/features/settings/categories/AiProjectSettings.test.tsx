@@ -15,7 +15,11 @@ const settings = vi.hoisted(() => ({
   } as Record<string, boolean>,
   setters: new Map<string, ReturnType<typeof vi.fn>>(),
 }));
-const projectState = vi.hoisted(() => ({ language: "ja" }));
+const projectState = vi.hoisted(() => ({
+  language: "ja",
+  aiPolicy: null as string | null,
+  updateField: vi.fn(),
+}));
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -27,14 +31,14 @@ vi.mock("../hooks/useProjectSettings", () => ({
   useProjectSettings: () => ({
     project: {
       language: projectState.language,
-      aiPolicy: null,
+      aiPolicy: projectState.aiPolicy,
       outline: null,
       targetReaders: null,
       styleGuide: null,
       aiInstructions: null,
     },
     isLoading: false,
-    updateField: vi.fn(),
+    updateField: projectState.updateField,
   }),
 }));
 
@@ -58,6 +62,8 @@ beforeEach(() => {
   settings.values["ai.semanticReranker"] = false;
   settings.setters.clear();
   projectState.language = "ja";
+  projectState.aiPolicy = null;
+  projectState.updateField.mockReset();
 });
 
 function renderSettings(target: "electron" | "web" = "electron") {
@@ -129,5 +135,33 @@ describe("AiProjectSettings semantic reranker", () => {
         "現在は日本語・英語のデスクトップ版でのみ利用できます。",
       ),
     ).toBeTruthy();
+  });
+});
+
+describe("AiProjectSettings damaged AI policy", () => {
+  const warning = "aiPolicy.disabledReason.invalidPolicy";
+
+  it.each([
+    null,
+    '{"preset":"off","toggles":{"chat":false,"bodyWrite":false,"analysis":false}}',
+  ])("shows no warning for a readable policy %s", (aiPolicy) => {
+    projectState.aiPolicy = aiPolicy;
+    renderSettings();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("warns, shows the custom preset, and saves a chosen preset", () => {
+    projectState.aiPolicy = "not-json";
+    renderSettings();
+
+    expect(screen.getByRole("alert").textContent).toContain(warning);
+    const select = screen.getByRole("combobox") as HTMLSelectElement;
+    expect(select.value).toBe("custom");
+
+    fireEvent.change(select, { target: { value: "full" } });
+    expect(projectState.updateField).toHaveBeenCalledWith(
+      "aiPolicy",
+      expect.stringContaining('"preset":"full"'),
+    );
   });
 });

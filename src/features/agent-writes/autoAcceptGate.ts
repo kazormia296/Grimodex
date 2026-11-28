@@ -53,7 +53,7 @@ export async function isAutoAcceptEnabled(projectId: string): Promise<boolean> {
   }
   try {
     const project = await getProject(projectId);
-    if (isBodyWriteDisabled(project?.aiPolicy)) return false;
+    if (!project || isBodyWriteDisabled(project.aiPolicy)) return false;
   } catch (e) {
     debugLog.warn("autoAcceptProse", "policy read failed", errorDetail(e));
     return false;

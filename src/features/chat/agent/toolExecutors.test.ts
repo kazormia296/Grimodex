@@ -97,6 +97,14 @@ vi.mock("@/features/codex/phaseApi", () => ({
 
 vi.mock("@/lib/tauri", () => ({ invoke: mockInvoke }));
 
+const mockStopText = vi.hoisted(() => vi.fn((): string | null => null));
+vi.mock("@/features/ai-policy/policyGuard", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/features/ai-policy/policyGuard")
+  >()),
+  aiPolicyStopText: mockStopText,
+}));
+
 vi.mock("@/features/foreshadow/api", () => ({
   readOpenForeshadowWire: mockReadOpenForeshadowWire,
   readForeshadowListWithLabelsWire: mockReadForeshadowListWithLabelsWire,
@@ -151,6 +159,7 @@ vi.mock("./settingProposalTools", () => ({
   proposeSettingChangeTool: mockProposeSettingChange,
 }));
 
+import { AiPolicyWriteBlockedError } from "@/features/ai-policy/writeBlockedError";
 import {
   executeTool,
   executeReadOnlyTool,
@@ -569,6 +578,19 @@ describe("foreshadow write executors", () => {
     const result = await executeTool("create_foreshadow", "call-f3", {
       title: "x",
     });
+    expect(result.error).toBe("knowledgeWrite policy is off");
+  });
+
+  it("shows the stop reason on the result line and keeps the model error", async () => {
+    mockStopText.mockReturnValueOnce("画面の行の理由");
+    mockAgentCreateForeshadow.mockRejectedValue(
+      new AiPolicyWriteBlockedError("knowledgeWrite"),
+    );
+    const result = await executeTool("create_foreshadow", "call-f3b", {
+      title: "x",
+    });
+    expect(mockStopText).toHaveBeenCalledWith("knowledgeWrite");
+    expect(result.summary).toBe("画面の行の理由");
     expect(result.error).toBe("knowledgeWrite policy is off");
   });
 

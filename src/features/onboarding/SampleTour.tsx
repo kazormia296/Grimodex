@@ -11,7 +11,7 @@ import { AnimatedPopover } from "@/components/ui/animated-popover";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { isReducedMotion } from "@/lib/gsap";
 import type { AiPolicyToggles } from "@/features/ai-policy/types";
-import { parseAiPolicy } from "@/features/ai-policy/parse";
+import { getSampleTourPolicyToggles } from "./tourSteps";
 import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 import { SpotlightOverlay, useFocusRects, type FocusRect } from "./spotlight";
 import { computeCardStyle, CARD_WIDTH } from "./cardPlacement";
@@ -229,10 +229,9 @@ export function SampleTour() {
     (s) => s.globalSettings?.defaultAiPolicy,
   );
 
-  // Parse AI policy toggles. parseAiPolicy が欠損/破損を DEFAULT(full) に倒し、
-  // 旧 JSON の structureWrite 欠損も stored preset から導出する。
+  // Only a valid global policy changes the tour's AI feature sequence.
   const toggles = useMemo<AiPolicyToggles>(
-    () => parseAiPolicy(defaultAiPolicy ?? null).toggles,
+    () => getSampleTourPolicyToggles(defaultAiPolicy),
     [defaultAiPolicy],
   );
 
