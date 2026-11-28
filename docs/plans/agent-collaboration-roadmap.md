@@ -3,7 +3,7 @@
 ## Status
 
 - **Lifecycle:** Active mutable roadmap
-- **Last updated:** 2026-11-26（Release B と Decision Gate A を改訂。[SessionTasks の判断記録](session-tasks-decisions-2026-11.md)）
+- **Last updated:** 2026-11-29（Release B の前提に Mastra の再入の実装と実証を明記）
 - **Current focus:** Release A — Background Agent
 - **North star:** **AIとの会話を、途中状態・承認・来歴・検証を保持できる持続的な仕事へ変える**
 
@@ -74,7 +74,7 @@ PR descriptionとChat historyはRoadmap authorityではない。
 | Turn authority | **Planned** | `src/application/chat/chatTurnStoreActions.ts`はactive Session／scope／anchor driftをabort条件として扱う。 |
 | Durable AgentRun | **Planned** | Background AgentのCanonicalなdurable Run／Interaction authorityは未実装。 |
 | Session status UI | **Planned** | Session cardとscope selectorにはbackground run／question／unread statusがない。 |
-| SessionTasks | **Blocked** | 2026-11-26にDecision Gate Aを前提から外した（DR-ST-6）。Write-Safety RoadmapのGate A（A1・A2）、Release AのA3、Mastra移行のMP-6・MP-9の後に着手する。 |
+| SessionTasks | **Blocked** | 2026-11-26にDecision Gate Aを前提から外した（DR-ST-6）。Write-Safety RoadmapのGate A（A1・A2）、Release AのA3、Mastra移行のMP-6・MP-9と[再入の実装と実証](#再入の実装と実証)の後に着手する。 |
 | Agent Workspace | **Gate BでBlocked** | Background Agent／SessionTasksの利用知見前にcontractを固定しない。 |
 | Deterministic Semantic CI | **Workspace merge receiptとSemantic Core readinessでBlocked** | 既存Narrative Run／Freshness authorityを利用し、複製しない。 |
 | Implicit semantic discovery | **Experimental** | annotated corpusでprecision／recallを測定するまで完了へ影響させない。 |
@@ -94,7 +94,9 @@ Release A: Background Agent
   Race / recovery hardening
         ↓
 Decision Gate A: 2026-11-26にRelease Bの前提から外した（DR-ST-6。問いは振り返りの観点として残す）
-Release B: SessionTasks Minimal（前提：Write-Safety Gate A〔A1・A2〕、Release AのA3、Mastra移行のMP-6・MP-9）
+Mastra の再入の実装と実証（承認待ちの出し直しと、生成途中からの再開）
+        ↓
+Release B: SessionTasks Minimal（前提：Write-Safety Gate A〔A1・A2〕、Release AのA3、Mastra移行のMP-6・MP-9と再入の実証）
         ↓
 Decision Gate B: staged mutationと richer reviewへ投資するか
         ↓
@@ -457,7 +459,7 @@ Session-local statusだけで十分なら、従来のfull SessionTasks設計を�
 # Release B — SessionTasks Minimal
 
 **State:** Blocked。前提は[Write-Safety Roadmap](agent-auto-write-safety-roadmap.md)のGate A（A1・A2の承認境界）、Release AのA3（durable interaction。その前提のR1・F0-liteを含む）、
-Mastra移行のMP-6（write toolとcapability）・MP-9（履歴の持ち主と保存の移動）。
+Mastra移行のMP-6（write toolとcapability）・MP-9（履歴の持ち主と保存の移動）と[再入の実装と実証](#再入の実装と実証)。
 Decision Gate Aは待たない（DR-ST-6）。判断の経緯と要件の振り分けは[SessionTasksの判断記録](session-tasks-decisions-2026-11.md)。
 設計の起案（未確認）は[Release Bの設計](release-b-session-tasks-design.md)。実装の担当は起案の後に決める（DR-ST-11）。
 
@@ -509,6 +511,17 @@ Project Task昇格には明示authorityが必要である。
 
 要件ごとの正本と、Mastra移行計画の段は[DR-ST-7](session-tasks-decisions-2026-11.md#dr-st-7-release-b-の要件と-mastra-移行計画の振り分け)。
 測定（承認した範囲、回数の上限の撤廃の後）はMP-6の後に旗Lの製品の経路で行う（DR-ST-8）。
+
+### 再入の実装と実証
+
+Mastra の経路で、承認待ちの出し直しと生成途中からの再開を実装する。両方について同じ入力・設定で中断なしの回と比較し、次の provider 要求の内容と順序が一致し、確定済みの副作用の重複が 0 件であることを完了条件とする。
+
+- **承認待ちの出し直し**では、再起動や時間切れの後に同じ Run の承認を出し直す。新しい承認前の書き込みは 0 件、承認後に同じ回答が再送されても対象への反映は 1 回であることを確かめる。
+- **生成途中からの再開**では、書き込みの確定直前・直後のそれぞれで中断し、最後に保存した段から再開する。次の要求と対象の最終状態の両方を照合する。
+
+まず合成 provider で検証する。実 provider を使う試験は、送信先・送る内容・費用を利用者に確認してから行う。副作用の重複を防げない場合は、その操作と中断位置を特定し、継続の可否を利用者に伺う。
+
+**13a に残る判断。** DR-A3-8 は段ごとの記録を MP-9 に委ね、DR-MP9-9(1) の保存合意は旗 M の turn に限られる。一方、13a は M を待たずに L を開ける計画で、途中再開もその条件に含む。L 単独の turn で両方の合格条件を満たせるかは未確認。L 単独まで保存を広げるか、旗を開く条件を変えるかは、利用者に伺ってから決める。[DR-A3-8](a3-durable-agentrun-decisions.md#dr-a3-8-mastra-の経路)／[DR-MP9-9](mastra-mp9-decisions.md)／[Mastra 移行計画](mastra-migration-plan.md)
 
 ## Decision Gate B — staged mutationへ進むか
 

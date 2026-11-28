@@ -168,6 +168,7 @@
 | 10  | 背景 LLM の route 4 本、embedding、OM 構成 — 実装中（route #1180・#1183、N-API #1187。OM 構成） | main、N-API、registry | M 閉 | revert                  |
 | 11  | lifecycle（closure、quit、削除時の purge）、`T_quit`                          | main、Rust            | M 閉 | revert                  |
 | 12  | 設定・WM の UI・開示・consent                                                 | renderer、IPC、main   | M 閉 | revert                  |
+| 13a の前提 | [再入の実装と実証](agent-collaboration-roadmap.md#再入の実装と実証)（承認待ちの出し直し・生成途中からの再開） | main、Rust | L 開放前 | 実装案で確認 |
 | 13  | **旗を開ける**（13a：L、13b：M）、P11 の確定、公開前の検査                    | 全層                  | 開   | engine 設定             |
 | 14  | legacy 経路の撤去                                                             | -                     | -    | この計画の外            |
 
