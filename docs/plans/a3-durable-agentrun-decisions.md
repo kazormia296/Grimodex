@@ -663,6 +663,7 @@ N-API の owner と lock を Fable（read-only、effort high）が読んだ。me
 - **4c の前に決める**：
   - 切替と窓の close の Stop は、今は途中の行を会話に保存する。DR-A3-2 は「中断の間は行が無い」。どちらにするかを決めて、利用者に見せる。
   - 承認の 30 分で中断した後、画面の loop を誰が止めるか。
+  - Stop は、`begin_finalizing` より前に、承認の signal を abort する（Mastra の担当の指摘。Native では `finalizing` の間も `updateToolCall` が通るため）。記録の部品の呼び手の順序として固定する。
 - **PR 5 の前**：再起動の後は `executionId` との対応が無いので、`runId` から引く口が要る。
 
 ## 4. owner／lifecycle の表（GDX-PRECHECK-001）
