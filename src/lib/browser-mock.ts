@@ -152,6 +152,8 @@ type BrowserPlotBranchTransition = {
 // src/db/schema.contract.test.ts. BrowserMock uses every other canonical
 // CREATE statement so browser editing exercises the same renderer schema.
 const RUST_ONLY_BROWSER_TABLES = new Set([
+  "agent_run_interactions",
+  "agent_runs",
   "fts_meta",
   "codex_fts",
   "codex_fts_en",

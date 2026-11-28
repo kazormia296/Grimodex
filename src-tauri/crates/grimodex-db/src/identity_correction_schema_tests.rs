@@ -267,8 +267,8 @@ fn erm_schema_48_migrates_version_47_and_installs_all_objects() {
 }
 
 #[test]
-fn erm_marker_only_upgrade_from_previous_requires_checkpoint() {
-    let db = current_schema_memory().expect("v47 current schema fixture");
+fn current_schema_marker_only_upgrade_from_previous_requires_checkpoint() {
+    let db = current_schema_memory().expect("current schema fixture");
     let schema_version_before = db
         .with_conn(|conn| {
             Ok(conn.pragma_query_value(None, "schema_version", |row| row.get::<_, i64>(0))?)

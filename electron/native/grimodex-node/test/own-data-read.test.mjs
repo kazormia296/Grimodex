@@ -73,7 +73,9 @@ test("the startup status publishes policy version 3 as closed / read-open / read
       "version",
     ]);
     assert.equal(policy.version, 3);
-    assert.equal(policy.closedTables.length, 38);
+    assert.equal(policy.closedTables.length, 40);
+    assert.ok(policy.closedTables.includes("agent_run_interactions"));
+    assert.ok(policy.closedTables.includes("agent_runs"));
     assert.ok(policy.closedTables.includes("chronicle_date_migration_events"));
     assert.ok(policy.closedTables.includes("identity_correction_rule_revisions"));
     assert.ok(policy.closedTables.includes("mastra_memory_vector_indexes"));

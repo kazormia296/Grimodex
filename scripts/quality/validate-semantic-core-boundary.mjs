@@ -76,7 +76,9 @@ const REPO_ROOT = path.resolve(
 // SCHEMA_VERSION 49 fills legacy Chronicle dates, records the repaired IDs in
 // closed Native storage and marks provisional fields through existing field
 // authority. No new semantic interpreter or concern-matrix entry is introduced.
-export const EXPECTED_SCHEMA_VERSION = 49;
+// SCHEMA_VERSION 50 adds two Native-closed AgentRun tables (DR-A3). They do
+// not add a semantic interpreter or a renderer write route.
+export const EXPECTED_SCHEMA_VERSION = 50;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,
