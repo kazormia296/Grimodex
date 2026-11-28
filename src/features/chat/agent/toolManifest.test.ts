@@ -18,9 +18,10 @@ const golden = {
   mutate: [
     "create_codex_entry", "update_codex_entry", "create_foreshadow",
     "update_foreshadow", "create_snippet", "apply_ai_tree_plan",
-    "propose_scene_body", "create_event", "update_event", "stamp_scene_event",
+    "create_event", "update_event", "stamp_scene_event",
     "unstamp_scene_event", "set_event_participants", "add_event_relation",
   ],
+  stage: ["propose_scene_body"],
   destructive: ["delete_event", "remove_event_relation"],
   ui: ["run_app_command", "apply_layout_preset", "propose_setting_change"],
 } as const;
@@ -36,12 +37,13 @@ describe("agent tool manifest safety metadata", () => {
       ).toEqual([...names].sort());
     }
     expect(
-      AGENT_TOOL_MANIFEST.filter((tool) => tool.effect === "read" || tool.effect === "ui")
-        .every((tool) => tool.approvalMode === "none"),
+      AGENT_TOOL_MANIFEST.filter((tool) =>
+        ["read", "stage", "ui"].includes(tool.effect),
+      ).every((tool) => tool.approvalMode === "none"),
     ).toBe(true);
     expect(
       AGENT_TOOL_MANIFEST.filter((tool) => tool.effect === "mutate")
-        .every((tool) => tool.approvalMode === "each"),
+        .every((tool) => tool.approvalMode === "task-scope"),
     ).toBe(true);
     expect(
       AGENT_TOOL_MANIFEST.filter((tool) => tool.effect === "destructive")
@@ -49,21 +51,41 @@ describe("agent tool manifest safety metadata", () => {
     ).toBe(true);
   });
 
-  it("rejects missing or incompatible classification metadata", () => {
-    const invalid = [
-      { name: "missing", capability: "write", effect: "mutate" },
-      {
-        name: "wrong-mode",
-        capability: "write",
-        effect: "mutate",
-        approvalMode: "none",
-      },
-    ] as unknown as Parameters<typeof validateAgentToolManifest>[0];
-    expect(() => validateAgentToolManifest([invalid[0]!])).toThrow(
-      /classification/,
-    );
-    expect(() => validateAgentToolManifest([invalid[1]!])).toThrow(
-      /approvalMode/,
-    );
+  it("rejects unknown values and incompatible classification metadata", () => {
+    const entry = (values: Record<string, unknown>) => ({
+      name: "custom_tool",
+      capability: "write",
+      effect: "mutate",
+      approvalMode: "task-scope",
+      requiredPolicy: "chat",
+      allowedChannels: ["agent"],
+      requiresUserConfirmation: false,
+      ...values,
+    }) as unknown as Parameters<typeof validateAgentToolManifest>[0][number];
+
+    expect(() =>
+      validateAgentToolManifest([
+        { name: "missing", capability: "write", effect: "mutate" } as unknown as Parameters<
+          typeof validateAgentToolManifest
+        >[0][number],
+      ]),
+    ).toThrow(/classification/);
+    for (const invalid of [
+      entry({ effect: "unknown" }),
+      entry({ approvalMode: "each" }),
+      entry({ approvalMode: "none" }),
+      entry({ effect: "stage", approvalMode: "always" }),
+      entry({ effect: "read", capability: "write", approvalMode: "none" }),
+    ]) {
+      expect(() => validateAgentToolManifest([invalid])).toThrow();
+    }
+    expect(() =>
+      validateAgentToolManifest([entry({ effect: "ui", approvalMode: "none" })]),
+    ).toThrow(/ui effect is not allowed/);
+    expect(() =>
+      validateAgentToolManifest([
+        entry({ effect: "ui", approvalMode: "none", name: "run_app_command" }),
+      ]),
+    ).not.toThrow();
   });
 });

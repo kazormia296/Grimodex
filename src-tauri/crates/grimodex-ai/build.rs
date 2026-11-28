@@ -25,6 +25,7 @@ struct Tool {
 #[serde(rename_all = "snake_case")]
 enum Effect {
     Read,
+    Stage,
     Ui,
     Mutate,
     Destructive,
@@ -34,7 +35,7 @@ enum Effect {
 #[serde(rename_all = "kebab-case")]
 enum ApprovalMode {
     None,
-    Each,
+    TaskScope,
     Always,
 }
 
@@ -71,8 +72,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             return Err(format!("invalid capability for {}", tool.name).into());
         }
         let expected_approval = match tool.effect {
-            Effect::Read | Effect::Ui => ApprovalMode::None,
-            Effect::Mutate => ApprovalMode::Each,
+            Effect::Read | Effect::Stage | Effect::Ui => ApprovalMode::None,
+            Effect::Mutate => ApprovalMode::TaskScope,
             Effect::Destructive => ApprovalMode::Always,
         };
         if tool.approval_mode != expected_approval {
@@ -86,6 +87,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             || (tool.effect == Effect::Destructive) != (tool.capability == "destructive")
         {
             return Err(format!("effect and capability disagree for {}", tool.name).into());
+        }
+        if tool.effect == Effect::Ui
+            && !matches!(
+                tool.name.as_str(),
+                "run_app_command" | "apply_layout_preset" | "propose_setting_change"
+            )
+        {
+            return Err(format!("ui effect is not allowed for {}", tool.name).into());
         }
         if tool.capability == "read" && tool.required_policy.is_some() {
             return Err(format!("read tool {} must not require a policy", tool.name).into());

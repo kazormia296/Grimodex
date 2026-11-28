@@ -1,10 +1,21 @@
 import manifest from "../../../../agent-tool-manifest.json";
 
 export type ToolCapability = "read" | "write" | "destructive";
-export type ToolEffect = "read" | "ui" | "mutate" | "destructive";
-export type ToolApprovalMode = "none" | "each" | "always";
-const TOOL_EFFECTS: readonly string[] = ["read", "ui", "mutate", "destructive"];
-const TOOL_APPROVAL_MODES: readonly string[] = ["none", "each", "always"];
+export type ToolEffect = "read" | "stage" | "mutate" | "destructive" | "ui";
+export type ToolApprovalMode = "none" | "task-scope" | "always";
+const TOOL_EFFECTS: readonly string[] = [
+  "read",
+  "stage",
+  "mutate",
+  "destructive",
+  "ui",
+];
+const TOOL_APPROVAL_MODES: readonly string[] = ["none", "task-scope", "always"];
+const UI_TOOL_NAMES = new Set([
+  "run_app_command",
+  "apply_layout_preset",
+  "propose_setting_change",
+]);
 
 export interface AgentToolManifestEntry {
   name: string;
@@ -28,7 +39,7 @@ export function validateAgentToolManifest(
     }
     const expectedApprovalMode =
       tool.effect === "mutate"
-        ? "each"
+        ? "task-scope"
         : tool.effect === "destructive"
           ? "always"
           : "none";
@@ -43,6 +54,9 @@ export function validateAgentToolManifest(
         (tool.capability === "destructive")
     ) {
       throw new Error(`effect and capability disagree for ${tool.name}`);
+    }
+    if (tool.effect === "ui" && !UI_TOOL_NAMES.has(tool.name)) {
+      throw new Error(`ui effect is not allowed for ${tool.name}`);
     }
   }
 }
