@@ -1,6 +1,6 @@
 # SessionTasks（Release B）の判断記録（2026-11）
 
-- 作成：2026-11-26。基点：`origin/master` `1306198db`。追記：2026-11-28（§9）。
+- 作成：2026-11-26。基点：`origin/master` `1306198db`。追記：2026-11-28（§9、DR-ST-11）。
 - 対象：[Agent Collaboration Roadmap](agent-collaboration-roadmap.md) の Release B（SessionTasks Minimal）と Decision Gate A、[Mastra 移行計画](mastra-migration-plan.md) の MP-6・MP-9 との接続。
 - 前提の正本：[ADR 007](../adr/007-agent-collaboration-execution-boundary.md)、[ADR 008](../adr/008-agent-default-mode-and-write-approval.md)、[ADR 012](../adr/012-work-focus-chat-and-context-boundary.md)、[Agent Auto／Write-Safety Roadmap](agent-auto-write-safety-roadmap.md)、[MP-4 の判断記録](mastra-mp4-decisions.md) の DR-MP4-57、[MP-5 の判断記録](mastra-mp5-decisions.md) の DR-MP5-7・DR-MP5-11。
 - DR-ST-3・DR-ST-6 は ADR 007 と ADR 012 の記述と、DR-ST-9 は ADR 012 の記述と衝突するので、同じ PR で両 ADR に 2026-11-26 の追補を足した（利用者の回答「追補を足す (推奨)」）。それ以外は ADR を変えない。ADR と衝突する場合は ADR（追補を含む）が優先する。
@@ -92,6 +92,22 @@
 - 問 8「SessionTasks の試験」は「Release B の機能まるごと」（書き換えの承認、連続実行、再起動をまたぐ確認待ち、続行の引き継ぎまで）。DR-ST-6 の前提 4 つ（Write-Safety の Gate A、Release A の A3、MP-6、MP-9）は全部要る。
 - 問 9 Write-Safety の Gate A（A1・A2）は Release B の前提として確定した（「前提にする、担当は Mastra (Recommended)」）。担当は Mastra 移行の lane で、MP-6 の後に続けて持つ。authority の変更なので、設計ができたら利用者に伺う。（2026-11-28 追記：設計は確認済み。§9）
 - 問 10 Release A の A3（R1・F0-lite を含む）は「新しい lane で実装まで」。保存の範囲の拡大と DR-MP5-11 の変更は、その lane が起案の段で利用者に伺う（委任の外）。（2026-11-28 追記：確認済み。§9）
+
+### DR-ST-11 Release B 本体の担当と到達点（2026-11-28）
+
+利用者の回答（統合者の構造化質問、2026-11-28。記録は `claude/nir1-contracts` の commit `01bd9860c` の問 27。問いと選んだ選択肢は原文）：
+
+- 問い「Release B の本体（Task の表と状態、手順と進み具合を AI が書く tool、Task Grant、画面）は担当がいません。前提の 4 つの実装と並行して、どう始めますか？」
+  - 回答：「SessionTasks が設計の起案まで (Recommended)」：今から文書だけを並行で作り、実装の担当は起案の後に決める。build や cargo の順番は使わない。A3 と Gate A に依存する所は仮置き。
+- 問い「「Release B の機能まるごと」の到達点はどこにしますか？前提の 4 つは決めていただいたとおり変えません。記憶と agent loop の旗は、今は閉じたままです。」
+  - 回答：「旗を開けて製品で使える所まで」：開示・同意・保持の確認と、削除時の消去などの段が道に加わり、その分長くなる。
+
+決まったこと：
+
+- Release B の本体は、この判断の担当が設計の起案までを持つ（文書だけ）。実装の担当は起案の後に決める。起案は [Release B の設計](release-b-session-tasks-design.md)。
+- 到達点は「旗を開けて製品で使える所まで」。前提の 4 つ（DR-ST-6・DR-ST-10）は変えない。
+- **統合者の読み（利用者の言葉ではない）**：到達点は目標であって、旗を開ける許可ではない。送信の形、開示・同意・保持、削除のときの消去、公開は個別に確認する。
+- 同じ回の別の問いで、前提の側も決まった：書き込みの承認（A2）の完了に要る Write-Safety Roadmap の A4（AI の利用方針の parse の fail-closed 化）は「Mastra が A2 の前に持つ (Recommended)」。Gate A の判断記録が Gate A の範囲に含めない A4 に、担当が付いた形。
 
 ### DR-ST-9 作者が書く目的と条件の欄は作らない
 
