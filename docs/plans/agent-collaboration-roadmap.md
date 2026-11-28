@@ -459,6 +459,7 @@ Session-local statusだけで十分なら、従来のfull SessionTasks設計を�
 **State:** Blocked。前提は[Write-Safety Roadmap](agent-auto-write-safety-roadmap.md)のGate A（A1・A2の承認境界）、Release AのA3（durable interaction。その前提のR1・F0-liteを含む）、
 Mastra移行のMP-6（write toolとcapability）・MP-9（履歴の持ち主と保存の移動）。
 Decision Gate Aは待たない（DR-ST-6）。判断の経緯と要件の振り分けは[SessionTasksの判断記録](session-tasks-decisions-2026-11.md)。
+設計の起案（未確認）は[Release Bの設計](release-b-session-tasks-design.md)。実装の担当は起案の後に決める（DR-ST-11）。
 
 ## Product promise
 
