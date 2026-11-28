@@ -24,6 +24,32 @@
 - 承認待ちの期限（A16 の 5 分。既存の `AGENT_AUTHORITY_CAPABILITY_TTL_MS` を共有）が切れたときは、A3 と同じく、記録を承認待ちのまま残し、Run を中断（`approval_timeout`）にして、後から「続ける」で承認できる形にする（問 23「両方を同じ記録に揃える」「年表の承認待ちも再起動の後に続けられる」の読み。起案者の読み）。**変えないもの**：承認してから使えなくなるまでの 60 秒（A7）、1 回の応答で 5 件・1 つの窓で同時に 16 件（A14）。どちらも確認 133 (3) でユーザーが選んだ値で、この改訂では動かさない。
 - 帰結：AWA/1 の main の PR（PR 4）と画面の PR（PR 5）は、A3 の記録（`agent_run_interactions`）が master に入ることに依存する。A3 の担当は、AWA/1 の実装に触る前にこちらへ連絡すると言っている。
 
+## DR-AWA-3　起案の後に確定した A2・A3 との関係（2026-11-29）
+
+AWA/1 の起案（確認 141・142）の後に、次が確定した。起案の本文は書き換えない。問 29・36・43 の記録は contracts の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-26-integrator-s11-leftovers.md`。
+
+- A2 の判断記録 [gate-a2-approval-decisions.md](../gate-a2-approval-decisions.md)（利用者の回答、contracts の問 36）。
+- 提案した時点の対象の版を承認の要求と一緒に保存する（利用者の回答、問 29。「対象の種類・ID・版（版が無ければ内容の照合値）だけ」「本文は保存しません」「出し直すときに提案の後の変更があれば、承認画面を出さず AI に知らせて提案し直させます」）。
+- 出来事の削除の承認では、参加者・場面との結び付き・関係の変化も照らす（利用者の回答、問 43。A2 の delete_event）。
+
+### 記録の形（技術判断）
+
+- A3 の記録の `target_basis` には、対象の出来事を `sourceKind=event`（A2 の DR-A2-11 の語）、`sourceId`＝出来事の id、`version`＝出来事の版で載せる。本文は載せない。port の型は 1 件につき版か内容の照合値のどちらか一方なので（`electron/shared/agentRunTypes.ts` の `AnalysisReadBasisEntryV1`）、A4 の指紋は `target_basis` の版と別の束縛として扱う。
+- A7 の「承認してから 60 秒」は、A2 の DR-A2-9 と同じ。
+- A2 の交換の service（#1232、`electron/main/agentApprovalExchange.ts`）と A3 の port が master にある。AWA/1 の main の PR は、二つ目の承認の仕組みを作らず、これに合わせる。
+
+### 経路の限定
+
+「再起動の後も承認待ちのカードを出し直して続けられる」（DR-AWA-2）は、経路を限っていなかった。Mastra の経路の Run は当面 `resumable=false` で、再起動の後の出し直しは legacy の経路だけである（A2 の判断記録の第 4 節、問 22・23 への注）。
+
+### 未決（AWA/1 の PR 4 の前に決める）
+
+1. **Stop・切り替えの扱い。** AWA/1（A16）は、Stop を `reject`、作品・workspace の切り替えを `superseded` にする。A2（DR-A2-7）は、Stop で pending を `cancelled` にし、切り替え・quit・時間切れは Run を `interrupted` にして pending を残す。
+2. **承認待ちの期限。** AWA/1 は応答から 5 分（A16。DR-AWA-2 は、切れた後も pending を残すと定めた）。A2 は 30 分。
+   - 1・2 をどちらに寄せるかは、利用者に伺う（寄せるなら、確認済みの起案の改訂になる）。伺う役は年表（統合の割り当て、2026-11-29）。回答まで、AWA/1 の記録はこのままにする。
+3. **版が上がらない変化の扱い。** 出し直しのときの「提案の後の変更」（問 29）を、A4 の指紋が覆う参加者・場面との結び付き・関係についてどう見つけるか。削除で `/relations` が変わる他の出来事を `target_basis` に載せるか。A2・A3 に合わせる PR で決める。
+4. 「AWA/1 を A2 の交換と A3 の記録に合わせる PR」は、年表の持ち分（統合の割り当て、2026-11-29）。着手は 1・2 の回答の後。A2 の交換や port の型を変える前に、統合に知らせる。
+
 ## 信頼境界
 
 この PR は文書と方針の JSON だけで、製品の挙動を変えない。承認の仕組みの実装（Native の probe、main の承認の状態、renderer のカード）は PR 2〜6、AI の削除を開ける旗（O1）は PR 7（SRD/1 の X の後）。
