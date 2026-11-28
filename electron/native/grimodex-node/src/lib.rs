@@ -13819,6 +13819,42 @@ impl Backend {
         .await
     }
 
+    /// Filter caller-supplied Codex IDs through current, human-approved typed
+    /// Entity/Relation Revisions in the workspace pinned by Main.
+    #[napi]
+    pub async fn nir1_entity_relation_approved_codex_filter(
+        &self,
+        payload: serde_json::Value,
+        caller_identity: Option<String>,
+    ) -> Result<String> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Request {
+            expected_workspace_path: String,
+            project_id: String,
+            codex_entry_ids: Vec<String>,
+        }
+
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let guard = admit_publication_entry(&state, caller_identity)?;
+            let request: Request = from_wire("payload", payload)?;
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
+            let response = workspace.authority.db().with_read_transaction(|conn| {
+                narrative_extraction::read_nir1_entity_relation_approved_codex_filter(
+                    conn,
+                    &request.project_id,
+                    &request.codex_entry_ids,
+                )
+            })?;
+            let wire = serde_json::to_string(&response).map_err(anyhow::Error::from)?;
+            finish_publication_entry(&state, &guard)?;
+            Ok(wire)
+        })
+        .await
+    }
+
     /// Read the project-scoped typed change review without changing stored state.
     #[napi]
     pub async fn nir1_change_review_read(
@@ -14892,6 +14928,79 @@ impl Backend {
         run_blocking(move || {
             with_db_state(&state.ws, |db| {
                 let rows = plot_threads::list_links(db, project_id)?;
+                Ok(serde_json::to_string(&rows)?)
+            })
+        })
+        .await
+    }
+
+    // ───────────────── identity correction rule revisions (ADR 015) ───────
+
+    #[napi]
+    pub async fn identity_correction_rule_create(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            |db, payload: grimodex_db::identity_correction::RuleRevisionPayload, context| {
+                grimodex_db::identity_correction::create_rule_revision(db, payload, context)
+            },
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn identity_correction_rule_supersede(
+        &self,
+        previous_revision_id: String,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            move |db, payload: grimodex_db::identity_correction::RuleRevisionPayload, context| {
+                grimodex_db::identity_correction::supersede_rule_revision(
+                    db,
+                    &previous_revision_id,
+                    payload,
+                    context,
+                )
+            },
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn identity_correction_rule_retire(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            |db, payload: grimodex_db::identity_correction::RetireRuleRevisionPayload, context| {
+                grimodex_db::identity_correction::retire_rule_revision(db, payload, context)
+            },
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn identity_correction_rules_list(&self, project_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let rows = db.with_conn(|conn| {
+                    grimodex_db::identity_correction::list_current_rule_revisions(
+                        conn,
+                        &project_id,
+                    )
+                })?;
                 Ok(serde_json::to_string(&rows)?)
             })
         })

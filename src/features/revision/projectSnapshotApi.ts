@@ -62,7 +62,12 @@ export interface RestoreResult {
 export async function previewProjectSnapshotRestoreLoss(
   snapshotId: string,
   scopes: ReadonlySet<RestoreScope>,
-): Promise<{ structural: boolean; lossNotices: RestoreLossNotice[] }> {
+): Promise<{
+  structural: boolean;
+  lossNotices: RestoreLossNotice[];
+  /** `null` when Native did not say (an older build). */
+  approvalLossCount: number | null;
+}> {
   const context = await loadNativeProjectSnapshotRestoreContext(
     getCurrentProjectId(),
     snapshotId,
@@ -71,6 +76,10 @@ export async function previewProjectSnapshotRestoreLoss(
   return {
     structural: context.structural,
     lossNotices: context.lossNotices ?? [],
+    approvalLossCount:
+      typeof context.approvalLossCount === "number"
+        ? context.approvalLossCount
+        : null,
   };
 }
 

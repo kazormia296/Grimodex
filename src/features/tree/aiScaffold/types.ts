@@ -96,6 +96,7 @@ export interface ApplyResult {
   createdIds: string[];
   movedIds: string[];
   renamedIds: string[];
+  undoId: string;
 }
 
 // ── validate の健全性上限 (Codex Medium-4) ──────────────────────────

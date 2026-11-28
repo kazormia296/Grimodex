@@ -24,7 +24,8 @@ use crate::narrative_extraction::change_feed::{
 };
 use crate::narrative_extraction::rotate_epoch_for_restore_in_tx;
 use crate::narrative_extraction::{
-    append_event_existence_decisions_in_tx, EventExistenceChange, RemovedVia,
+    append_event_existence_decisions_in_tx, count_removed_event_proposals, EventExistenceChange,
+    RemovedVia,
 };
 
 mod restore_links;
@@ -303,6 +304,7 @@ pub struct ProjectSnapshotRestoreContext {
     /// of the other scopes and snapshot rows whose parent is gone), counted
     /// before anything is written (DR-SRX-10, DR-SRX-26).
     pub loss_notices: Vec<LossNotice>,
+    pub approval_loss_count: usize,
 }
 
 struct AuxSpec {
@@ -1198,6 +1200,17 @@ fn live_id_set(conn: &Connection, sql: &str, project_id: &str) -> anyhow::Result
             .into_iter()
             .collect(),
     )
+}
+
+fn removed_event_ids<'a>(
+    before: impl IntoIterator<Item = &'a String>,
+    after: &HashSet<String>,
+) -> Vec<String> {
+    before
+        .into_iter()
+        .filter(|id| !after.contains(*id))
+        .cloned()
+        .collect()
 }
 
 fn record_restore_loss(dropped: &mut BTreeMap<&'static str, i64>, kind: &'static str) {
@@ -2652,6 +2665,7 @@ pub fn project_snapshot_restore_context(
             "SELECT id FROM codex_tags WHERE project_id = ?1",
             &project_param,
         )?;
+        let mut approval_loss_count = 0;
         let loss_notices = if structural && !requested_scopes.is_empty() {
             let CanonicalRestorePlan { inserts, dropped } = build_canonical_restore_plan(
                 conn,
@@ -2666,6 +2680,18 @@ pub fn project_snapshot_restore_context(
                 inserts,
             )?;
             let shape = restore_links::shape(conn, &project_id, &snapshot_id, &requested_scopes)?;
+            if requested_scopes.contains(&RestoreScope::Body) && shape.events_aux {
+                let snapshot_ids = plan
+                    .iter()
+                    .filter(|insert| insert.table == SnapshotRestoreTable::Events)
+                    .map(|insert| {
+                        nullable_row_id(&insert.row, "id", "events")?
+                            .ok_or_else(|| anyhow::anyhow!("project snapshot event has no id"))
+                    })
+                    .collect::<anyhow::Result<HashSet<_>>>()?;
+                let removed = removed_event_ids(&live_event_ids, &snapshot_ids);
+                approval_loss_count = count_removed_event_proposals(conn, &project_id, &removed)?;
+            }
             // 確認 146 の規則と、手書き filter の件数を同じ経路で集計する。
             let resolved =
                 restore_missing_parents::resolve_with_dropped(conn, &shape, plan, dropped)?;
@@ -2688,6 +2714,7 @@ pub fn project_snapshot_restore_context(
             live_event_ids,
             live_codex_tag_ids,
             loss_notices,
+            approval_loss_count,
         })
     })
 }
@@ -3201,7 +3228,7 @@ pub fn apply_project_snapshot_restore(
                 "SELECT id FROM events WHERE project_id = ?1",
                 &payload.project_id,
             )?;
-            let removed = before.difference(&after).cloned().collect::<Vec<_>>();
+            let removed = removed_event_ids(&before, &after);
             append_event_existence_decisions_in_tx(
                 &transaction,
                 &payload.project_id,

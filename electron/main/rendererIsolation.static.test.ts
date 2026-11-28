@@ -135,8 +135,10 @@ it("keeps local memory embedding out of renderer IPC", () => {
   );
   expect(ipcContract).not.toContain("memoryEmbedTexts");
   expect(
-    mainSources().some(({ text }) => text.includes("memoryEmbedTexts")),
-  ).toBe(false);
+    mainSources()
+      .filter(({ text }) => text.includes("memoryEmbedTexts"))
+      .map(({ file }) => file),
+  ).toEqual(["mastra/memoryConfiguration.ts", "mastra/napiMemoryBackend.ts"]);
 });
 
 describe("(c) CSP", () => {

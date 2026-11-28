@@ -1627,3 +1627,18 @@ fn x15_feed_writer_scan_detects_unlisted_callers() {
     assert_eq!(callers.get("new_writer.rs"), Some(&1));
     assert_eq!(callers.get("narrative_extraction/mod.rs"), Some(&1));
 }
+
+#[test]
+fn renderer_authority_context_bypass_is_scoped_to_identity_correction() {
+    let callers: BTreeSet<String> = production_files()
+        .into_iter()
+        .filter(|(_, source)| {
+            production_source(source).contains("without_renderer_authority_context(")
+        })
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(
+        callers,
+        BTreeSet::from(["identity_correction.rs".to_owned()])
+    );
+}

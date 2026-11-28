@@ -94,6 +94,12 @@ export interface ProjectSnapshotRestoreContext {
    * anything is written. Absent from an older Native build's response.
    */
   lossNotices?: RestoreLossNotice[];
+  /**
+   * SRD/1 RD6: how many imported proposals the restore would take the
+   * approval off (the events they made are not in the snapshot). Counted by
+   * the same rule as the restore itself. Absent from an older Native build.
+   */
+  approvalLossCount?: number;
 }
 
 export interface ProjectSnapshotApplyRestoreResult {

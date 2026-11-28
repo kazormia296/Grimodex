@@ -399,6 +399,7 @@ export function assertOutputClean(output, scenesTexts) {
  */
 export const EXTERNAL_COMMANDS = Object.freeze([
   "narrative_extraction_claim_task",
+  "nir1_entity_relation_approved_codex_filter",
   "nir1_pack_context",
   // master の取り込み（2026-11-23）で DENIED_COMMANDS に増えたもの（chat の IR）。
   // Mastra の agent turn（mastra_agent_*）は ipcContract に無いので、下の AI_COMMAND の形で拾う。

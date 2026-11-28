@@ -291,6 +291,27 @@ describe("registerIpcRouter fail-soft logging", () => {
     expect(routeOf("migration")).toBe("");
   });
 
+  it.each([
+    "identity_correction_rule_create",
+    "identity_correction_rule_supersede",
+    "identity_correction_rule_retire",
+  ] as const)("binds %s to human-direct and rejects agent origin", (command) => {
+    const bind = (origin: string) =>
+      bindRendererAuthorityForIpc(command, {
+        payload: {
+          origin,
+          authorityRoute: "interactive-agent-command",
+        },
+      });
+
+    expect(
+      (bind("human").payload as { authorityRoute?: string }).authorityRoute,
+    ).toBe("human-direct");
+    expect(
+      (bind("ai-apply").payload as { authorityRoute?: string }).authorityRoute,
+    ).toBe("");
+  });
+
   it("binds strict renderer authority from the main-owned command policy", () => {
     const bound = bindRendererAuthorityForIpc("tree_node_create", {
       payload: {
@@ -912,6 +933,27 @@ describe("registerIpcRouter fail-soft logging", () => {
     expect(
       consumeAgentAuthorityCapability("agent_foreshadow_create", payload, 713),
     ).not.toBeNull();
+  });
+
+  it("rejects a changed propose_scene_body capability input", async () => {
+    const grant = await issueAgentCapability(
+      "propose_scene_body",
+      { sceneId: "scene-1", text: "from the model", mode: "append" },
+      714,
+    );
+    const bound = bindRendererAuthorityForIpc(
+      "agent_propose_scene_body",
+      {
+        payload: agentCapabilityPayload(grant, {
+          sceneId: "scene-1",
+          proposedContent: "changed after issue",
+          mode: "append",
+          sourceSurface: "in-app-agent",
+        }),
+      },
+      714,
+    ).payload;
+    expect(bound).toMatchObject({ authorityRoute: "" });
   });
 
   it("rejects missing and replayed delete_event capabilities", async () => {
