@@ -5,16 +5,19 @@
  *   main.cjs と preload.cjs には入れない（electron/scripts/mastra-ee-check.mjs の `--dist` が検査する）。
  *   main 側からは型の import だけで、実体は `electron/main/mastraAgentLoader.ts` が `require(変数)` で遅延 load する
  *   （旗 L が開いているときだけ）。
- * - この bundle に入れるのは Agent・adapter（`agentLanguageModel`）・方針（`agentModelPolicy`）だけ。audit の sink と Native への
- *   send は main 側（`mastraTurnOwner.ts`）が作って注入する（ipcContract を 3 つ目の bundle に持ち込まない）。
+ * - Agent・model adapter・方針と旗 M 用の memory adapter を含む。audit の sink と Native への send は main 側
+ *   （`mastraTurnOwner.ts`）が作って注入する（ipcContract を 3 つ目の bundle に持ち込まない）。
  *   class を境界越しに `instanceof` で見ない（sink は `isAgentModelError` の形の検査）。
- * - Agent に workspace・skills・memory・mcp・browser を渡さない（DR-MP3-14。静的検査は
+ * - Agent に workspace・skills・mcp・browser を渡さない（DR-MP3-14。静的検査は
  *   electron/main/mastra/mastraWorkspaceDisabled.static.test.ts）。tool は turn の binding だけを渡す。
+ *   memory は旗 M の入力がある turn にだけ Native adapter を付ける。
  * - 再試行しない（`AGENT_NO_RETRY_CONFIG`・`AGENT_CALL_OPTIONS`。GDX-POLICY-001、DR-MP3-16）。tool が無い turn は 1 step、
  *   tool がある turn は loop 上限から導出した step 数で回す。
  * - Mastra の logger は注入する（既定の ConsoleLogger は error を元ごと console に出す）。出すのは固定の文だけ。
  */
 import { Agent } from "@mastra/core/agent";
+import { MastraCompositeStore } from "@mastra/core/storage";
+import { Memory } from "@mastra/memory";
 
 import {
   type AgentSendGuard,
@@ -38,6 +41,12 @@ import type {
   AgentSend,
   AgentWireToolDefinition,
 } from "./agentWire.js";
+import type {
+  NapiMemoryBackendLike,
+  NapiMemoryVectorBackendLike,
+} from "./napiMemoryBackend.js";
+import { NativeMemoryStorage } from "./nativeMemoryStorage.js";
+import { NativeMemoryVector } from "./nativeMemoryVector.js";
 import { MASTRA_AGENT_WRITE_TOOL_NAMES } from "../../shared/mastraWriteToolDefinitions.js";
 
 export type { MastraAgentToolBinding } from "./agentToolAdapter.js";
@@ -104,6 +113,11 @@ export interface MastraAgentTurnInput {
     readonly role: "user" | "assistant";
     readonly content: string;
   }[];
+  /** Omitted while flag M is closed; supplied only by its journey seam. */
+  readonly memory?: {
+    readonly backend: NapiMemoryBackendLike & NapiMemoryVectorBackendLike;
+    readonly projectId: string;
+  };
   /** renderer が解決した route（`AgentRoute` と同形）。 */
   readonly route: AgentRoute;
   readonly systemCacheSegments: readonly string[] | null;
@@ -156,7 +170,7 @@ export interface MastraAgentRuntimeOptions {
 
 export interface MastraAgentRuntime {
   /**
-   * 1 turn を回す。tool 0・memory 無しの Agent を作り、adapter の model で `generate` を 1 回（step 1）呼ぶ。
+   * 1 turn を回す。旗 M の入力がなければ memory 無しの Agent を作り、adapter の model で `generate` を 1 回呼ぶ。
    * 応答の本体は呼び手が audit の complete で受ける（生の `AgentWireResponse`。Mastra の text は使わない）。
    */
   runTurn(input: MastraAgentTurnInput): Promise<void>;
@@ -204,14 +218,32 @@ function createMastraLogger(sink: MastraAgentLogSink): MastraLogger {
   } as unknown as MastraLogger;
 }
 
-/** M4 turn tools・memory 無しの Agent を 1 つ作る。workspace・skills・memory・mcp・browser は渡さない。 */
+/** M4 turn tools の Agent を作る。workspace・skills・mcp・browser は渡さない。 */
 function createAgent(
   model: ConstructorParameters<typeof Agent>[0]["model"],
   instructions: string,
   logger: MastraLogger,
   tools?: ReturnType<typeof createMastraAgentTools>,
-): Agent {
-  const agent = new Agent({
+  memoryInput?: MastraAgentTurnInput["memory"],
+) {
+  const memory = memoryInput
+    ? new Memory({
+        storage: new MastraCompositeStore({
+          id: `grimodex-memory:${memoryInput.projectId}`,
+          domains: {
+            memory: new NativeMemoryStorage(
+              memoryInput.backend,
+              memoryInput.projectId,
+            ),
+          },
+        }),
+        vector: new NativeMemoryVector(
+          memoryInput.backend,
+          memoryInput.projectId,
+        ),
+      })
+    : undefined;
+  const config: ConstructorParameters<typeof Agent>[0] = {
     id: "grimodex-main-agent",
     name: "grimodex-main-agent",
     instructions,
@@ -220,7 +252,9 @@ function createAgent(
     maxProcessorRetries: AGENT_NO_RETRY_CONFIG.maxProcessorRetries,
     errorProcessorDefaults: AGENT_NO_RETRY_CONFIG.errorProcessorDefaults,
     tools: tools ?? {},
-  });
+  };
+  if (memory) config.memory = memory;
+  const agent = new Agent(config);
   agent.__setLogger(logger);
   return agent;
 }
@@ -297,7 +331,13 @@ export function createMastraAgentRuntime(
         assertSendAllowed: input.assertSendAllowed,
         observeResponse: input.observeResponse,
       });
-      const agent = createAgent(model, input.instructions, logger, tools);
+      const agent = createAgent(
+        model,
+        input.instructions,
+        logger,
+        tools,
+        input.memory,
+      );
       assertAgentToolsAllowed(Object.keys(await agent.listTools()));
       await agent.generate(
         input.messages.map(
