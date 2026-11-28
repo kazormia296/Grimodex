@@ -27,6 +27,7 @@ import { useInlineAiDiff } from "./useInlineAiDiff";
 import { useInlineAiStore } from "./inlineAiStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useProjectStore } from "@/features/project/projectStore";
+import { seedWritableProject } from "@/test-utils/writableProject";
 
 const createdEditors: Editor[] = [];
 const hookUnmounts: Array<() => void> = [];
@@ -70,9 +71,9 @@ describe("useInlineAiDiff", () => {
     vi.clearAllMocks();
     useInlineAiStore.getState().reset();
     useTreeStore.setState({ activeSceneId: "scene-1", projectId: "project-1" });
-    // policy 既定はクリア（projects 空 → fail-open=full）。bodyWrite ガードを
-    // 素通りさせ、既存テストの generate を従来どおり走らせる。
+    // 作品はいったん空にし、末尾で全部許可の作品を置き直す。
     useProjectStore.setState({ currentProjectId: null, projects: [] });
+    seedWritableProject();
   });
 
   afterEach(() => {

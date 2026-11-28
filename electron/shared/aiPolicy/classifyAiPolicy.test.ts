@@ -8,6 +8,7 @@ describe("classifyAiPolicy", () => {
     for (const { label, raw, state, expected } of vector) {
       expect(classifyAiPolicy(raw), label).toEqual({
         state,
+        preset: state === "valid" ? JSON.parse(raw as string).preset : "custom",
         toggles: expected,
       });
     }

@@ -1,11 +1,12 @@
 // @vitest-environment happy-dom
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
 import { useAnnotationStore } from "./annotationStore";
 import { applyTypoFixAndResolve } from "./typoFix";
 import type { PostEffectAnnotation } from "./types";
+import { seedWritableProject } from "@/test-utils/writableProject";
 
 vi.mock("./api", () => ({
   updateAnnotationStatus: vi.fn().mockResolvedValue(undefined),
@@ -70,6 +71,10 @@ afterEach(() => {
 });
 
 describe("applyTypoFixAndResolve", () => {
+  beforeEach(() => {
+    seedWritableProject();
+  });
+
   it("replaces text and marks annotation as resolved", async () => {
     const editor = makeEditor("シュミレーションを実行");
     useAnnotationStore

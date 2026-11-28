@@ -3,6 +3,7 @@ import { db } from "@/db/client";
 import { proseStaging } from "@/db/schema";
 import { invoke } from "@/lib/tauri";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { AiPolicyWriteBlockedError } from "@/features/ai-policy/writeBlockedError";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
@@ -88,7 +89,7 @@ export async function agentProposeSceneBody(
   input: AgentProposeSceneBodyInput,
 ): Promise<ProseStageResult> {
   if (blockIfPolicyOff("bodyWrite")) {
-    throw new Error("bodyWrite policy is off");
+    throw new AiPolicyWriteBlockedError("bodyWrite");
   }
 
   assertSceneAllowsProseStaging(input.sceneId);

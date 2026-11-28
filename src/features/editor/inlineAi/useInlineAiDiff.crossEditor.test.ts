@@ -15,6 +15,7 @@ import {
 } from "./useInlineAiDiff";
 import { useInlineAiStore } from "./inlineAiStore";
 import { inlineAiDiffKey } from "./InlineAIDiffPlugin";
+import { seedWritableProject } from "@/test-utils/writableProject";
 
 // リニアモード (1シーン1エディタが同時マウント) / 分割ビュー (2ペイン) は
 // グローバル単一 useInlineAiStore を複数エディタで共有する。useInlineAiDiff は
@@ -81,6 +82,7 @@ describe("useInlineAiDiff: 複数エディタ共有時の owner ゲート", () =
       pendingQueue: [],
       isCapturing: true,
     });
+    seedWritableProject();
   });
   afterEach(() => {
     hookUnmounts.splice(0).forEach((u) => u());

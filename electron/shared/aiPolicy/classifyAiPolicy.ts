@@ -5,6 +5,7 @@
  */
 export type AiPolicyClassification = {
   state: "valid" | "missing" | "invalid";
+  preset: "full" | "assist-off" | "review-only" | "off" | "custom";
   toggles: {
     chat: boolean;
     bodyWrite: boolean;
@@ -15,7 +16,7 @@ export type AiPolicyClassification = {
 };
 
 const PRESET_OPTIONAL_TOGGLES: Record<
-  string,
+  AiPolicyClassification["preset"],
   Pick<AiPolicyClassification["toggles"], "structureWrite" | "knowledgeWrite">
 > = {
   full: { structureWrite: true, knowledgeWrite: true },
@@ -24,6 +25,12 @@ const PRESET_OPTIONAL_TOGGLES: Record<
   off: { structureWrite: false, knowledgeWrite: false },
   custom: { structureWrite: false, knowledgeWrite: false },
 };
+
+function isAiPolicyPreset(
+  value: string,
+): value is AiPolicyClassification["preset"] {
+  return Object.hasOwn(PRESET_OPTIONAL_TOGGLES, value);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -36,6 +43,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function invalidPolicy(chat = true, analysis = true): AiPolicyClassification {
   return {
     state: "invalid",
+    preset: "custom",
     toggles: {
       chat,
       bodyWrite: false,
@@ -50,6 +58,7 @@ export function classifyAiPolicy(raw: unknown): AiPolicyClassification {
   if (raw === null) {
     return {
       state: "missing",
+      preset: "custom",
       toggles: {
         chat: true,
         bodyWrite: true,
@@ -67,7 +76,7 @@ export function classifyAiPolicy(raw: unknown): AiPolicyClassification {
       !isRecord(parsed) ||
       !Object.hasOwn(parsed, "preset") ||
       typeof parsed.preset !== "string" ||
-      !Object.hasOwn(PRESET_OPTIONAL_TOGGLES, parsed.preset)
+      !isAiPolicyPreset(parsed.preset)
     ) {
       return invalidPolicy();
     }
@@ -116,6 +125,7 @@ export function classifyAiPolicy(raw: unknown): AiPolicyClassification {
 
     return {
       state: "valid",
+      preset: parsed.preset,
       toggles: { chat, bodyWrite, analysis, structureWrite, knowledgeWrite },
     };
   } catch {

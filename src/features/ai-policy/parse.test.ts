@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { parseAiPolicy, serializeAiPolicy, isBodyWriteDisabled } from "./parse";
+import {
+  getAiPolicyClassification,
+  parseAiPolicy,
+  serializeAiPolicy,
+  isBodyWriteDisabled,
+} from "./parse";
 import { DEFAULT_AI_POLICY } from "./types";
 import type { AiPolicy } from "./types";
 
@@ -20,37 +25,72 @@ describe("parseAiPolicy", () => {
     expect(parseAiPolicy(raw)).toEqual(VALID);
   });
 
-  it("null → DEFAULT_AI_POLICY", () => {
-    expect(parseAiPolicy(null)).toEqual(DEFAULT_AI_POLICY);
+  it("null is missing and uses the new-project defaults", () => {
+    expect(getAiPolicyClassification(null).state).toBe("missing");
+    expect(parseAiPolicy(null)).toEqual({
+      preset: "custom",
+      toggles: {
+        chat: true,
+        bodyWrite: true,
+        analysis: true,
+        structureWrite: false,
+        knowledgeWrite: false,
+      },
+    });
   });
 
-  it("empty string → DEFAULT_AI_POLICY", () => {
-    expect(parseAiPolicy("")).toEqual(DEFAULT_AI_POLICY);
+  it("empty string is invalid and denies the three write axes", () => {
+    expect(getAiPolicyClassification("").state).toBe("invalid");
+    expect(parseAiPolicy("")).toEqual({
+      preset: "custom",
+      toggles: {
+        chat: true,
+        bodyWrite: false,
+        analysis: true,
+        structureWrite: false,
+        knowledgeWrite: false,
+      },
+    });
   });
 
-  it("non-JSON → DEFAULT_AI_POLICY", () => {
-    expect(parseAiPolicy("not-json")).toEqual(DEFAULT_AI_POLICY);
+  it("non-JSON is invalid and denies the three write axes", () => {
+    expect(parseAiPolicy("not-json").toggles.bodyWrite).toBe(false);
   });
 
-  it("missing toggles → DEFAULT_AI_POLICY", () => {
-    expect(parseAiPolicy('{"preset":"full"}')).toEqual(DEFAULT_AI_POLICY);
+  it("missing toggles is invalid and denies the three write axes", () => {
+    expect(getAiPolicyClassification('{"preset":"full"}').state).toBe(
+      "invalid",
+    );
+    expect(parseAiPolicy('{"preset":"full"}').toggles).toMatchObject({
+      bodyWrite: false,
+      structureWrite: false,
+      knowledgeWrite: false,
+    });
   });
 
-  it("invalid preset value → DEFAULT_AI_POLICY", () => {
-    expect(
-      parseAiPolicy(
-        '{"preset":"unknown","toggles":{"chat":true,"bodyWrite":true,"analysis":true}}',
-      ),
-    ).toEqual(DEFAULT_AI_POLICY);
+  it("invalid preset value is invalid and denies the three write axes", () => {
+    const parsed = parseAiPolicy(
+      '{"preset":"unknown","toggles":{"chat":true,"bodyWrite":true,"analysis":true}}',
+    );
+    expect(parsed.preset).toBe("custom");
+    expect(parsed.toggles).toMatchObject({
+      bodyWrite: false,
+      structureWrite: false,
+      knowledgeWrite: false,
+    });
   });
 
-  it("non-boolean toggle values are coerced", () => {
+  it("invalid required toggle types preserve readable chat/analysis but deny writes", () => {
     const raw =
       '{"preset":"full","toggles":{"chat":1,"bodyWrite":0,"analysis":""}}';
     const result = parseAiPolicy(raw);
+    expect(getAiPolicyClassification(raw).state).toBe("invalid");
+    expect(result.preset).toBe("custom");
     expect(result.toggles.chat).toBe(true);
     expect(result.toggles.bodyWrite).toBe(false);
     expect(result.toggles.analysis).toBe(false);
+    expect(result.toggles.structureWrite).toBe(false);
+    expect(result.toggles.knowledgeWrite).toBe(false);
   });
 });
 
@@ -126,12 +166,13 @@ describe("isBodyWriteDisabled", () => {
     expect(isBodyWriteDisabled(null)).toBe(false);
   });
 
-  it("undefined → false", () => {
-    expect(isBodyWriteDisabled(undefined)).toBe(false);
+  it("undefined is invalid and body write is disabled", () => {
+    expect(getAiPolicyClassification(undefined).state).toBe("invalid");
+    expect(isBodyWriteDisabled(undefined)).toBe(true);
   });
 
-  it("garbage → false (fail-open to DEFAULT_AI_POLICY)", () => {
-    expect(isBodyWriteDisabled("not-json")).toBe(false);
+  it("garbage is invalid and body write is disabled", () => {
+    expect(isBodyWriteDisabled("not-json")).toBe(true);
   });
 });
 

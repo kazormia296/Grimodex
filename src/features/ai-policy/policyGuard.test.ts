@@ -1,19 +1,29 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+const mockRefreshMissingProject = vi.hoisted(() => vi.fn());
+
+vi.mock("./refreshMissingProject", () => ({
+  refreshProjectListOnceIfCurrentMissing: mockRefreshMissingProject,
+}));
+
 vi.mock("@/features/project/projectStore", () => ({
   useProjectStore: { getState: vi.fn() },
   getCurrentProjectId: vi.fn(),
 }));
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
-vi.mock("@/lib/i18n", () => ({ default: { t: (k: string) => k } }));
+vi.mock("@/lib/i18n", () => ({ default: { t: (key: string) => key } }));
 
 import {
   useProjectStore,
   getCurrentProjectId,
 } from "@/features/project/projectStore";
 import { toast } from "sonner";
-import { isAiFeatureBlockedByPolicy, blockIfPolicyOff } from "./policyGuard";
+import {
+  getAiFeatureBlockReason,
+  isAiFeatureBlockedByPolicy,
+  blockIfPolicyOff,
+} from "./policyGuard";
 import { serializeAiPolicy } from "./parse";
 import type { AiPolicy } from "./types";
 
@@ -21,11 +31,9 @@ const mockGetState = vi.mocked(useProjectStore.getState);
 const mockGetCurrentProjectId = vi.mocked(getCurrentProjectId);
 const mockToastError = vi.mocked(toast.error);
 
-function setProjectPolicy(policy: AiPolicy | null) {
+function setProjectRawPolicy(raw: string | null) {
   mockGetCurrentProjectId.mockReturnValue("p1");
-  const projects =
-    policy === null ? [] : [{ id: "p1", aiPolicy: serializeAiPolicy(policy) }];
-  // policyGuard だけが触る形だけ満たせばよい（projects のみ）。
+  const projects = raw === null ? [] : [{ id: "p1", aiPolicy: raw }];
   mockGetState.mockReturnValue({ projects } as never);
 }
 
@@ -43,47 +51,83 @@ function policyOf(toggles: Partial<AiPolicy["toggles"]>): AiPolicy {
   };
 }
 
-describe("isAiFeatureBlockedByPolicy", () => {
-  beforeEach(() => vi.clearAllMocks());
+describe("AI policy block reasons", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setProjectRawPolicy(serializeAiPolicy(policyOf({ bodyWrite: false })));
+  });
 
-  it("returns true when the feature toggle is off", () => {
-    setProjectPolicy(policyOf({ bodyWrite: false }));
+  it("uses policy for an explicitly disabled valid feature", () => {
+    expect(getAiFeatureBlockReason("bodyWrite")).toBe("policy");
     expect(isAiFeatureBlockedByPolicy("bodyWrite")).toBe(true);
   });
 
-  it("returns false when the feature toggle is on", () => {
-    setProjectPolicy(policyOf({ bodyWrite: true }));
-    expect(isAiFeatureBlockedByPolicy("bodyWrite")).toBe(false);
+  it("blocks only write axes when the current Project is unavailable", () => {
+    setProjectRawPolicy(null);
+    for (const feature of [
+      "bodyWrite",
+      "structureWrite",
+      "knowledgeWrite",
+    ] as const) {
+      expect(getAiFeatureBlockReason(feature)).toBe("unavailable");
+    }
+    expect(getAiFeatureBlockReason("chat")).toBeNull();
+    expect(getAiFeatureBlockReason("analysis")).toBeNull();
+    expect(mockRefreshMissingProject).toHaveBeenCalled();
   });
 
-  it("is independent per feature", () => {
-    setProjectPolicy(policyOf({ chat: false, bodyWrite: true }));
-    expect(isAiFeatureBlockedByPolicy("chat")).toBe(true);
-    expect(isAiFeatureBlockedByPolicy("bodyWrite")).toBe(false);
+  it("blocks only write axes for an invalid policy and preserves readable chat/analysis", () => {
+    setProjectRawPolicy("not-json");
+    for (const feature of [
+      "bodyWrite",
+      "structureWrite",
+      "knowledgeWrite",
+    ] as const) {
+      expect(getAiFeatureBlockReason(feature)).toBe("invalid");
+    }
+    expect(getAiFeatureBlockReason("chat")).toBeNull();
+    expect(getAiFeatureBlockReason("analysis")).toBeNull();
   });
 
-  it("fails open (allows) when the project is missing from the cache", () => {
-    // 破損/未ロード時は DEFAULT(full) に倒れる ＝ ブロックしない。
-    setProjectPolicy(null);
-    expect(isAiFeatureBlockedByPolicy("chat")).toBe(false);
-    expect(isAiFeatureBlockedByPolicy("bodyWrite")).toBe(false);
-    expect(isAiFeatureBlockedByPolicy("analysis")).toBe(false);
+  it("uses policy for readable false chat and analysis even in an invalid record", () => {
+    setProjectRawPolicy(
+      '{"preset":"full","toggles":{"chat":false,"bodyWrite":1,"analysis":false}}',
+    );
+    expect(getAiFeatureBlockReason("chat")).toBe("policy");
+    expect(getAiFeatureBlockReason("analysis")).toBe("policy");
+    expect(getAiFeatureBlockReason("bodyWrite")).toBe("invalid");
   });
 });
 
 describe("blockIfPolicyOff", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("returns true and toasts the policy reason when blocked", () => {
-    setProjectPolicy(policyOf({ chat: false }));
+  it("keeps the existing policy toast", () => {
+    setProjectRawPolicy(serializeAiPolicy(policyOf({ chat: false })));
     expect(blockIfPolicyOff("chat")).toBe(true);
     expect(mockToastError).toHaveBeenCalledWith(
       "aiPolicy.disabledReason.policy",
     );
   });
 
-  it("returns false and does not toast when allowed", () => {
-    setProjectPolicy(policyOf({ chat: true }));
+  it("uses the invalid-policy toast", () => {
+    setProjectRawPolicy("not-json");
+    expect(blockIfPolicyOff("bodyWrite")).toBe(true);
+    expect(mockToastError).toHaveBeenCalledWith(
+      "aiPolicy.disabledReason.invalidPolicy",
+    );
+  });
+
+  it("uses the unavailable-project toast", () => {
+    setProjectRawPolicy(null);
+    expect(blockIfPolicyOff("bodyWrite")).toBe(true);
+    expect(mockToastError).toHaveBeenCalledWith(
+      "aiPolicy.disabledReason.projectUnavailable",
+    );
+  });
+
+  it("does not toast when allowed", () => {
+    setProjectRawPolicy(serializeAiPolicy(policyOf({ chat: true })));
     expect(blockIfPolicyOff("chat")).toBe(false);
     expect(mockToastError).not.toHaveBeenCalled();
   });
@@ -92,7 +136,6 @@ describe("blockIfPolicyOff", () => {
 describe("new-project default backstop (security F-6)", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  // schema.ts / migrate.rs の新規デフォルトと同じトグルセット。
   const newProjectDefault = (): AiPolicy => ({
     preset: "custom",
     toggles: {
@@ -105,13 +148,13 @@ describe("new-project default backstop (security F-6)", () => {
   });
 
   it("blocks autonomous knowledge/structure writes by default", () => {
-    setProjectPolicy(newProjectDefault());
+    setProjectRawPolicy(serializeAiPolicy(newProjectDefault()));
     expect(isAiFeatureBlockedByPolicy("knowledgeWrite")).toBe(true);
     expect(isAiFeatureBlockedByPolicy("structureWrite")).toBe(true);
   });
 
   it("still allows chat / analysis / bodyWrite by default", () => {
-    setProjectPolicy(newProjectDefault());
+    setProjectRawPolicy(serializeAiPolicy(newProjectDefault()));
     expect(isAiFeatureBlockedByPolicy("chat")).toBe(false);
     expect(isAiFeatureBlockedByPolicy("analysis")).toBe(false);
     expect(isAiFeatureBlockedByPolicy("bodyWrite")).toBe(false);

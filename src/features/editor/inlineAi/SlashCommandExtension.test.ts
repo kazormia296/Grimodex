@@ -9,8 +9,13 @@ import {
   getInlineAiCommands,
   INLINE_AI_COMMANDS,
 } from "./inlineAiCommands";
+import { seedWritableProject } from "@/test-utils/writableProject";
 
 describe("filterCommands", () => {
+  beforeEach(() => {
+    seedWritableProject();
+  });
+
   it("returns all non-selection commands for empty query", () => {
     // slash メニューは "/" 打鍵で選択が破壊されるため needsSelection の置換系
     // コマンド (rewrite/shorten/expand/tone/translate) を除外する。
@@ -89,6 +94,7 @@ describe("editor.inlineAiCommand setting gates the slash suggestion", () => {
 
   beforeEach(() => {
     setInlineAiCommand("true");
+    seedWritableProject();
   });
 
   it("allows on an empty line by default", () => {
