@@ -142,30 +142,33 @@ export function deriveCharacterStateAt(
   let birthTime: number | null = null;
   let deathTime: number | null = null;
   for (const e of events) {
+    if (e.primaryCodexId !== characterId) continue;
+    // 不明の死亡（CED/2）は Infinity で印を付ける。確かな死亡があれば、その日に置き換わる。
     if (
-      e.primaryCodexId !== characterId ||
-      e.startTime == null ||
-      !hasChronicleDate(e) ||
-      e.precision === "unknown"
+      e.kind === "death" &&
+      (!hasChronicleDate(e) ||
+        (e.precision === "unknown" && e.startTime! <= t!))
     )
-      continue;
+      deathTime ??= Infinity;
+    if (!hasChronicleDate(e) || e.precision === "unknown") continue;
     if (e.kind === "birth")
-      birthTime =
-        birthTime == null ? e.startTime : Math.min(birthTime, e.startTime);
+      birthTime = Math.min(birthTime ?? e.startTime!, e.startTime!);
     else if (e.kind === "death")
-      deathTime =
-        deathTime == null ? e.startTime : Math.min(deathTime, e.startTime);
+      deathTime = Math.min(deathTime ?? e.startTime!, e.startTime!);
   }
 
   if (t == null || birthTime == null) return { status: "unknown", age: null };
   if (birthTime > t) return { status: "unborn", age: null };
 
-  const dead = deathTime != null && deathTime <= t;
+  const dead = Number.isFinite(deathTime) && deathTime! <= t;
   const refTime = dead ? (deathTime as number) : t;
   const daysPerYear = calendar?.daysPerYear ?? 0;
   const age =
     daysPerYear > 0 ? Math.floor((refTime - birthTime) / daysPerYear) : null;
-  return { status: dead ? "dead" : "alive", age };
+  return {
+    status: dead ? "dead" : deathTime === Infinity ? "unknown" : "alive",
+    age,
+  };
 }
 
 /** 最後に判明する居場所（純粋）。primary か participant で関与し location 付きの最新 event。 */

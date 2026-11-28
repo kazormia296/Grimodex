@@ -606,10 +606,18 @@ fn derive_character_state_at(
     let t = anchor.start_time.map(|day| day as i64);
     let mut birth_time: Option<i64> = None;
     let mut death_time: Option<i64> = None;
+    let mut uncertain_death = false;
     for e in events {
-        if e.primary_codex_id.as_deref() != Some(character_id)
-            || e.effective_precision() == "unknown"
-        {
+        if e.primary_codex_id.as_deref() != Some(character_id) {
+            continue;
+        }
+        // 日時の無い出来事の実効の確度は "unknown"。
+        if e.effective_precision() == "unknown" {
+            // 不明の死亡（CED/2）：日時が無ければいつも、あれば仮の日が現在地以前のとき。
+            if e.kind == "death" {
+                uncertain_death |=
+                    !e.has_date() || t.zip(e.start_time).is_some_and(|(t, d)| d <= t);
+            }
             continue;
         }
         let Some(st) = e.start_time else { continue };
@@ -632,7 +640,14 @@ fn derive_character_state_at(
         Some(c) if calendar_days_per_year(c) > 0 => Some(compute_age(birth, ref_time, c)),
         _ => None,
     };
-    (if dead { "dead" } else { "alive" }.to_string(), age)
+    let status = if dead {
+        "dead"
+    } else if death_time.is_none() && uncertain_death {
+        "unknown"
+    } else {
+        "alive"
+    };
+    (status.to_string(), age)
 }
 
 /// K1 descending order, with K2/K2a and the current-scene mark kept distinct.
@@ -1162,7 +1177,8 @@ mod tests {
         assert_eq!(state.recent_events.len(), 1);
         assert_eq!(state.recent_events[0].event_id, "period");
         assert_eq!(state.characters.len(), 1);
-        assert_eq!(state.characters[0].status, "alive");
+        // "died" は現在地以前の不明の死亡なので、生死は "unknown"（CED/2）。
+        assert_eq!(state.characters[0].status, "unknown");
         assert_eq!(state.characters[0].location.as_deref(), Some("Port"));
         assert_eq!(state.unresolved_causal.len(), 1);
         assert_eq!(state.unresolved_causal[0].cause_title, "Later");
