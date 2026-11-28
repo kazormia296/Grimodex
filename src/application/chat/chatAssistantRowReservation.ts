@@ -5,6 +5,9 @@ import { SOURCE_CHAT_MESSAGE_TOOLS } from "@/features/chat/agent/toolExecutors";
 import { isWriteRestrictedByLicense } from "@/features/license/gate";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 import { ChatTurnPersistenceError } from "./chatTurnPersistence";
+import { parseMetadataRecord } from "./chatMessageMetadata";
+
+export { parseMetadataRecord } from "./chatMessageMetadata";
 
 /**
  * 会話履歴として送る列。この修正が残す行（出典用に作った assistant の行）のうち、
@@ -39,20 +42,6 @@ export function sendableHistory<
     }
   }
   return sendable;
-}
-
-/** 保存済みの metadata（JSON のオブジェクト）を読む。読めなければ空。 */
-export function parseMetadataRecord(
-  raw: string | null | undefined,
-): Record<string, unknown> {
-  try {
-    const parsed: unknown = raw ? JSON.parse(raw) : null;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : {};
-  } catch {
-    return {};
-  }
 }
 
 export interface AssistantRowReservation {

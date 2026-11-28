@@ -16,6 +16,7 @@ import {
   type PendingCompletedTurnPersistenceTarget,
 } from "./pendingCompletedTurnPersistence";
 import { shouldAbortMastraTurn } from "./shouldAbortMastraTurn";
+import { DEFAULT_MAX_USER_QUESTIONS } from "@/features/chat/agent/agentLoopDefaults";
 export { shouldAbortMastraTurn } from "./shouldAbortMastraTurn";
 
 export interface ChatTurnRuntime {
@@ -224,9 +225,14 @@ export function createChatTurnRuntime(options?: {
 
     async tryMastraTurn(input) {
       try {
-        const { createMastraTurnAttempt } =
+        const { createMastraTurnAttempt, loadMastraTurnEngineDependencies } =
           await import("./chatTurnMastraEngine");
-        return createMastraTurnAttempt(input, runtime);
+        const dependencies = await loadMastraTurnEngineDependencies();
+        return createMastraTurnAttempt(input, runtime, dependencies, {
+          debugLog,
+          errorDetail,
+          defaultMaxUserQuestions: DEFAULT_MAX_USER_QUESTIONS,
+        });
       } catch (error) {
         debugLog.warn(
           "ChatStore",

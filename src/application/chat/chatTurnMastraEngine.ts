@@ -1,32 +1,84 @@
-import {
-  DEFAULT_MAX_USER_QUESTIONS,
-  type AgentLoopResult,
-} from "@/features/chat/agent/agentLoop";
+import type { AgentLoopResult } from "@/features/chat/agent/agentLoop";
 import type {
   AgentMessagePayload,
   AgentToolDefinition,
   SettingProposal,
   ToolCallRecord,
 } from "@/features/chat/agent/agentTypes";
-import { M4_READ_TOOL_NAMES } from "@/../electron/shared/agentReadToolDefinitions";
-import { MASTRA_UI_TOOL_NAMES } from "@/../electron/shared/mastraUiToolDefinitions";
+import type { M4ReadToolName } from "@/../electron/shared/agentReadToolDefinitions";
+import type { MastraUiToolName } from "@/../electron/shared/mastraUiToolDefinitions";
 import type {
   MastraAgentTurnProgressUsage,
   MastraAgentTurnStartRequest,
   MastraAgentTurnLoopResult,
 } from "@/../electron/shared/mastraAgentTurnWire";
 import type { ChatMessage } from "@/features/chat/chatTypes";
-import { shouldAbortMastraTurn } from "./shouldAbortMastraTurn";
 import type { ResolvedChatTurnRoute } from "@/features/chat/turn/resolveTurnRoute";
 import type { ChatStoreSet } from "./chatStoreActionPorts";
 import type { ChatTurnRuntime } from "./chatTurnRuntime";
 import type { ChatUserQuestionRuntime } from "./chatUserQuestionRuntime";
-import { errorDetail, debugLog } from "@/lib/debugLog";
-import { parseMetadataRecord } from "./chatStoreSupport";
-import * as mastraAgentTurn from "@/lib/mastraAgentTurn";
-import * as mastraTurnResponder from "./mastraAgentTurnResponder";
-import * as aiAuditExecutionRegistry from "@/features/ai-audit/executionRegistry";
-import * as pendingSceneWrites from "@/features/tree/pendingSceneWrites";
+import { parseMetadataRecord } from "./chatMessageMetadata";
+
+const MASTRA_MAIN_TOOL_NAMES = [
+  "search_codex",
+  "search_events",
+  "list_codex_by_type",
+  "get_codex_entry",
+  "list_codex_tags",
+  "search_codex_by_tags",
+  "find_related_entries",
+  "list_chapters",
+  "get_scene",
+  "search_scenes",
+  "list_plot_threads",
+  "get_thread_scenes",
+  "search_snippets",
+  "get_chapter_summaries",
+  "list_open_foreshadows",
+  "get_foreshadow_detail",
+  "get_scene_timeline_neighbors",
+  "list_events",
+  "get_event_detail",
+  "get_character_timeline",
+  "get_chronicle_state",
+  "ask_user",
+  "run_app_command",
+  "apply_layout_preset",
+  "propose_setting_change",
+  "get_ui_state",
+  "get_app_help_index",
+  "get_app_help",
+] as const satisfies readonly (M4ReadToolName | MastraUiToolName)[];
+
+export async function loadMastraTurnEngineDependencies() {
+  const [
+    mastraAgentTurn,
+    mastraTurnResponder,
+    aiAuditExecutionRegistry,
+    pendingSceneWrites,
+  ] = await Promise.all([
+    import("@/lib/mastraAgentTurn"),
+    import("./mastraAgentTurnResponder"),
+    import("@/features/ai-audit/executionRegistry"),
+    import("@/features/tree/pendingSceneWrites"),
+  ]);
+  return {
+    ...mastraAgentTurn,
+    ...mastraTurnResponder,
+    ...aiAuditExecutionRegistry,
+    ...pendingSceneWrites,
+  };
+}
+
+export type MastraTurnEngineDependencies = Awaited<
+  ReturnType<typeof loadMastraTurnEngineDependencies>
+>;
+
+export interface MastraTurnEngineRuntimeValues {
+  debugLog: Pick<typeof import("@/lib/debugLog").debugLog, "warn">;
+  errorDetail: typeof import("@/lib/debugLog").errorDetail;
+  defaultMaxUserQuestions: number;
+}
 
 interface EligibilityInput {
   provider: string | null | undefined;
@@ -232,16 +284,11 @@ type RuntimeAdmission = Pick<
   | "clearStreamCleanupIf"
 >;
 
-const dependencies = {
-  ...mastraAgentTurn,
-  ...mastraTurnResponder,
-  ...aiAuditExecutionRegistry,
-  ...pendingSceneWrites,
-};
-
 export function createMastraTurnAttempt(
   input: MastraTurnAdmissionInput,
   runtime: RuntimeAdmission,
+  dependencies: MastraTurnEngineDependencies,
+  runtimeValues: MastraTurnEngineRuntimeValues,
 ): MastraTurnAttempt | null {
   if (
     !shouldUse({
@@ -249,7 +296,7 @@ export function createMastraTurnAttempt(
       chatSessionId: input.chatSessionId,
       projectId: input.projectId,
       tools: input.tools.map((tool) => tool.name),
-      mainToolNames: [...M4_READ_TOOL_NAMES, ...MASTRA_UI_TOOL_NAMES],
+      mainToolNames: MASTRA_MAIN_TOOL_NAMES,
       gateClosedObserved,
       pendingStart: runtime.hasActiveMastraTurn(),
       hasAttachments: hasAttachments(input.userMessage),
@@ -297,10 +344,10 @@ export function createMastraTurnAttempt(
       return true;
     } catch (error) {
       admitted = false;
-      debugLog.warn(
+      runtimeValues.debugLog.warn(
         "ChatStore",
         "Mastra turn preflight failed",
-        errorDetail(error),
+        runtimeValues.errorDetail(error),
       );
       release();
       return false;
@@ -421,7 +468,7 @@ export function createMastraTurnAttempt(
           loop: {
             tokenBudget: context.tokenBudget,
             maxToolCalls: context.maxToolCalls,
-            maxUserQuestions: DEFAULT_MAX_USER_QUESTIONS,
+            maxUserQuestions: runtimeValues.defaultMaxUserQuestions,
             contextWindow: context.contextWindow,
             requestMaxOutputTokens,
             language: context.language,
@@ -445,10 +492,10 @@ export function createMastraTurnAttempt(
           void dependencies
             .cancelMastraAgentTurn({ turnId: input.turnId })
             .catch((error) => {
-              debugLog.warn(
+              runtimeValues.debugLog.warn(
                 "ChatStore",
                 "cancel Mastra agent turn",
-                errorDetail(error),
+                runtimeValues.errorDetail(error),
               );
             });
         };
@@ -514,9 +561,9 @@ export function createMastraTurnAttempt(
 }
 
 export const chatTurnMastraEngine = {
-  shouldAbort: shouldAbortMastraTurn,
   shouldUse,
   hasAttachments,
+  mainToolNames: MASTRA_MAIN_TOOL_NAMES,
   toAgentLoopResult,
   toSettingProposal,
 };

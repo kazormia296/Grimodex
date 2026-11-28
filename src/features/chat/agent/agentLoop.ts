@@ -14,6 +14,8 @@ import type {
 import { isTruncatedStopReason } from "./agentTypes";
 import { ensureTokenizer, countTokens } from "../contextBuilder";
 import { beginAgentToolTurn } from "./toolTurnCache";
+import { DEFAULT_MAX_USER_QUESTIONS } from "./agentLoopDefaults";
+export { DEFAULT_MAX_USER_QUESTIONS } from "./agentLoopDefaults";
 
 /**
  * データ取得ツール呼び出しの既定上限。呼び出し元が maxToolCalls を渡さない
@@ -27,13 +29,6 @@ const DEFAULT_MAX_TOOL_CALLS = 10;
  * 文脈窓を溢れさせない事前ガードとして個別結果を切り詰める。
  */
 const TOOL_RESULT_TOKEN_CAP_RATIO = 0.25;
-/**
- * ask_user（ユーザーへの質問）の 1 ターンあたり既定上限。データ取得ツールの
- * 上限とは別カウント。適応的な多段質問を許しつつ、質問の連打／無限ループを
- * 抑止する。呼び出し元が maxUserQuestions を渡せば上書きできる。
- */
-export const DEFAULT_MAX_USER_QUESTIONS = 8;
-
 /** ユーザーへの質問ツール名（totalCalls から除外し別カウントする）。 */
 const ASK_USER_TOOL = "ask_user";
 

@@ -1,5 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { MastraTurnExecutionContext } from "./chatTurnMastraEngine";
+import { M4_READ_TOOL_NAMES } from "@/../electron/shared/agentReadToolDefinitions";
+import { MASTRA_UI_TOOL_NAMES } from "@/../electron/shared/mastraUiToolDefinitions";
+import { DEFAULT_MAX_USER_QUESTIONS } from "@/features/chat/agent/agentLoopDefaults";
+import { debugLog, errorDetail } from "@/lib/debugLog";
+import { shouldAbortMastraTurn } from "./shouldAbortMastraTurn";
 
 const mastraMocks = vi.hoisted(() => ({
   start: vi.fn(),
@@ -22,7 +27,8 @@ vi.mock("@/features/tree/pendingSceneWrites", () => ({
 }));
 import {
   chatTurnMastraEngine,
-  createMastraTurnAttempt,
+  createMastraTurnAttempt as createMastraTurnAttemptWithDependencies,
+  loadMastraTurnEngineDependencies,
 } from "./chatTurnMastraEngine";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -63,6 +69,30 @@ const admission = {
   publicWebSearch: false,
   cancelBeforeTransport: () => false,
 };
+
+type EngineDependencies = Awaited<
+  ReturnType<typeof loadMastraTurnEngineDependencies>
+>;
+let engineDependencies: EngineDependencies | undefined;
+
+beforeAll(async () => {
+  engineDependencies = await loadMastraTurnEngineDependencies();
+});
+
+function createMastraTurnAttempt(input: typeof admission, runtime: unknown) {
+  if (!engineDependencies)
+    throw new Error("Mastra engine dependencies not loaded");
+  return createMastraTurnAttemptWithDependencies(
+    input,
+    runtime as never,
+    engineDependencies,
+    {
+      debugLog,
+      errorDetail,
+      defaultMaxUserQuestions: DEFAULT_MAX_USER_QUESTIONS,
+    },
+  );
+}
 
 function executionContext(): MastraTurnExecutionContext {
   return {
@@ -140,6 +170,13 @@ describe("Mastra renderer turn admission", () => {
     expect(chatTurnMastraEngine.shouldUse(eligibility)).toBe(true);
   });
 
+  it("keeps its deferred tool allowlist aligned with the shared definitions", () => {
+    expect(chatTurnMastraEngine.mainToolNames).toEqual([
+      ...M4_READ_TOOL_NAMES,
+      ...MASTRA_UI_TOOL_NAMES,
+    ]);
+  });
+
   it("uses the captured persisted session after session creation", () => {
     expect(
       chatTurnMastraEngine.shouldUse({
@@ -205,7 +242,7 @@ describe("Mastra captured-turn cancellation", () => {
   };
 
   it("continues through view, scene, and route movement while authority remains", () => {
-    expect(chatTurnMastraEngine.shouldAbort(valid)).toBe(false);
+    expect(shouldAbortMastraTurn(valid)).toBe(false);
   });
 
   it.each([
@@ -217,9 +254,7 @@ describe("Mastra captured-turn cancellation", () => {
     ["license", { licenseAllows: false }],
     ["quiescence", { quiescenceAllowsMutation: false }],
   ])("stops when %s authority is lost", (_reason, override) => {
-    expect(chatTurnMastraEngine.shouldAbort({ ...valid, ...override })).toBe(
-      true,
-    );
+    expect(shouldAbortMastraTurn({ ...valid, ...override })).toBe(true);
   });
 });
 
