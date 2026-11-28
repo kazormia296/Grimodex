@@ -30,7 +30,7 @@
     },
     {
       "id": "interactive-agent-command",
-      "description": "An explicit user-turn or standing knowledgeWrite authorization invokes a typed Agent tool.",
+      "description": "An explicit user-turn or standing knowledgeWrite authorization invokes a typed Agent tool. Author-field override requires individual in-app approval or a typed, project-matched exemption from a writable single-project MCP connection. Only author ownership is waived; locks remain enforced.",
       "requiredControls": [
         "knowledge-write-policy",
         "stable-request-id",
@@ -42,7 +42,12 @@
         "change-event",
         "change-feed"
       ],
-      "conditionalControls": [],
+      "conditionalControls": [
+        {
+          "control": "author-field-override",
+          "when": "event-update-or-delete-affects-author-fields"
+        }
+      ],
       "allowedCallers": [
         "chat-tool-executor",
         "manual-wrapper",

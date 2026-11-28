@@ -420,6 +420,8 @@
 - 層：main、renderer。
 - 条件：
   - **負の試験**：capability 無し、再利用、別 project、別 digest が拒否される。
+  - **AWA/1 の移行条件。** 基準は AWA/1 実装後の legacy とする。`update_event`・`delete_event` は、作者の欄への無承認実行、承認の再利用、別 project・別 digest・承認後の版変更を拒否し、N-API に MCP の免除入口がないことを試験する。probe・承認待ち・再判定・一回限りの交換が legacy と同値であることを確認してから両ツールを通す。
+  - 承認カードの運び方は U-8 の決定に従う（MP-5 の 8 ツールの外）。CSR/1 N1 以後の再判定は現在の場面に依存しない。U-9 の確認フラグは前倒しせず、将来配線する場合もこの 2 ツールは所有者による判定を優先する。2026-11-23 の確認 141（`nir1-agent-event-write-approval-proposal/1#agent-event-write-approval`）・確認 142（`nir1-agent-event-write-approval-proposal/1#mcp-author-event-write`）。
   - write→read の逐次順序、undoId。
   - write tool を含む turn の journey。
   - `agentAuthorityCapabilities` が落ちて write が通らなくなる回帰が無い（MP-2 の継ぎ目の結合試験）。

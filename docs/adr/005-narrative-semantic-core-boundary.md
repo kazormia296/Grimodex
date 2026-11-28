@@ -1061,6 +1061,9 @@ Human Direct Authoring Path
 Interactive Agent Command Path
   User Turn / Standing knowledgeWrite Authority
     → Agent Tool Policy
+      ├─ Ordinary admission
+      ├─ In-app author-field update/delete → approved ApprovalRequest → one-shot capability
+      └─ Writable pinned MCP, same project → typed McpNoApproval (author ownership only)
     → OCC / Field Authority
     → Typed Writer
     → Domain Data
@@ -1256,7 +1259,9 @@ C1.5; no new C2 table or schema bump is part of this gate.
 
 ### 2. Interactive Agent Command の経路（AWA/1。AWA/1-1 と AWA/1-2）
 
-「Canonical mutation paths」の経路図「Interactive Agent Command Path」（User Turn / Standing knowledgeWrite Authority → Agent Tool Policy → OCC / Field Authority → Typed Writer → Domain Data）に、次の 2 つの枝を足す。図の文字列は、この追補では書き換えない。
+2026-11-23 の確認 141（`nir1-agent-event-write-approval-proposal/1#agent-event-write-approval`）・確認 142（`nir1-agent-event-write-approval-proposal/1#mcp-author-event-write`）。
+
+「Canonical mutation paths」の経路図「Interactive Agent Command Path」（User Turn / Standing knowledgeWrite Authority → Agent Tool Policy → OCC / Field Authority → Typed Writer → Domain Data）に、次の 2 つの枝を足す。上図の各枝は同じ OCC・Field Authority の検査に合流する。
 
 - **承認つきの書き込み（AWA/1-1）。** 作者の出来事に触れる更新・削除は、Agent Tool Policy の後に、作者の承認（ApprovalRequest。main が握り、承認が確定するまで capability を発行しない）を挟む。承認は、Field Authority の「明示的な human-authorized override」として働く。
 - **MCP の免除（AWA/1-2）。** 設定で許した、1 つの作品に固定した接続だけ、承認を挟まず、型で渡す免除の引数で、Field Authority の人の持ち主の拒みを外す。ロックと、全部の作品を扱える接続は、免除しない。

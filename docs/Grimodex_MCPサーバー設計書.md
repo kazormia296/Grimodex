@@ -795,8 +795,8 @@ Codex エントリの詳細を取得する。
 | `get_character_timeline` | R | o | 人物の作中経歴（primary/participant 関与イベントを作中順・secret 値による除外なし・各時点の ageAtEvent。存在しない・使えない codex_id は null）。任意の `scene_id` を受け付け、読む順にある `reveal_scene_id` は `revealScene: {id, title, revealedToReader?}` として返す。`revealedToReader` の判定と `revealSceneNote` は `list_events` と同じ。 |
 | `get_chronicle_state` | R | o | シーン作中時刻の世界状態スナップショット（全イベントを入力。現在地と前後は日時で決める（`grimodex-core` の `chronicle_order`）。**in-app と同一 JSON schema**・fixture で TS↔Rust drift を gate） |
 | `create_event` | W | o | 作中年表イベント作成（knowledgeWrite gate・tracked: change_event domain='event' + undo_journal surface='mcp'）。`secret` は廃止（`true` は拒否、`false` は無視）。`reveal_scene_id` は読む順の開示場面 id。年表の読み道具はその出来事に `revealScene` を付け、開示場面より前の場面を読者が既知として書かないよう示す。出来事を隠す機能ではない。省略・空文字は未指定。 |
-| `update_event` | W | o | イベント更新（渡したフィールドのみ・project スコープ・tracked。XPROJ=他プロジェクト id は no-op→not found。**現在の主な人物・場所が AI に秘匿（hidden）の人物の出来事は、その欄を変更できない**〔hidden は Phase だけの人物を含む。他の欄の更新は通る。拒否は汎用の internal error〕）。`secret` は廃止（`true` は拒否、`false` は無視）。`reveal_scene_id` は読む順の開示場面 id。年表の読み道具はその出来事に `revealScene` を付け、開示場面より前の場面を読者が既知として書かないよう示す。出来事を隠す機能ではない。省略は変更なし、空文字は解除。 |
-| `delete_event` | W | o | イベント削除（participants/scene/relation を cascade・削除前スナップショットを undo before に格納） |
+| `update_event` | W | o | イベント更新（渡したフィールドのみ・project スコープ・tracked。XPROJ=他プロジェクト id は no-op→not found。**現在の主な人物・場所が AI に秘匿（hidden）の人物の出来事は、その欄を変更できない**〔hidden は Phase だけの人物を含む。他の欄の更新は通る。拒否は汎用の internal error〕）。`secret` は廃止（`true` は拒否、`false` は無視）。`reveal_scene_id` は読む順の開示場面 id。年表の読み道具はその出来事に `revealScene` を付け、開示場面より前の場面を読者が既知として書かないよう示す。出来事を隠す機能ではない。省略は変更なし、空文字は解除。AWA/1 実装後は固定作品の書込可接続で、作者の欄（開示場面を含む）も個別承認なしで変更できる。 |
+| `delete_event` | W | o | イベント削除（participants/scene/relation を cascade・削除前スナップショットを undo before に格納）AWA/1 の削除有効化後は同じ条件で作者の出来事も個別承認なしで削除できる。 |
 | `stamp_scene_event` | W | o | シーンにイベントを stamp（scene/event とも active project 必須） |
 | `unstamp_scene_event` | W | o | scene↔event の stamp 解除 |
 | `set_event_participants` | W | o | イベント参加者集合を置換（全削除→再挿入。**AI に秘匿（hidden。base または Phase の上書き）の既存の参加者は、要求に無くても残す**〔読みが伏せる集合と同じ。MCP の AI は、見えない参加者を消せない〕） |
@@ -822,6 +822,8 @@ write_scene 等の scene 書き込みは v2 で未実装ゆえ tools/list に出
 **`--readonly` 付きで起動する**ことを推奨。ただし `--readonly` は **call-time gate** であり、
 write 14 ツールは tools/list には**載る**が、呼び出すと「readonly mode」エラーを返す
 （list-time で隠れるわけではない）。
+
+AWA/1 の設計では、免除は `--readonly` なしで `knowledgeWrite` が有効な固定作品接続に限る。手書き・承認して取り込んだ出来事や、以前「AI に秘匿」を付けていた出来事も対象になる。これが SRA/1 決定 13・D6・H5・★5 の前提を満たす。削除の有効化は SRD/1 の X1〜X5 に依存し、再承認は同案の RA に従って作者が画面から行う。MCP の出来事の更新・削除はアプリの「元に戻す」から戻せない。削除した出来事だけを戻すには、その出来事を含むスナップショットを復元する。承認は外れたままで、DB バックアップ全体を復元する場合は承認も当時の状態に戻る。2026-11-23 の確認 141（`nir1-agent-event-write-approval-proposal/1#agent-event-write-approval`）・確認 142（`nir1-agent-event-write-approval-proposal/1#mcp-author-event-write`）。
 
 ### 3.9 In-app チャット executor との能力パリティ
 
@@ -1057,7 +1059,7 @@ cargo run -- mcp --workspace /abs/ws --readonly
 
 ### .mcp.json（Claude Code / Desktop）
 
-**クラウド LLM では `--readonly` を必ず付ける**（write 14 ツールを call-time で無効化）。
+**クラウド LLM では `--readonly` を必ず付ける**（write 14 ツールを call-time で無効化）。AWA/1 の更新・削除もこの制限に従う。
 
 Tauri（本体アプリ + `mcp` subcommand）:
 
@@ -1105,7 +1107,7 @@ Electron Linux（stable standalone sidecar + main-owned license path）:
 Tauri の `args` prefix は `"mcp"`、Electron の prefix は
 `"--license-file", "<absolute path>"` であり、相互に置換できない。Electron の
 license path は renderer や MCP client の入力ではなく Electron main が現在の `userData` から
-生成する。ローカルで Codex 書き込みも使う場合のみ末尾の `"--readonly"` を外す。
+生成する。ローカルで Codex 書き込みも使う場合のみ末尾の `"--readonly"` を外す。AWA/1 有効化後、固定作品で書き込みを許すと、外部 AI に作者の出来事の更新・削除も許すことになる。
 
 ### Hermes Agent `mcp_servers`
 
@@ -1183,7 +1185,7 @@ Options:
 - `--all-projects` は **明示オプトイン**。`select_project(project_id)` で current を
   切り替えられ、`list_projects` が全プロジェクトを列挙する。接続スコープが DB 全体に
   広がるため **ローカル/信頼クライアント専用**。クラウド用途では `--all-projects` を
-  付けない（付けるなら最低限 `--readonly` と併用）。
+  付けない（付けるなら最低限 `--readonly` と併用）。AWA/1 の作者所有の免除は全作品接続では効かず、`select_project` の前後とも作者の欄への書き込みは拒否される。
 - read-by-id 系はモードに関わらず常に **current project でスコープ**する（`--all-projects`
   でも、別プロジェクトの id を読むには先に `select_project` で切り替える）。XPROJ 防御
   （[[#3.9]]）は不変。
