@@ -2,7 +2,6 @@
 
 - 状態：**確定（U-1、2026-11-19 にユーザーが「このまま確定」と回答）**。変更は新しい確認を要する。
 - 改訂の記録（2026-11-27、ユーザー確認済み、4c-2）：Q5 の停止通知までの窓と、会話・表示対象・model／接続先・scene の変更中も開始時の値で継続する条件を追記。
-- 改訂の記録（2026-11-27、4c-2）：2026-11-24 に Q5 として受容済みの (a)〜(f) を明示し、DB の古さ、scene 本文 barrier なし、batch 中の tree 再計算なし、年表 cache の窓、および K-17 の policy 永続窓を記載。
 - 改訂の記録（2026-11-21、ユーザー確認済み）：[MP-4 の判断](mastra-mp4-decisions.md)の決定 3 と回答 3 により、T13・D16・W11 と残るリスクの 1 行を足し、chat IR の文言を「IR を開ける lane まで閉（MP-4 を含む）」に揃えた。
 - 改訂の記録（2026-11-26、ユーザー確認済み）：[MP-5 の判断](mastra-mp5-decisions.md)の Q2 により、W12 を足した。
 - 同時の回答：
@@ -486,8 +485,8 @@ Mastra の既定の送信先（google／gemini、同 provider の低価格 model
 - **vector の削除の保証**（X7、R-15）：message_id の食い違いの原因は未確定。成り立たなければ U-13。
 - **OM の部分削除の方式と、WM の扱い**（X10、R-16）：未設計。決まるまで、message 削除後も OM・WM に内容が残りうる。
 - **背景仕事の取りこぼし**（X21、X22、R-17）：AbortSignal が届かない仕事は、quit で ambiguous の audit 行になりうる。件数は MP-11 で audit から数える。`T_quit` は暫定。
-- **4c-2 renderer turn の Q5 受容窓**（2026-11-27）：(a) 場面切替後も開始時の scene に固定する、(b) `resolutionMode`・tree の並びなど DB が古い間は画面より多くを解除する向きにずれうる、(c) scene 本文 read に barrier がなく DB に到着した本文だけを読む、(d) batch 中の tree 変更を再計算しない、(e) workspace・project・policy・license の変化から cancel が届くまで、もう 1 回送信または tool 呼出しが進みうる（会話・対象の表示・model と接続先・場面の切替は継続の条件を除く。AI policy の store 変更が DB に永続化されるまでの K-17 の窓を含む）、(f) events・scene-events・Codex 名の年表 cache は turn 中 `clear()` まで変更を見ない。license の変更は画面の watcher のみが検知する。
-- **4c-2 開始時 context の継続**（2026-11-27）：会話・表示対象・model／接続先・scene の変更では停止せず、開始時の会話・model・scene で処理を続け、応答は開始時の会話へ保存する。送信の後に、より前の scene へ移ると、その scene の位置では出さない情報を含む応答が見える可能性がある（開示は送信時点の scene で計算する。閲覧者は作者本人）。
+- **4c-2 の停止の合図が届くまでの窓**（2026-11-27、Q5 のうち確定文書への追記を確認した部分）：workspace・project・AI policy・license の変化から cancel が main に届くまで、もう 1 回の送信か tool 呼出しが進みうる（AI policy の store の変更が DB に永続化されるまでの窓を含む。license の変化は画面の watcher だけが検知する）。Q5 のほかの時間差（DB が古い間の解除のずれ、本文を読む時点、途中の並び替えを再計算しないこと、年表の cache）は判断記録 `mastra-mp4-decisions.md` の Q5（2026-11-24 受容）にあり、この文書に足すかは旗 L を開ける前に改めて確認する。
+- **4c-2 開始時 context の継続**（2026-11-27）：会話・表示対象・model／接続先・scene の変更では停止せず、開始時の会話・model・scene で処理を続け、応答は開始時の会話へ保存する。送信の後に、より前の scene へ移ると、その scene の位置では hidden になる情報を含む応答が見える可能性がある（開示は送信時点の scene で計算する。閲覧者は作者本人）。
 - **背景仕事の失敗時の挙動**（X1、X3、X5、X6、X9、R-35）：未確認。縮退の実行の裏付けが無い（P12）。
 - **clock の増加と Graph／IR の失効**（T6、R-3）：1 turn で clock は +10（chat と NIR-1 だけなら +6）。模型の通しの値で、実 Mastra の保存回数で増える。失効への影響は未測定。閾値は緩めない。
 - **adapter が模型であること**（T6、P9）：全 schema の試験は模型の adapter。製品の adapter で、MP-7・MP-8 でやり直す。
