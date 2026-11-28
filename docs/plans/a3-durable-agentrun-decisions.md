@@ -664,6 +664,8 @@ N-API の owner と lock を Fable（read-only、effort high）が読んだ。me
   - 切替と窓の close の Stop は、今は途中の行を会話に保存する。DR-A3-2 は「中断の間は行が無い」。どちらにするかを決めて、利用者に見せる。
   - 承認の 30 分で中断した後、画面の loop を誰が止めるか。
   - Stop は、`begin_finalizing` より前に、承認の signal を abort する（Mastra の担当の指摘。Native では `finalizing` の間も `updateToolCall` が通るため）。記録の部品の呼び手の順序として固定する。
+  - ID を返さない provider（空の tool の ID）は、台帳の追記が必ず失敗し、その応答に書換えの権限が出なくなる。今は書換えが動くなら、旗を開けると見える退行になる。main で ID を補うか、利用者に見せるかを決める。
+- **確かめた上限**：`audit_execution_ids` の 512 件は、1 回の返答の provider の要求の最大の見積もり（親の呼出し 25 回と質問 8 回、下位の agent は呼出しごとに 13 回までで約 360）に届かない。届くようになった場合は、監査の追加の失敗で台帳の追記を落とさない形にする。
 - **PR 5 の前**：再起動の後は `executionId` との対応が無いので、`runId` から引く口が要る。
 
 ## 4. owner／lifecycle の表（GDX-PRECHECK-001）
