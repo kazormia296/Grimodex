@@ -40,7 +40,7 @@ Gate C／Release B の Task Grant、Gate B の Agent Auto、stage の accept／�
 - **DR-A2-11 `target_basis` の語（技術判断）。** `sourceKind` は保存する対象の種別で、`codex_entry`・`foreshadow`・`snippet`・`event`・`scene_event_link`・`event_relation`・`tree_node` を使う。`set_event_participants` と `add_event_relation` は関係する `event` の版を載せる。`apply_ai_tree_plan` で 64 件か 32 KiB を超えるときは `sourceKind=tree_node_set`、`sourceId=projectId`、`contentHash` は触る node の（ID、版）を ID の順に並べた canonical JSON の SHA-256 の 1 件にする。足りない語が出たら本節に足し、A3 の担当に知らせる。
 
 - **DR-A2-12 台帳の状態（技術判断）。** 台帳の行は記録の側が応答の時点で追記し（A3 の DR-A3-4）、交換は、状態と、発行の時の `mainOwnedProvenanceId` を書き足す。承認の待ちの間は capability を `awaiting_approval`、発行で `issued`、実行の後は `consumed` と実行の状態。却下と `superseded` は実行していないので実行の状態を `failed` にする。時間切れと中断は台帳を変えない（Run の側）。
-- **DR-A2-13 承認の時の版を main が束ねる（技術判断。#1232 で照合と束ねを実装。main の対象の読み口は未実装で、製品の呼び手も無い）。** 承認の時に main が読んだ版と期待状態を、交換由来の Capability の record に束ね、消費の時に main が payload を上書きする（画面とモデルの値を使わない）。モデルが版を引数で渡す tool は、承認を開く前に main の読みと一致することを確かめる。呼び手が渡す応答の時点の対象と、開く直前の読みが違えば開かない。版を要る tool で版が無ければ開かず束ねない（`apply_ai_tree_plan` は作成だけの plan なら版は不要。create・move・rename のほかの op と、形の分からない op は拒む）。Stop と失敗の記録で、未消費の Capability を失効させる。
+- **DR-A2-13 承認の時の版を main が束ねる（技術判断。#1232 で照合と束ね、#1236 で main の対象の読み口を実装。製品への接続は後続）。** 承認の時に main が読んだ版と期待状態を、交換由来の Capability の record に束ね、消費の時に main が payload を上書きする（画面とモデルの値を使わない）。モデルが版を引数で渡す tool は、承認を開く前に main の読みと一致することを確かめる。呼び手は応答の時点の `observed` に同じ読み口の結果を渡す。開く直前の読みと違えば開かない。`summary` の各対象には種別と id だけを入れる。版を要る tool で版が無ければ開かず束ねない（`apply_ai_tree_plan` は作成だけの plan なら版は不要。create・move・rename のほかの op と、形の分からない op は拒む）。Stop と失敗の記録で、未消費の Capability を失効させる。[対象の読み口の正本](gate-a2-target-read-decisions.md)
 - **DR-A2-14 版の列の無い対象（技術判断、問 36 の範囲内）。** `stamp_scene_event`・`unstamp_scene_event`・`add_event_relation`・`remove_event_relation` は、Native の writer が同じ transaction の中で期待状態（関係の有無と、関係する event の版など）を照らす。期待値を渡さない呼び手は今のまま。期待値は main が作り、画面の値は捨てる。 Native の照合は別の PR（M3 の担当）で、この記録の時点の master には未実装。
 - **DR-A2-15 実接続の PR で必須。**（呼び手を付けるのは、DR-A2-14 の Native の照合が入ってから。）(1) 消費の直前（Native に渡す前）に AI の利用方針を読み直す（Native の writer は方針を読まず、今の main も発行の時にしか読まない）。(2) 画面の executor の拒否（DR-A2-8）。(3) 応答の時点の対象を呼び手が読んで交換に渡す。(4) 承認カードは何を書くか（今の値と新しい値）を示し、待ちの間に対象を開いて確かめられるかを実機で確かめる。(5) 同じ requestId の再送は同じ期待状態を送る（DR-A2-14 の Native の実装では、期待状態が request hash に入る）。(6) 実 main の往復の spec で、期待状態の欄が契約と Native を通ることを確かめる。(7) 交換由来でない呼び出しでも、画面が付けた期待状態を main が捨てる（今は交換由来の record だけが捨てる）。
 
@@ -65,7 +65,7 @@ DR-A3-9 の `ask_user` slot 保持を前提にする。Stop では pending Inter
 | --- | --- | --- |
 | 1 | A2 の main logic（fake port） | issuer／consumer を承認交換へ分け、Interaction port を引数に取る main service と負試験を作る。fake は開閉・二重回答・失効・CAS 拒否を再現する試験用で、製品の durable 性を主張しない |
 | 2 | A3 port と wait lifecycle | A3 PR 4 の実 port に接続する。DR-A3-2・3 の active／pending 制約と DR-A3-9 の turn slot 保持に従い、Stop は pending を取消し、workspace／profile 切替・quit・timeout は Run を中断して pending を残す。2a の index を維持して Release B 版に差し替える（DR-A3-18）。port 型案の変更を吸収する |
-| 3 | A2 の実接続 | main の対象版 resolver、UI card／answer 経路、executor fail-closed、tool result、A3 Interaction と台帳を結ぶ。AWA/1 は同じ main exchange と A3 記録を使うよう別 PR で合わせる。MCP は含めない |
+| 3 | A2 の実接続 | 実装済みの main の対象の読み口、UI card／answer 経路、executor fail-closed、tool result、A3 Interaction と台帳を結ぶ。AWA/1 を A2 の交換と A3 の記録に合わせる別 PR は、年表の担当が持つ。MCP は含めない |
 | 4 | A4 の policy fail-closed | `missing` と `invalid` を区別し、invalid なら書込みを拒む。A2 の再検証との接続を確認する |
 | 5 | Gate A activation | A2 実接続、A3 port／lifecycle、A4 の証跡がそろってから有効化し、その後 MP-6 を接続する。A2 完了前に flag L を開かない |
 
