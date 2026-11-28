@@ -1003,6 +1003,22 @@ describe("registerIpcRouter fail-soft logging", () => {
     expect(agentProposeSceneBody).not.toHaveBeenCalled();
   });
 
+  it("treats agent_codex_delete as capability-bound even though no tool issues one", () => {
+    const bound = bindRendererAuthorityForIpc(
+      "agent_codex_delete",
+      {
+        payload: {
+          authorityRoute: "interactive-agent-command",
+          origin: "ai-apply",
+          projectId: "p1",
+          entryId: "c1",
+        },
+      },
+      1,
+    );
+    expect(bound.payload).toMatchObject({ authorityRoute: "" });
+  });
+
   it("drops non-object payloads across authority commands and preserves valid command shapes", () => {
     const authorityCommands = [
       "agent_codex_create",
@@ -1024,6 +1040,17 @@ describe("registerIpcRouter fail-soft logging", () => {
       "agent_chronicle_bulk_mutate",
       "agent_scene_event_link_batch",
       "agent_apply_undo_journal",
+      "agent_codex_delete",
+      "codex_delete",
+      "codex_mutate",
+      "event_create",
+      "foreshadow_create",
+      "identity_correction_rule_create",
+      "project_delete",
+      "scan_staging_project_publish",
+      "snippet_create",
+      "tree_node_create",
+      "ai_tree_plan_undo",
     ];
     for (const command of authorityCommands) {
       expect(

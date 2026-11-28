@@ -300,6 +300,7 @@ const AGENT_AUTHORITY_COMMANDS = new Set([
   // payload as interactive, so they must not become a capability bypass
   // merely because no current chat tool targets them directly.
   "agent_codex_mutate",
+  "agent_codex_delete",
   ...AGENT_CHRONICLE_COMMANDS,
 ]);
 
@@ -2042,7 +2043,6 @@ export function bindRendererAuthorityForIpc(
     ) {
       return args;
     }
-    if (directPayloadCommand) return {};
     const { [payloadKey]: _discardedPayload, ...remainingArgs } = args;
     return remainingArgs;
   }
