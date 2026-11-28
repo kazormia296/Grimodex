@@ -26,6 +26,7 @@ import {
   createNonSceneTurnContextRequest,
   createSceneTurnContextRequest,
 } from "../turnContextRequest";
+import { buildSystemPrompt } from "../../contextBuilder";
 
 const entries = Array.from({ length: 65 }, (_, index) => {
   const id = `entry-${String(index).padStart(2, "0")}`;
@@ -80,14 +81,14 @@ const common = {
   trackRecallPromote: false,
 };
 
-function sceneRequest() {
+function sceneRequest(sourceEntries = entries) {
   return createSceneTurnContextRequest({
     ...common,
     sceneId: "scene-1",
     sourceSnapshot: {
       scene: { id: "scene-1", title: "Scene", content: "Body" },
       project: { title: "Project", language: "en" },
-      prefetchedCodexEntries: entries,
+      prefetchedCodexEntries: sourceEntries,
     },
   });
 }
@@ -123,11 +124,11 @@ describe("approved Codex rank source reads", () => {
     const deps = createSceneContextSourceDeps();
     const collected = await collectSceneContext(request, deps);
     expectReaderCandidates();
-    expect(collected.promptInput.approvedCodexEntryIds).toEqual(new Set());
+    expect(collected.promptInput.approvedCodexRanker).toBeUndefined();
 
     approvedCodexReadMock.mockRejectedValueOnce(new Error("reader failed"));
     const rejected = await collectSceneContext(request, deps);
-    expect(rejected.promptInput.approvedCodexEntryIds).toBeUndefined();
+    expect(rejected.promptInput.approvedCodexRanker).toBeUndefined();
   });
 
   it("passes the first 64 non-scene candidates and fails closed on reader rejection", async () => {
@@ -146,10 +147,108 @@ describe("approved Codex rank source reads", () => {
     });
     const collected = await collectNonSceneContext(request, deps);
     expectReaderCandidates();
-    expect(collected.promptInput.approvedCodexEntryIds).toEqual(new Set());
+    expect(collected.promptInput.approvedCodexRanker).toBeUndefined();
 
     approvedCodexReadMock.mockRejectedValueOnce(new Error("reader failed"));
     const rejected = await collectNonSceneContext(request, deps);
-    expect(rejected.promptInput.approvedCodexEntryIds).toBeUndefined();
+    expect(rejected.promptInput.approvedCodexRanker).toBeUndefined();
   });
+
+  it.each(["scene", "non-scene"] as const)(
+    "ranks the selected L4 items through the %s source and prompt builder",
+    async (source) => {
+      const rankingEntries = entries.slice(0, 3).map((entry) => ({
+        ...entry,
+        summary: "設定".repeat(120),
+      }));
+      const collect = async () => {
+        approvedCodexReadMock.mockResolvedValueOnce({
+          status: "available",
+          approvedCodexEntryIds: [],
+        });
+        if (source === "scene") {
+          return collectSceneContext(
+            sceneRequest(rankingEntries),
+            createSceneContextSourceDeps(),
+          );
+        }
+        return collectNonSceneContext(
+          nonSceneRequest(),
+          createNonSceneContextSourceDeps({
+            fetchProjectContext: async () => ({
+              title: "Project",
+              language: "en",
+            }),
+            listCodexEntries: async () => rankingEntries,
+            listCodexContextMetadata: async () =>
+              rankingEntries.map(
+                ({ content: _content, ...metadata }) => metadata,
+              ),
+            listCodexEntriesByIds: async (_projectId, ids) =>
+              ids.flatMap((id) =>
+                rankingEntries.filter((entry) => entry.id === id),
+              ),
+          }),
+        );
+      };
+      const initial = await collect();
+      const input = {
+        ...initial.promptInput,
+        contextWindow: 1_200,
+        outputReservationTokens: 100,
+        conversationTokens: 0,
+      };
+      const baseline = buildSystemPrompt({
+        ...input,
+        approvedCodexRanker: undefined,
+      });
+      const baselineKeys = baseline.contextPlan!.items.map((item) => item.key);
+      const approvedId = baselineKeys.at(-1)!.slice("codex:".length);
+
+      approvedCodexReadMock.mockResolvedValueOnce({
+        status: "available",
+        approvedCodexEntryIds: [approvedId],
+      });
+      const rankedSource =
+        source === "scene"
+          ? await collectSceneContext(
+              sceneRequest(rankingEntries),
+              createSceneContextSourceDeps(),
+            )
+          : await collectNonSceneContext(
+              nonSceneRequest(),
+              createNonSceneContextSourceDeps({
+                fetchProjectContext: async () => ({
+                  title: "Project",
+                  language: "en",
+                }),
+                listCodexEntries: async () => rankingEntries,
+                listCodexContextMetadata: async () =>
+                  rankingEntries.map(
+                    ({ content: _content, ...metadata }) => metadata,
+                  ),
+                listCodexEntriesByIds: async (_projectId, ids) =>
+                  ids.flatMap((id) =>
+                    rankingEntries.filter((entry) => entry.id === id),
+                  ),
+              }),
+            );
+      const ranked = buildSystemPrompt({
+        ...rankedSource.promptInput,
+        contextWindow: 1_200,
+        outputReservationTokens: 100,
+        conversationTokens: 0,
+      });
+      const rankedKeys = ranked.contextPlan!.items.map((item) => item.key);
+
+      expect(typeof rankedSource.promptInput.approvedCodexRanker).toBe(
+        "function",
+      );
+      expect(baselineKeys.length).toBeGreaterThan(1);
+      expect(new Set(rankedKeys)).toEqual(new Set(baselineKeys));
+      expect(rankedKeys[0]).toBe(`codex:${approvedId}`);
+      expect(rankedKeys).not.toEqual(baselineKeys);
+      expect(ranked.totalTokens).toBe(baseline.totalTokens);
+    },
+  );
 });

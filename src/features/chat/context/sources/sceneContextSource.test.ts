@@ -18,6 +18,7 @@ import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { PinnedCodexEntryWithData } from "../../chatApi";
 import type { ChatMessage } from "../../chatTypes";
 import { buildSystemPrompt } from "../../contextBuilder";
+import { createApprovedCodexRanker } from "../../context/approvedCodexRank";
 import { createSceneTurnContextRequest } from "../turnContextRequest";
 import { resolveChatTurnRoute } from "../../turn/resolveTurnRoute";
 import { DEFAULT_AI_SETTINGS, type AiSettings } from "../../types";
@@ -322,7 +323,7 @@ describe("collectSceneContext", () => {
     const approvedId = baselineKeys.at(-1)!.slice("codex:".length);
     const ranked = buildSystemPrompt({
       ...input,
-      approvedCodexEntryIds: new Set([approvedId]),
+      approvedCodexRanker: createApprovedCodexRanker(new Set([approvedId])),
     });
     const rankedKeys = ranked.contextPlan!.items.map((item) => item.key);
 

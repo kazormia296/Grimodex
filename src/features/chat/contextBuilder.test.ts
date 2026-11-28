@@ -27,6 +27,7 @@ import {
 import { JA_CHAT_SYSTEM } from "../../prompts/ja/chatSystem";
 import nir1Df06PlainChatFixture from "../../../test-fixtures/nir1-df06-plain-chat.json";
 import { AUTHOR_POLICY_TAG } from "@/prompts/shared/dataLayerRegistry";
+import { createApprovedCodexRanker } from "./context/approvedCodexRank";
 
 describe("contextBuilder", () => {
   describe("buildSystemPrompt", () => {
@@ -3300,7 +3301,9 @@ describe("prompt injection hardening", () => {
       const withoutRank = buildSystemPrompt(input);
       const withRank = buildSystemPrompt({
         ...input,
-        approvedCodexEntryIds: new Set(["first", "third"]),
+        approvedCodexRanker: createApprovedCodexRanker(
+          new Set(["first", "third"]),
+        ),
       });
       const originalKeys = withoutRank.contextPlan!.items.map(
         (item) => item.key,
@@ -3343,7 +3346,7 @@ describe("prompt injection hardening", () => {
       const baseline = buildSystemPrompt(input);
       const ranked = buildSystemPrompt({
         ...input,
-        approvedCodexEntryIds: new Set(["C"]),
+        approvedCodexRanker: createApprovedCodexRanker(new Set(["C"])),
       });
       const segmentItems = (segments: string[]) =>
         ["A", "B", "C"].filter((id) =>

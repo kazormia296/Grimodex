@@ -1,10 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ChatContextItem } from "./types";
+const { approvedReadMock } = vi.hoisted(() => ({ approvedReadMock: vi.fn() }));
+vi.mock(
+  "@/features/narrative-semantic-core/nir1EntityRelationRevisionApi",
+  () => ({ readApprovedNir1EntityRelationCodexEntryIds: approvedReadMock }),
+);
 import {
   rankAndMaterializeApprovedMentionedCodexItems,
   rankApprovedMentionedCodexItems,
 } from "./approvedCodexRank";
-import { readApprovedCodexEntryIds } from "./approvedCodexRankReader";
+import {
+  loadApprovedCodexRanker,
+  readApprovedCodexEntryIds,
+} from "./approvedCodexRankReader";
 
 function item(
   id: string,
@@ -90,20 +98,15 @@ describe("approved Codex rank", () => {
     expect(materialize).toHaveBeenCalledOnce();
   });
 
-  it("does not read when disabled and fails closed for unavailable or rejected reads", async () => {
+  it("fails closed for unavailable or rejected reads", async () => {
     const read = vi.fn();
-    await expect(
-      readApprovedCodexEntryIds(false, "/w", "p", ["a"], read),
-    ).resolves.toBe(undefined);
-    expect(read).not.toHaveBeenCalled();
-
     read.mockResolvedValueOnce({ status: "unavailable", reason: "closed" });
     await expect(
-      readApprovedCodexEntryIds(true, "/w", "p", ["a"], read),
+      readApprovedCodexEntryIds("/w", "p", ["a"], read),
     ).resolves.toBe(undefined);
     read.mockRejectedValueOnce(new Error("IPC failed"));
     await expect(
-      readApprovedCodexEntryIds(true, "/w", "p", ["a"], read),
+      readApprovedCodexEntryIds("/w", "p", ["a"], read),
     ).resolves.toBe(undefined);
   });
 
@@ -113,7 +116,6 @@ describe("approved Codex rank", () => {
       approvedCodexEntryIds: ["id-0"],
     });
     const result = await readApprovedCodexEntryIds(
-      true,
       "/w",
       "p",
       Array.from({ length: 65 }, (_, index) => `id-${index}`),
@@ -122,5 +124,34 @@ describe("approved Codex rank", () => {
 
     expect(read.mock.calls[0]?.[0].codexEntryIds).toHaveLength(64);
     expect(result).toEqual(new Set(["id-0"]));
+  });
+
+  it("loads a ranker only when the reader returns approved entries", async () => {
+    approvedReadMock.mockResolvedValueOnce({
+      status: "available",
+      approvedCodexEntryIds: ["approved"],
+    });
+    const ranker = await loadApprovedCodexRanker("/w", "p", ["approved"]);
+    expect(ranker).toBeTypeOf("function");
+  });
+
+  it.each([
+    { status: "unavailable", reason: "closed" },
+    { status: "available", approvedCodexEntryIds: [] },
+  ])(
+    "returns no ranker for $status or an empty approved set",
+    async (result) => {
+      approvedReadMock.mockResolvedValueOnce(result);
+      await expect(
+        loadApprovedCodexRanker("/w", "p", ["candidate"]),
+      ).resolves.toBeUndefined();
+    },
+  );
+
+  it("returns no ranker when the reader rejects", async () => {
+    approvedReadMock.mockRejectedValueOnce(new Error("IPC failed"));
+    await expect(
+      loadApprovedCodexRanker("/w", "p", ["candidate"]),
+    ).resolves.toBeUndefined();
   });
 });
