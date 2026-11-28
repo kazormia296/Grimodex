@@ -621,11 +621,12 @@ N-API の owner と lock を Fable（read-only、effort high）が読んだ。me
   - **4b**：main の記録の持ち主の module（`electron/main/agentRunRecorder.ts`）。呼び手なし。
   - **4c**：legacy の配線（画面からの開始と終端の通知、台帳の追記、切替と終了での中断、回収）。旗は閉じる。
 - **鍵と version の持ち主**：
-  - Run は（sender、`operationId`）で引く。assistant の message の ID は、開始のときに main が受けて memory に持つ（Native には渡さない）。
+  - Run は（sender、`operationId`）で引く。assistant の message の ID は、開始のときに main が受け、`origin_assistant_message_id` に書く（再起動の後も保存先が分かる。列は足さない）。
   - 台帳の鍵は（`executionId`、`toolCallId`）。同じ応答の中の重複と空の ID は記録できない扱いにする。
+  - 確認待ち（承認と質問）と台帳の対応（Mastra の担当の指摘）：開くときに `executionId` も受け、Native が「台帳にその対があり、その `toolCallId` の最後の行である」ことを確かめる。確認待ちがある間は、同じ `toolCallId` の追記を拒む。読みは、その行の `executionId` を返す。列は足さない。返事待ちの間もほかを進める形（DR-A3-18）を入れる版で、`agent_run_interactions` に列を足す。
   - Run の version は記録の持ち主が持ち、Run ごとに直列にする。Interaction の version は Gate A が持つ。
   - Gate A へは `resolveRun({senderId, projectId, executionId})` が `recorded`（`runId`、`transact`）／`not_recording`／`unrecorded` を返す。対応は台帳の追記で作る。Gate A は `recorded` のときだけ交換を開く。
-  - `transact` の `op` は Native の呼出し 1 回にする。承認を待たず、再入しない。失敗したら version を進めない。終端と workspace の切替の後は拒む。N-API は呼んだ時点の workspace を使うので、切替で対応を捨てる。
+  - `transact` は `op` の戻り（`AgentRunState` を含む型）をそのまま返す。`op` は Native の呼出し 1 回にする。承認を待たず、再入しない。失敗したら version を進めない。終端と workspace の切替の後は拒む。N-API は呼んだ時点の workspace を使うので、切替で対応を捨てる。
 - **台帳の追記**：
   - 記録の側が行う（DR-A3-4）。Gate A は `updateToolCall` だけを呼ぶ。
   - 置き場所は、legacy の `send_agent_message` の応答を受ける閉包（`ipc.ts`）。capability を発行する関数の中には置かない（Mastra の経路も通る）。
@@ -638,7 +639,9 @@ N-API の owner と lock を Fable（read-only、effort high）が読んだ。me
   - quit では、記録の中断を、画面の drain の後、workspace を閉じる前に行う（`will-quit` は drain より先に来る）。
 - **lock を手放す順序は main の責任**（DR-A3-22）。切替と復元では Native へ渡す前の quiesce で、自分の非終端の Run を中断する。Native には強制を足さない。漏れた行は、workspace を開くたびに、main が自分の owner の行を memory と照らして中断する（DR-A3-11a）。
 - **Native の直し（4a）**：
-  - 台帳の鍵を対にする。応答 1 つの追記。
+  - 台帳の鍵を対にする。応答 1 つの追記。追記は active の status に限る（今は `interrupted` でも追記できる。更新は非終端なら通す）。
+  - 確認待ちを開く操作と読みで、台帳との対応を確かめる（上）。
+  - 開始に assistant の message の ID を足す。
   - 自分の owner の終わっていない Run の一覧。
   - `finalizing` を閉じる操作に、中断の理由の引数を足す（今は `renderer_lost` に固定）。ほかの owner の分には活動の古さの下限を通す。回収は owner ごとの結果を返し、下限を必須にする。
   - 保存する行が無い終端（送信の前の Stop）のために、`running` から終端へ直接進む操作。
